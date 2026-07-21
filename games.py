@@ -1,5 +1,7 @@
 import random
+import io
 import chess  # pip install chess
+from PIL import Image, ImageDraw, ImageFont  # đã có sẵn vì bạn dùng PIL cho gen_smoke.py
 
 # ============ FOLK VALLEY RANKING (dùng chung cho flag & fruit) ============
 def folk_valley_rank(score, total=5):
@@ -354,35 +356,109 @@ def chess_player_id(cid):
     return _chess_games[cid]["player_id"]
 
 
-def chess_render(cid):
-    return str(_chess_games[cid]["board"])
+PIECE_NAME_VN = {
+    chess.PAWN: "Tốt", chess.KNIGHT: "Mã", chess.BISHOP: "Tượng",
+    chess.ROOK: "Xe", chess.QUEEN: "Hậu", chess.KING: "Vua",
+}
 
 
-def chess_player_move(cid, text):
-    """Người chơi đi 1 nước (SAN vd 'e4', 'Nf3' hoặc UCI vd 'e2e4').
-    Trả về (hợp lệ: bool, outcome: chess.Outcome hoặc None nếu ván tiếp tục)"""
+def chess_from_options(cid):
+    """Danh sách (giá_trị_ô, nhãn) các quân đang có nước đi hợp lệ — để đổ vào dropdown"""
+    board = _chess_games[cid]["board"]
+    seen = {}
+    for move in board.legal_moves:
+        if move.from_square not in seen:
+            piece = board.piece_at(move.from_square)
+            name = PIECE_NAME_VN[piece.piece_type]
+            seen[move.from_square] = f"{name} {chess.square_name(move.from_square)}"
+    return [(chess.square_name(sq), label) for sq, label in seen.items()]
+
+
+def chess_to_options(cid, from_square_name):
+    """Danh sách (giá_trị_ô, nhãn) các ô có thể đi tới từ 1 quân — để đổ vào dropdown.
+    Phong cấp luôn tự động thành Hậu cho đơn giản."""
+    board = _chess_games[cid]["board"]
+    from_sq = chess.parse_square(from_square_name)
+    options = []
+    for move in board.legal_moves:
+        if move.from_square != from_sq:
+            continue
+        if move.promotion and move.promotion != chess.QUEEN:
+            continue  # bỏ phong cấp khác Hậu để danh sách gọn
+        to_name = chess.square_name(move.to_square)
+        captured = board.piece_at(move.to_square)
+        label = f"{to_name} (ăn {PIECE_NAME_VN[captured.piece_type]})" if captured else to_name
+        options.append((to_name, label))
+    return options
+
+
+def chess_make_move(cid, from_square_name, to_square_name):
+    """Thực hiện nước đi được chọn từ dropdown. Trả về outcome hoặc None nếu ván tiếp tục."""
     game = _chess_games[cid]
     board = game["board"]
-    if board.turn != game["player_color"]:
-        return False, None
-
-    text = text.strip()
+    from_sq = chess.parse_square(from_square_name)
+    to_sq = chess.parse_square(to_square_name)
     move = None
-    try:
-        move = board.parse_san(text)
-    except ValueError:
-        try:
-            candidate = chess.Move.from_uci(text.lower())
-            if candidate in board.legal_moves:
-                move = candidate
-        except Exception:
-            move = None
-
+    for m in board.legal_moves:
+        if m.from_square == from_sq and m.to_square == to_sq:
+            if m.promotion and m.promotion != chess.QUEEN:
+                continue
+            move = m
+            break
     if move is None:
-        return False, None
-
+        return None
     board.push(move)
-    return True, board.outcome()
+    return board.outcome()
+
+
+_SQUARE_PX = 60
+_BOARD_PX = _SQUARE_PX * 8
+_LIGHT = (240, 217, 181)
+_DARK = (181, 136, 99)
+_PIECE_LETTER = {chess.PAWN: "P", chess.KNIGHT: "N", chess.BISHOP: "B",
+                 chess.ROOK: "R", chess.QUEEN: "Q", chess.KING: "K"}
+
+
+def _chess_font(size):
+    """Cố dùng font hệ thống có sẵn, nếu không có thì rơi về font mặc định của PIL"""
+    for path in ("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
+                 "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"):
+        try:
+            return ImageFont.truetype(path, size)
+        except Exception:
+            continue
+    return ImageFont.load_default()
+
+
+def chess_board_image(cid):
+    """Vẽ bàn cờ ra ảnh PNG (nhẹ CPU: chỉ vẽ 64 ô + chữ, không dùng ảnh quân cờ tải mạng)"""
+    board = _chess_games[cid]["board"]
+    img = Image.new("RGB", (_BOARD_PX, _BOARD_PX + 24), "white")
+    draw = ImageDraw.Draw(img)
+    piece_font = _chess_font(34)
+    coord_font = _chess_font(14)
+
+    for row in range(8):
+        for col in range(8):
+            x0, y0 = col * _SQUARE_PX, row * _SQUARE_PX
+            color = _LIGHT if (row + col) % 2 == 0 else _DARK
+            draw.rectangle([x0, y0, x0 + _SQUARE_PX, y0 + _SQUARE_PX], fill=color)
+            sq = chess.square(col, 7 - row)
+            piece = board.piece_at(sq)
+            if piece:
+                letter = _PIECE_LETTER[piece.piece_type]
+                fill = "white" if piece.color == chess.WHITE else "black"
+                outline = "black" if piece.color == chess.WHITE else "white"
+                draw.text((x0 + _SQUARE_PX / 2, y0 + _SQUARE_PX / 2), letter, font=piece_font,
+                          fill=fill, stroke_width=2, stroke_fill=outline, anchor="mm")
+
+    for col in range(8):
+        draw.text((col * _SQUARE_PX + 4, _BOARD_PX + 4), chr(ord('a') + col), font=coord_font, fill="black")
+
+    buf = io.BytesIO()
+    img.save(buf, format="PNG")
+    buf.seek(0)
+    return buf
 
 
 def _material_score(board, color):
