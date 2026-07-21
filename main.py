@@ -270,12 +270,26 @@ def _ttt_result_text(result, user):
 
 
 # ============ UI CỜ VUA (chọn quân + chọn ô bằng dropdown, không cần gõ ký hiệu) ============
+def _chess_current_player_id(cid):
+    """Trả về user_id của người cần đi nước tiếp theo, dùng chung cho vs-bot & PvP"""
+    if games.chess_is_pvp(cid):
+        return games.chess_current_turn_id(cid)
+    return games.chess_player_id(cid)
+
+
+def _chess_mentions(cid, bot_user):
+    """Trả về dict {màu: mention} để hiển thị tên đúng người — PvP dùng tên thật, vs-bot dùng tên bot"""
+    if not games.chess_is_pvp(cid):
+        return None
+    game = games._chess_games[cid]
+    return {True: f"<@{game['white_id']}>", False: f"<@{game['black_id']}>"}
+
+
 class ChessFromView(discord.ui.View):
     """Bước 1: chọn quân muốn đi"""
-    def __init__(self, cid, player_id):
+    def __init__(self, cid):
         super().__init__(timeout=180)
         self.cid = cid
-        self.player_id = player_id
         options = games.chess_from_options(cid)[:25]
         select = discord.ui.Select(
             placeholder="♟️ Chọn quân muốn đi...",
@@ -286,11 +300,11 @@ class ChessFromView(discord.ui.View):
         self.add_item(make_end_button(cid, "chess"))
 
     async def on_select(self, interaction: discord.Interaction):
-        if interaction.user.id != self.player_id:
-            await interaction.response.send_message("❌ Đây không phải ván của bạn!", ephemeral=True)
+        if interaction.user.id != _chess_current_player_id(self.cid):
+            await interaction.response.send_message("❌ Chưa đến lượt bạn!", ephemeral=True)
             return
         from_sq = interaction.data["values"][0]
-        await interaction.response.edit_message(view=ChessToView(self.cid, self.player_id, from_sq))
+        await interaction.response.edit_message(view=ChessToView(self.cid, interaction.user.id, from_sq))
 
 
 class ChessToView(discord.ui.View):
@@ -316,7 +330,7 @@ class ChessToView(discord.ui.View):
         if interaction.user.id != self.player_id:
             await interaction.response.send_message("❌ Đây không phải ván của bạn!", ephemeral=True)
             return
-        await interaction.response.edit_message(view=ChessFromView(self.cid, self.player_id))
+        await interaction.response.edit_message(view=ChessFromView(self.cid))
 
     async def on_select(self, interaction: discord.Interaction):
         if interaction.user.id != self.player_id:
@@ -325,23 +339,32 @@ class ChessToView(discord.ui.View):
 
         to_sq = interaction.data["values"][0]
         outcome = games.chess_make_move(self.cid, self.from_sq, to_sq)
-        if outcome is None:
+
+        # Vs Bot: sau khi người đi xong, đến lượt bot đánh ngay
+        if outcome is None and not games.chess_is_pvp(self.cid):
             outcome = games.chess_bot_move(self.cid)
 
         image = games.chess_board_image(self.cid)
         file = discord.File(image, filename="board.png")
 
         if outcome is not None:
-            text = games.chess_outcome_text(self.cid, outcome)
+            mentions = _chess_mentions(self.cid, interaction.client.user)
+            text = games.chess_outcome_text(self.cid, outcome, mentions)
             games.chess_end(self.cid)
             embed = discord.Embed(description=text, color=0x2C3E50)
             embed.set_image(url="attachment://board.png")
             await interaction.response.edit_message(embed=embed, attachments=[file], view=None)
         else:
-            embed = discord.Embed(color=0x2C3E50)
+            if games.chess_is_pvp(self.cid):
+                next_id = games.chess_current_turn_id(self.cid)
+                embed = discord.Embed(description=f"👉 Đến lượt <@{next_id}>!", color=0x2C3E50)
+            else:
+                embed = discord.Embed(color=0x2C3E50)
             embed.set_image(url="attachment://board.png")
-            new_view = ChessFromView(self.cid, self.player_id)
+            new_view = ChessFromView(self.cid)
             await interaction.response.edit_message(embed=embed, attachments=[file], view=new_view)
+
+
 
 
 # ============ SLASH COMMANDS ============
@@ -365,6 +388,7 @@ async def about_slash(interaction: discord.Interaction):
             "`/fruit` — đoán tên trái cây qua hình\n"
             "`/caro` — cờ caro vs bot\n"
             "`/chess` — cờ vua vs bot\n"
+            "`/chess_invite @ai_đó` — mời PvP cờ vua\n"
             "`/whatuinto` — bói vui\n"
             "`/wiki <từ khóa>` — tra bách khoa toàn thư\n"
             "`/ping` — kiểm tra độ trễ"
@@ -474,7 +498,76 @@ async def chess_slash(interaction: discord.Interaction):
         color=0x2C3E50,
     )
     embed.set_image(url="attachment://board.png")
-    await interaction.response.send_message(embed=embed, file=file, view=ChessFromView(cid, interaction.user.id))
+    await interaction.response.send_message(embed=embed, file=file, view=ChessFromView(cid))
+
+
+class ChessInviteView(discord.ui.View):
+    def __init__(self, cid, inviter_id, invitee_id):
+        super().__init__(timeout=120)
+        self.cid = cid
+        self.inviter_id = inviter_id
+        self.invitee_id = invitee_id
+
+    @discord.ui.button(label="✅ Chấp nhận", style=discord.ButtonStyle.success)
+    async def accept(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if interaction.user.id != self.invitee_id:
+            await interaction.response.send_message("❌ Lời mời này không dành cho bạn!", ephemeral=True)
+            return
+        if games.chess_get_invite(self.cid) is None:
+            await interaction.response.send_message("❌ Lời mời đã hết hạn hoặc bị hủy.", ephemeral=True)
+            return
+        if games.chess_active(self.cid):
+            await interaction.response.send_message("⚠️ Đang có ván cờ vua khác chưa xong trong kênh này!", ephemeral=True)
+            return
+
+        games.chess_clear_invite(self.cid)
+        games.chess_start_pvp(self.cid, self.inviter_id, self.invitee_id)
+        image = games.chess_board_image(self.cid)
+        file = discord.File(image, filename="board.png")
+        embed = discord.Embed(
+            title="♟️ Cờ vua PvP bắt đầu!",
+            description=(
+                f"⚪ Trắng: <@{self.inviter_id}>\n⚫ Đen: <@{self.invitee_id}>\n\n"
+                f"👉 Đến lượt <@{self.inviter_id}>!"
+            ),
+            color=0x2C3E50,
+        )
+        embed.set_image(url="attachment://board.png")
+        await interaction.response.edit_message(content=None, embed=embed, attachments=[file], view=ChessFromView(self.cid))
+
+    @discord.ui.button(label="❌ Từ chối", style=discord.ButtonStyle.danger)
+    async def decline(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if interaction.user.id != self.invitee_id:
+            await interaction.response.send_message("❌ Lời mời này không dành cho bạn!", ephemeral=True)
+            return
+        games.chess_clear_invite(self.cid)
+        await interaction.response.edit_message(content="❌ Đã từ chối lời mời chơi cờ vua.", embed=None, view=None)
+
+
+@bot.tree.command(name="chess_invite", description="Mời người khác chơi cờ vua PvP (bạn cầm Trắng)")
+@app_commands.describe(doi_thu="Người bạn muốn mời chơi")
+async def chess_invite_slash(interaction: discord.Interaction, doi_thu: discord.Member):
+    cid = interaction.channel_id
+
+    if games.chess_active(cid):
+        await interaction.response.send_message("⚠️ Đang có ván cờ vua chưa xong trong kênh này!", ephemeral=True)
+        return
+    if doi_thu.bot:
+        await interaction.response.send_message("❌ Không thể mời bot chơi PvP!", ephemeral=True)
+        return
+    if doi_thu.id == interaction.user.id:
+        await interaction.response.send_message("❌ Không thể tự mời chính mình!", ephemeral=True)
+        return
+
+    games.chess_create_invite(cid, interaction.user.id, doi_thu.id)
+    view = ChessInviteView(cid, interaction.user.id, doi_thu.id)
+    await interaction.response.send_message(
+        content=(
+            f"♟️ {doi_thu.mention}, {interaction.user.mention} mời bạn chơi cờ vua "
+            f"({interaction.user.mention} cầm ⚪ Trắng)! Chấp nhận không?"
+        ),
+        view=view,
+    )
 
 
 @bot.tree.command(name="wiki", description="Tra cứu bách khoa toàn thư (Wikipedia tiếng Việt)")
