@@ -827,37 +827,110 @@ def wiki_lookup(keyword):
         return None
 
 
-# ============ THU THẬP ẢNH CHAT (dùng cho /randomimage) ============
-# Mỗi khi ai đó gửi ảnh trong server, lưu lại URL. Gom theo server (guild),
-# không theo kênh, để /randomimage có thể trả về ảnh từ bất kỳ kênh nào.
-MAX_IMAGES_PER_GUILD = 500  # giới hạn để không phình bộ nhớ vô hạn
-_IMAGE_EXTENSIONS = (".png", ".jpg", ".jpeg", ".gif", ".webp")
-_guild_images = {}  # {guild_id: [url, url, ...]}
+# ============ NHÀ TÙ ============
+# Lưu ra file JSON để không mất khi bot restart (RAM-only sẽ mất tù nhân +
+# cấu hình mỗi lần deploy lại — máy host free tier hay restart bất chợt).
+JAIL_FILE = "jail_data.json"
+JAIL_CLEAN_COOLDOWN = 5 * 60  # giây giữa 2 lần /Dlaudon
 
 
-def _is_image_attachment(attachment):
-    if attachment.content_type and attachment.content_type.startswith("image/"):
-        return True
-    return attachment.filename.lower().endswith(_IMAGE_EXTENSIONS)
+def _load_jail():
+    try:
+        with open(JAIL_FILE, "r", encoding="utf-8") as f:
+            raw = json.load(f)
+    except (FileNotFoundError, json.JSONDecodeError):
+        return {}
+    # JSON không cho key số nguyên -> convert lại guild_id/user_id về int
+    data = {}
+    for gid, g in raw.items():
+        data[int(gid)] = {
+            "channel_id": g.get("channel_id"),
+            "role_id": g.get("role_id"),
+            "prisoners": {int(uid): p for uid, p in g.get("prisoners", {}).items()},
+        }
+    return data
 
 
-def collect_images(guild_id, attachments):
-    """Lưu URL ảnh đính kèm của 1 tin nhắn vào kho ảnh của server. Bỏ qua nếu không có ảnh nào."""
-    urls = [a.url for a in attachments if _is_image_attachment(a)]
-    if not urls:
-        return
-    pool = _guild_images.setdefault(guild_id, [])
-    pool.extend(urls)
-    overflow = len(pool) - MAX_IMAGES_PER_GUILD
-    if overflow > 0:
-        del pool[:overflow]  # bỏ ảnh cũ nhất khi vượt giới hạn
+def _save_jail():
+    try:
+        with open(JAIL_FILE, "w", encoding="utf-8") as f:
+            json.dump(_jail_data, f)
+    except OSError as e:
+        print(f"[jail] Lỗi lưu jail_data.json: {e!r}")
 
 
-def random_image(guild_id):
-    """Trả về 1 URL ảnh ngẫu nhiên đã thu thập trong server, hoặc None nếu chưa có ảnh nào."""
-    pool = _guild_images.get(guild_id)
-    return random.choice(pool) if pool else None
+_jail_data = _load_jail()
+# _jail_data = {guild_id: {"channel_id": int, "role_id": int,
+#                           "prisoners": {user_id: {"remaining": int, "reason": str, "last_clean_at": float}}}}
 
 
-def image_pool_size(guild_id):
-    return len(_guild_images.get(guild_id, []))
+def jail_configure(guild_id, channel_id, role_id):
+    g = _jail_data.setdefault(guild_id, {"channel_id": None, "role_id": None, "prisoners": {}})
+    g["channel_id"] = channel_id
+    g["role_id"] = role_id
+    _save_jail()
+
+
+def jail_config(guild_id):
+    """Trả về (channel_id, role_id) đã cấu hình, hoặc (None, None) nếu chưa setup."""
+    g = _jail_data.get(guild_id)
+    if not g:
+        return None, None
+    return g.get("channel_id"), g.get("role_id")
+
+
+def jail_is_configured(guild_id):
+    channel_id, role_id = jail_config(guild_id)
+    return channel_id is not None and role_id is not None
+
+
+def jail_imprison(guild_id, user_id, clean_count, reason):
+    """Bỏ tù 1 thành viên: gán số lượt /Dlaudon được dùng + lý do."""
+    g = _jail_data.setdefault(guild_id, {"channel_id": None, "role_id": None, "prisoners": {}})
+    g["prisoners"][user_id] = {"remaining": clean_count, "reason": reason, "last_clean_at": 0}
+    _save_jail()
+
+
+def jail_release(guild_id, user_id):
+    """Ân xá — trả về True nếu người đó đang bị giam, False nếu không."""
+    g = _jail_data.get(guild_id)
+    if not g or user_id not in g["prisoners"]:
+        return False
+    g["prisoners"].pop(user_id, None)
+    _save_jail()
+    return True
+
+
+def jail_is_prisoner(guild_id, user_id):
+    g = _jail_data.get(guild_id)
+    return bool(g and user_id in g["prisoners"])
+
+
+def jail_prisoner_info(guild_id, user_id):
+    """Trả về dict {"remaining", "reason", "last_clean_at"} hoặc None."""
+    g = _jail_data.get(guild_id)
+    if not g:
+        return None
+    return g["prisoners"].get(user_id)
+
+
+def jail_try_clean(guild_id, user_id):
+    """Kiểm tra & tiêu 1 lượt /Dlaudon nếu hợp lệ.
+    Trả về (ok, message_lỗi_hoặc_None, remaining_sau_khi_trừ)."""
+    info = jail_prisoner_info(guild_id, user_id)
+    if info is None:
+        return False, "❌ Bạn không phải tù nhân.", 0
+
+    if info["remaining"] <= 0:
+        return False, "❌ Bạn đã hết lượt dọn tù rồi.", 0
+
+    now = time.time()
+    elapsed = now - info.get("last_clean_at", 0)
+    if elapsed < JAIL_CLEAN_COOLDOWN:
+        wait = int(JAIL_CLEAN_COOLDOWN - elapsed)
+        return False, f"⏳ Cần đợi thêm **{wait // 60} phút {wait % 60} giây** mới được dọn tiếp.", info["remaining"]
+
+    info["remaining"] -= 1
+    info["last_clean_at"] = now
+    _save_jail()
+    return True, None, info["remaining"]
