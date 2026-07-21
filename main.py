@@ -81,7 +81,8 @@ async def _handle_round(message, guess_text, kind, color, icon):
             color=color,
         )
         embed.set_image(url=url)
-        await message.channel.send(embed=embed)
+        view = EndGameView(cid, kind) if kind == "flag" else None
+        await message.channel.send(embed=embed, view=view)
     else:
         tier, flavor, rank_color = games.folk_valley_rank(score, total)
         end_fn(cid)
@@ -93,6 +94,32 @@ async def _handle_round(message, guess_text, kind, color, icon):
         embed.add_field(name="Xếp loại", value=f"## {tier}")
         embed.set_footer(text="Folk Valley thì thầm: hẹn gặp lại ở vòng đoán sau...")
         await message.channel.send(embed=embed)
+
+
+# ============ NÚT "🛑 Kết thúc" (thay cho /endflag) ============
+class EndGameView(discord.ui.View):
+    def __init__(self, cid, kind):
+        super().__init__(timeout=180)
+        self.cid = cid
+        self.kind = kind
+
+    @discord.ui.button(label="🛑 Kết thúc", style=discord.ButtonStyle.danger)
+    async def end_game(self, interaction: discord.Interaction, button: discord.ui.Button):
+        is_active = games.flag_active(self.cid) if self.kind == "flag" else games.fruit_active(self.cid)
+        if not is_active:
+            await interaction.response.send_message("❌ Ván này đã kết thúc rồi.", ephemeral=True)
+            return
+
+        answer_fn = games.flag_answer if self.kind == "flag" else games.fruit_answer
+        end_fn = games.flag_end if self.kind == "flag" else games.fruit_end
+        answer = answer_fn(self.cid)
+        end_fn(self.cid)
+
+        await interaction.response.edit_message(
+            content=f"🛑 Đã kết thúc ván. Đáp án vòng này là: **{answer.title()}**",
+            embed=None,
+            view=None,
+        )
 
 
 # ============ NÚT CHỌN ĐỘ KHÓ CHO /flag ============
@@ -112,7 +139,8 @@ class DifficultyView(discord.ui.View):
             color=0x3F7D20,
         )
         embed.set_image(url=url)
-        await interaction.response.edit_message(content=None, embed=embed, view=None)
+        view = EndGameView(self.cid, "flag")
+        await interaction.response.edit_message(content=None, embed=embed, view=view)
 
     @discord.ui.button(label="🌱 Dễ", style=discord.ButtonStyle.success)
     async def easy(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -192,24 +220,28 @@ async def fruit_slash(interaction: discord.Interaction):
     await interaction.response.send_message(embed=embed)
 
 
-@bot.tree.command(name="endgame", description="Hủy ván chơi đang diễn ra trong kênh này")
+@bot.tree.command(name="endgame", description="Hủy ván Wordle đang diễn ra trong kênh này")
 async def endgame_slash(interaction: discord.Interaction):
     cid = interaction.channel_id
-    ended = []
     if games.wordle_active(cid):
         games.wordle_end(cid)
-        ended.append("Wordle")
-    if games.flag_active(cid):
-        games.flag_end(cid)
-        ended.append("Đoán cờ")
-    if games.fruit_active(cid):
-        games.fruit_end(cid)
-        ended.append("Đoán trái cây")
-
-    if ended:
-        await interaction.response.send_message(f"🛑 Đã hủy ván: {', '.join(ended)}")
+        await interaction.response.send_message("🛑 Đã hủy ván Wordle.")
     else:
-        await interaction.response.send_message("❌ Không có ván nào đang diễn ra.")
+        await interaction.response.send_message(
+            "❌ Không có ván Wordle nào đang diễn ra. (Đoán cờ/trái cây dùng nút 🛑 Kết thúc trong embed nhé.)"
+        )
+
+
+@bot.tree.command(name="whatuinto", description="Bói vui xem bạn 'thích' thể loại gì 👀")
+async def whatuinto_slash(interaction: discord.Interaction):
+    label, caption, percent = games.whatuinto_roll()
+    embed = discord.Embed(
+        title=f"🔮 Kết quả bói cho {interaction.user.display_name}",
+        description=f"## {percent}% **{label}**\n\n{caption}",
+        color=0xE056FD,
+    )
+    embed.set_footer(text="Kết quả 100% chính xác khoa học (không có căn cứ gì cả) 😌")
+    await interaction.response.send_message(embed=embed)
 
 
 # Khởi chạy web server để tránh bị Render tắt
