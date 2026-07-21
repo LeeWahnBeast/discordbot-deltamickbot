@@ -27,9 +27,6 @@ async def on_message(message):
     if message.author.bot:
         return
 
-    if message.guild:
-        games.collect_images(message.guild.id, message.attachments)
-
     cid = message.channel.id
     content = message.content.strip()
 
@@ -516,8 +513,12 @@ async def about_slash(interaction: discord.Interaction):
             "`/chess_reset` — xóa ván cờ bị kẹt (nếu bot báo lỗi)\n"
             "`/whatuinto` — bói vui\n"
             "`/wiki <từ khóa>` — tra bách khoa toàn thư\n"
-            "`/randomimage` — lấy ngẫu nhiên 1 ảnh mà mọi người từng đăng trong server\n"
-            "`/ping` — kiểm tra độ trễ"
+            "`/ping` — kiểm tra độ trễ\n\n"
+            "**🔒 Nhà tù (Admin)**\n"
+            "`/Dsetuptu` — cấu hình kênh giam + vai trò tù nhân\n"
+            "`/Dphattu @ai_đó {số_lần} {lý_do}` — bỏ tù, cấp số lượt dọn tù\n"
+            "`/DAnxa @ai_đó` — ân xá, thả tự do\n"
+            "`/Dlaudon` — (tù nhân dùng trong kênh giam) dọn sạch kênh, cooldown 5 phút/lượt"
         ),
         inline=False,
     )
@@ -708,23 +709,6 @@ async def chess_invite_slash(interaction: discord.Interaction, doi_thu: discord.
     )
 
 
-@bot.tree.command(name="randomimage", description="Lấy ngẫu nhiên 1 ảnh mà mọi người từng đăng trong server")
-async def randomimage_slash(interaction: discord.Interaction):
-    if interaction.guild is None:
-        await interaction.response.send_message("❌ Lệnh này chỉ dùng được trong server, không dùng được ở DM.", ephemeral=True)
-        return
-
-    url = games.random_image(interaction.guild_id)
-    if url is None:
-        await interaction.response.send_message("📭 Server này chưa thu thập được ảnh nào cả — hãy đăng vài tấm ảnh rồi thử lại!", ephemeral=True)
-        return
-
-    embed = discord.Embed(title="🎲 Ảnh ngẫu nhiên từ server", color=0x9B59B6)
-    embed.set_image(url=url)
-    embed.set_footer(text=f"Kho ảnh hiện có: {games.image_pool_size(interaction.guild_id)} ảnh")
-    await interaction.response.send_message(embed=embed)
-
-
 @bot.tree.command(name="wiki", description="Tra cứu bách khoa toàn thư (Wikipedia tiếng Việt)")
 @app_commands.describe(tu_khoa="Từ khóa cần tra cứu")
 async def wiki_slash(interaction: discord.Interaction, tu_khoa: str):
@@ -746,6 +730,242 @@ async def wiki_slash(interaction: discord.Interaction, tu_khoa: str):
         embed.set_thumbnail(url=thumbnail)
     embed.set_footer(text="Nguồn: Wikipedia tiếng Việt")
     await interaction.followup.send(embed=embed)
+
+
+# ============ NHÀ TÙ ============
+def _is_admin(interaction: discord.Interaction) -> bool:
+    return isinstance(interaction.user, discord.Member) and interaction.user.guild_permissions.administrator
+
+
+async def _lock_role_to_jail_channel(guild: discord.Guild, role: discord.Role, jail_channel: discord.abc.GuildChannel):
+    """Khóa quyền role tù nhân trên toàn server, chỉ mở kênh giam.
+    Bỏ qua từng kênh lỗi (thiếu quyền bot, kênh private đặc biệt...) thay vì dừng cả quá trình."""
+    for channel in guild.channels:
+        try:
+            if channel.id == jail_channel.id:
+                await channel.set_permissions(
+                    role, view_channel=True, send_messages=True, read_message_history=True
+                )
+            else:
+                await channel.set_permissions(role, view_channel=False)
+        except discord.HTTPException as e:
+            print(f"[jail] Không chỉnh được quyền kênh {channel.name}: {e!r}")
+
+
+class JailSetupView(discord.ui.View):
+    """Bước setup: chọn kênh giam + role tù nhân, bấm Xác nhận để bot tự khóa quyền toàn server."""
+    def __init__(self, guild_id):
+        super().__init__(timeout=300)
+        self.guild_id = guild_id
+        self.channel_id = None
+        self.role_id = None
+
+        self.channel_select = discord.ui.ChannelSelect(
+            placeholder="📍 Chọn kênh Nhà Giam...",
+            channel_types=[discord.ChannelType.text],
+        )
+        self.channel_select.callback = self.on_channel_select
+        self.add_item(self.channel_select)
+
+        self.role_select = discord.ui.RoleSelect(placeholder="🔒 Chọn vai trò Tù Nhân...")
+        self.role_select.callback = self.on_role_select
+        self.add_item(self.role_select)
+
+        self.confirm_button = discord.ui.Button(
+            label="✅ Xác nhận", style=discord.ButtonStyle.success, row=2
+        )
+        self.confirm_button.callback = self.on_confirm
+        self.add_item(self.confirm_button)
+
+    async def on_channel_select(self, interaction: discord.Interaction):
+        self.channel_id = self.channel_select.values[0].id
+        await interaction.response.defer()
+
+    async def on_role_select(self, interaction: discord.Interaction):
+        self.role_id = self.role_select.values[0].id
+        await interaction.response.defer()
+
+    async def on_confirm(self, interaction: discord.Interaction):
+        try:
+            if self.channel_id is None or self.role_id is None:
+                await interaction.response.send_message(
+                    "⚠️ Bạn cần chọn cả kênh Nhà Giam và vai trò Tù Nhân trước khi xác nhận.", ephemeral=True
+                )
+                return
+
+            await interaction.response.defer(ephemeral=True)
+            guild = interaction.guild
+            jail_channel = guild.get_channel(self.channel_id)
+            role = guild.get_role(self.role_id)
+            if jail_channel is None or role is None:
+                await interaction.followup.send("❌ Không tìm thấy kênh hoặc vai trò đã chọn, thử lại nhé.", ephemeral=True)
+                return
+
+            await _lock_role_to_jail_channel(guild, role, jail_channel)
+            games.jail_configure(self.guild_id, jail_channel.id, role.id)
+
+            await interaction.followup.send(
+                f"✅ Đã cấu hình xong!\n"
+                f"📍 Kênh Nhà Giam: {jail_channel.mention}\n"
+                f"🔒 Vai trò Tù Nhân: {role.mention}\n\n"
+                f"Đối với kênh Private có quyền riêng, hãy kiểm tra lại thủ công để chắc chắn.",
+                ephemeral=True,
+            )
+            for item in self.children:
+                item.disabled = True
+            await interaction.edit_original_response(view=self)
+        except Exception as e:
+            print(f"[jail] Lỗi khi xác nhận setup: {e!r}")
+            if not interaction.response.is_done():
+                await interaction.response.send_message("⚠️ Có lỗi khi cấu hình, thử lại nhé.", ephemeral=True)
+            else:
+                await interaction.followup.send("⚠️ Có lỗi khi cấu hình, thử lại nhé.", ephemeral=True)
+
+
+@bot.tree.command(name="dsetuptu", description="[Admin] Cấu hình kênh Nhà Giam và vai trò Tù Nhân")
+async def dsetuptu_slash(interaction: discord.Interaction):
+    if not _is_admin(interaction):
+        await interaction.response.send_message("❌ Chỉ Admin mới dùng được lệnh này.", ephemeral=True)
+        return
+
+    embed = discord.Embed(
+        title="⚙️ Thiết lập Nhà Tù",
+        description=(
+            "Vui lòng chọn kênh dùng để giam giữ thành viên khi họ bị áp dụng hình phạt tù.\n"
+            "Chọn vai trò sẽ được cấp cho thành viên khi bị đưa vào trạng thái tù.\n\n"
+            "Sau khi chọn xong, hãy nhấn nút **[Xác nhận]** bên dưới. Hệ thống sẽ **tự động cấu hình quyền** "
+            "cho toàn bộ máy chủ.\n"
+            "Vai trò tù nhân sẽ bị tước quyền truy cập và **chỉ có thể xem/nhắn tin tại kênh Nhà Giam** bạn vừa chọn.\n\n"
+            "⚠️ __**Lưu ý**__:\n"
+            "- Quá trình Bot tự động đè quyền lên các kênh có thể mất vài giây.\n"
+            "- Đối với các kênh có thiết lập quyền riêng biệt (Kênh Private), bạn nên **kiểm tra lại thủ công** "
+            "để đảm bảo tù nhân không thể nhìn thấy."
+        ),
+        color=0x2C3E50,
+    )
+    await interaction.response.send_message(embed=embed, view=JailSetupView(interaction.guild_id), ephemeral=True)
+
+
+@bot.tree.command(name="dphattu", description="[Admin] Bỏ tù 1 thành viên")
+@app_commands.describe(member="Thành viên vi phạm", lan="Số lượt được dùng /Dlaudon", ly_do="Lý do phạt tù")
+async def dphattu_slash(interaction: discord.Interaction, member: discord.Member, lan: int, ly_do: str):
+    if not _is_admin(interaction):
+        await interaction.response.send_message("❌ Chỉ Admin mới dùng được lệnh này.", ephemeral=True)
+        return
+    if not games.jail_is_configured(interaction.guild_id):
+        await interaction.response.send_message("⚠️ Server chưa cấu hình nhà tù. Dùng `/dsetuptu` trước đã.", ephemeral=True)
+        return
+    if lan < 1:
+        await interaction.response.send_message("⚠️ Số lượt dọn tù phải lớn hơn 0.", ephemeral=True)
+        return
+
+    try:
+        _, role_id = games.jail_config(interaction.guild_id)
+        role = interaction.guild.get_role(role_id)
+        if role is None:
+            await interaction.response.send_message("❌ Vai trò Tù Nhân đã bị xóa, hãy `/dsetuptu` lại.", ephemeral=True)
+            return
+
+        await member.add_roles(role, reason=f"Phạt tù bởi {interaction.user}: {ly_do}")
+        games.jail_imprison(interaction.guild_id, member.id, lan, ly_do)
+
+        embed = discord.Embed(
+            title="🔒 Đã bỏ tù",
+            description=f"{member.mention} đã bị đưa vào Nhà Giam.",
+            color=0xE74C3C,
+        )
+        embed.add_field(name="Số lượt dọn tù", value=str(lan))
+        embed.add_field(name="Lý do", value=ly_do, inline=False)
+        await interaction.response.send_message(embed=embed)
+    except discord.Forbidden:
+        await interaction.response.send_message("❌ Bot thiếu quyền gán vai trò cho thành viên này.", ephemeral=True)
+    except Exception as e:
+        print(f"[jail] Lỗi /dphattu: {e!r}")
+        if not interaction.response.is_done():
+            await interaction.response.send_message("⚠️ Có lỗi khi bỏ tù, thử lại nhé.", ephemeral=True)
+
+
+@bot.tree.command(name="danxa", description="[Admin] Ân xá, thả tự do cho tù nhân")
+@app_commands.describe(member="Thành viên cần ân xá")
+async def danxa_slash(interaction: discord.Interaction, member: discord.Member):
+    if not _is_admin(interaction):
+        await interaction.response.send_message("❌ Chỉ Admin mới dùng được lệnh này.", ephemeral=True)
+        return
+    if not games.jail_is_configured(interaction.guild_id):
+        await interaction.response.send_message("⚠️ Server chưa cấu hình nhà tù.", ephemeral=True)
+        return
+
+    try:
+        was_prisoner = games.jail_release(interaction.guild_id, member.id)
+        _, role_id = games.jail_config(interaction.guild_id)
+        role = interaction.guild.get_role(role_id)
+        if role and role in member.roles:
+            await member.remove_roles(role, reason=f"Ân xá bởi {interaction.user}")
+
+        if was_prisoner:
+            await interaction.response.send_message(f"🕊️ {member.mention} đã được ân xá, tự do rồi!")
+        else:
+            await interaction.response.send_message(f"⚠️ {member.mention} không có trong danh sách tù nhân, nhưng đã gỡ vai trò (nếu có).", ephemeral=True)
+    except discord.Forbidden:
+        await interaction.response.send_message("❌ Bot thiếu quyền gỡ vai trò cho thành viên này.", ephemeral=True)
+    except Exception as e:
+        print(f"[jail] Lỗi /danxa: {e!r}")
+        if not interaction.response.is_done():
+            await interaction.response.send_message("⚠️ Có lỗi khi ân xá, thử lại nhé.", ephemeral=True)
+
+
+@bot.tree.command(name="dlaudon", description="[Tù nhân] Dọn sạch kênh Nhà Giam — cooldown 5 phút/lượt")
+async def dlaudon_slash(interaction: discord.Interaction):
+    try:
+        if not games.jail_is_configured(interaction.guild_id):
+            await interaction.response.send_message("⚠️ Server chưa cấu hình nhà tù.", ephemeral=True)
+            return
+
+        jail_channel_id, _ = games.jail_config(interaction.guild_id)
+        if interaction.channel_id != jail_channel_id:
+            await interaction.response.send_message("❌ Lệnh này chỉ dùng được trong kênh Nhà Giam.", ephemeral=True)
+            return
+
+        ok, error_msg, remaining = games.jail_try_clean(interaction.guild_id, interaction.user.id)
+        if not ok:
+            await interaction.response.send_message(error_msg, ephemeral=True)
+            return
+
+        await interaction.response.send_message(f"🧹 Đang dọn sạch kênh... (còn lại **{remaining}** lượt)", ephemeral=True)
+        deleted_total = 0
+        while True:
+            deleted = await interaction.channel.purge(limit=100)
+            deleted_total += len(deleted)
+            if len(deleted) < 100:
+                break
+        await interaction.channel.send(f"🧹 Đã dọn sạch **{deleted_total}** tin nhắn. Lượt dọn còn lại: **{remaining}**.")
+    except discord.Forbidden:
+        msg = "❌ Bot thiếu quyền xóa tin nhắn ở kênh này."
+        if interaction.response.is_done():
+            await interaction.followup.send(msg, ephemeral=True)
+        else:
+            await interaction.response.send_message(msg, ephemeral=True)
+    except Exception as e:
+        print(f"[jail] Lỗi /dlaudon: {e!r}")
+        msg = "⚠️ Có lỗi khi dọn kênh, thử lại nhé."
+        if interaction.response.is_done():
+            await interaction.followup.send(msg, ephemeral=True)
+        else:
+            await interaction.response.send_message(msg, ephemeral=True)
+
+
+@bot.event
+async def on_member_join(member: discord.Member):
+    """Leave rồi vào lại vẫn còn tù — tự động gán lại role tù nhân nếu còn trong danh sách giam."""
+    try:
+        if not games.jail_is_prisoner(member.guild.id, member.id):
+            return
+        _, role_id = games.jail_config(member.guild.id)
+        role = member.guild.get_role(role_id) if role_id else None
+        if role:
+            await member.add_roles(role, reason="Tù nhân rời rồi vào lại server — vẫn còn án tù")
+    except discord.HTTPException as e:
+        print(f"[jail] Lỗi gán lại role tù khi {member} vào lại: {e!r}")
 
 
 # Khởi chạy web server để tránh bị Render tắt
