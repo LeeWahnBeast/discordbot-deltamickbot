@@ -427,7 +427,22 @@ def _chess_font(size):
             return ImageFont.truetype(path, size)
         except Exception:
             continue
-    return ImageFont.load_default()
+    try:
+        return ImageFont.load_default(size=size)  # Pillow >= 10.1
+    except TypeError:
+        return ImageFont.load_default()
+
+
+def _draw_piece_icon(draw, cx, cy, piece, font):
+    """Vẽ quân cờ dạng 'token' tròn (nền trắng/đen + chữ) — trông giống icon hơn
+    chữ trần, và không phụ thuộc font unicode đặc biệt nào nên luôn hiện đúng."""
+    radius = _SQUARE_PX * 0.38
+    is_white = piece.color == chess.WHITE
+    fill = "#f5f5f5" if is_white else "#2b2b2b"
+    outline = "#2b2b2b" if is_white else "#f5f5f5"
+    text_fill = "#2b2b2b" if is_white else "#f5f5f5"
+    draw.ellipse([cx - radius, cy - radius, cx + radius, cy + radius], fill=fill, outline=outline, width=3)
+    draw.text((cx, cy), _PIECE_LETTER[piece.piece_type], font=font, fill=text_fill, anchor="mm")
 
 
 def chess_board_image(cid):
@@ -435,7 +450,7 @@ def chess_board_image(cid):
     board = _chess_games[cid]["board"]
     img = Image.new("RGB", (_BOARD_PX, _BOARD_PX + 24), "white")
     draw = ImageDraw.Draw(img)
-    piece_font = _chess_font(34)
+    piece_font = _chess_font(28)
     coord_font = _chess_font(14)
 
     for row in range(8):
@@ -446,11 +461,7 @@ def chess_board_image(cid):
             sq = chess.square(col, 7 - row)
             piece = board.piece_at(sq)
             if piece:
-                letter = _PIECE_LETTER[piece.piece_type]
-                fill = "white" if piece.color == chess.WHITE else "black"
-                outline = "black" if piece.color == chess.WHITE else "white"
-                draw.text((x0 + _SQUARE_PX / 2, y0 + _SQUARE_PX / 2), letter, font=piece_font,
-                          fill=fill, stroke_width=2, stroke_fill=outline, anchor="mm")
+                _draw_piece_icon(draw, x0 + _SQUARE_PX / 2, y0 + _SQUARE_PX / 2, piece, piece_font)
 
     for col in range(8):
         draw.text((col * _SQUARE_PX + 4, _BOARD_PX + 4), chr(ord('a') + col), font=coord_font, fill="black")
