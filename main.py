@@ -27,6 +27,9 @@ async def on_message(message):
     if message.author.bot:
         return
 
+    if message.guild:
+        games.collect_images(message.guild.id, message.attachments)
+
     cid = message.channel.id
     content = message.content.strip()
 
@@ -45,29 +48,26 @@ async def on_message(message):
             return
 
         if games.flag_active(cid):
-            await _handle_round(message, content, "flag", 0x3F7D20, "🏳️")
-            return
-
-        if games.fruit_active(cid):
-            await _handle_round(message, content, "fruit", 0xE8590C, "🍉")
+            await _handle_flag_round(message, content)
             return
 
     await bot.process_commands(message)
 
 
-async def _handle_round(message, guess_text, kind, color, icon):
-    """Xử lý chung cho flag & fruit vì logic giống nhau"""
-    cid = message.channel.id
-    check = games.flag_check if kind == "flag" else games.fruit_check
-    answer_fn = games.flag_answer if kind == "flag" else games.fruit_answer
-    progress_fn = games.flag_progress if kind == "flag" else games.fruit_progress
-    next_fn = games.flag_next if kind == "flag" else games.fruit_next
-    end_fn = games.flag_end if kind == "flag" else games.fruit_end
-    noun = "quốc gia" if kind == "flag" else "trái cây"
+async def _deny_unless(interaction: discord.Interaction, allowed: bool, msg="❌ Đây không phải ván của bạn!"):
+    """Dùng chung cho mọi callback cần kiểm tra quyền: gửi thông báo lỗi + trả True nếu bị chặn."""
+    if not allowed:
+        await interaction.response.send_message(msg, ephemeral=True)
+        return True
+    return False
 
-    correct, has_next = check(cid, guess_text)
-    answer = answer_fn(cid)
-    round_num, total, score = progress_fn(cid)
+
+async def _handle_flag_round(message, guess_text):
+    """Xử lý 1 lượt đoán cờ quốc gia."""
+    cid = message.channel.id
+    correct, has_next = games.flag_check(cid, guess_text)
+    answer = games.flag_answer(cid)
+    round_num, total, score = games.flag_progress(cid)
 
     if correct:
         await message.channel.send(f"✅ Chính xác! Đó là **{answer.title()}**! (Điểm: {score}/{round_num})")
@@ -75,17 +75,17 @@ async def _handle_round(message, guess_text, kind, color, icon):
         await message.channel.send(f"❌ Sai rồi! Đáp án là **{answer.title()}**! (Điểm: {score}/{round_num})")
 
     if has_next:
-        url = next_fn(cid)
+        url = games.flag_next(cid)
         embed = discord.Embed(
-            title=f"{icon} Vòng tiếp theo ({round_num + 1}/{total})",
-            description=f"Chat thẳng tên {noun} (tiếng Anh) để đoán!",
-            color=color,
+            title=f"🏳️ Vòng tiếp theo ({round_num + 1}/{total})",
+            description="Chat thẳng tên quốc gia (tiếng Anh) để đoán!",
+            color=0x3F7D20,
         )
         embed.set_image(url=url)
-        await message.channel.send(embed=embed, view=EndGameView(cid, kind))
+        await message.channel.send(embed=embed, view=EndGameView(cid, "flag"))
     else:
         tier, flavor, rank_color = games.folk_valley_rank(score, total)
-        end_fn(cid)
+        games.flag_end(cid)
         embed = discord.Embed(
             title="🌾 TỔNG KẾT — FOLK VALLEY 🌾",
             description=f"**Điểm số: {score}/{total}**\n\n{flavor}",
@@ -94,6 +94,13 @@ async def _handle_round(message, guess_text, kind, color, icon):
         embed.add_field(name="Xếp loại", value=f"## {tier}")
         embed.set_footer(text="Folk Valley thì thầm: hẹn gặp lại ở vòng đoán sau...")
         await message.channel.send(embed=embed)
+
+
+# ============ NHÃN CHẤT LƯỢNG NƯỚC ĐI CỜ VUA (!! thiên tài / ?? ngớ ngẩn) ============
+MOVE_ANNOTATION_TEXT = {
+    "!!": "✨ **!!** Nước đi thiên tài!",
+    "??": "🤦 **??** Nước đi ngớ ngẩn!",
+}
 
 
 # ============ NÚT "🛑 Kết thúc" DÙNG CHUNG CHO MỌI GAME ============
@@ -109,12 +116,6 @@ GAME_CONFIG = {
         "end": games.flag_end,
         "label": "Đoán cờ",
         "reveal": lambda cid: f"Đáp án là **{games.flag_answer(cid).title()}**",
-    },
-    "fruit": {
-        "active": games.fruit_active,
-        "end": games.fruit_end,
-        "label": "Đoán trái cây",
-        "reveal": lambda cid: f"Đáp án là **{games.fruit_answer(cid).title()}**",
     },
     "ttt": {
         "active": games.ttt_active,
@@ -149,7 +150,7 @@ def make_end_button(cid, kind, row=None):
 
 
 class EndGameView(discord.ui.View):
-    """View chỉ gồm nút Kết thúc — dùng cho wordle/flag/fruit/chess"""
+    """View chỉ gồm nút Kết thúc — dùng cho wordle/flag/chess"""
     def __init__(self, cid, kind, timeout=180):
         super().__init__(timeout=timeout)
         self.add_item(make_end_button(cid, kind))
@@ -293,13 +294,11 @@ def _add_chess_action_buttons(view, cid):
     async def on_resign(interaction: discord.Interaction):
         if games.chess_is_pvp(cid):
             game = games._chess_games[cid]
-            if interaction.user.id not in (game["white_id"], game["black_id"]):
-                await interaction.response.send_message("❌ Đây không phải ván của bạn!", ephemeral=True)
-                return
+            is_participant = interaction.user.id in (game["white_id"], game["black_id"])
         else:
-            if interaction.user.id != games.chess_player_id(cid):
-                await interaction.response.send_message("❌ Đây không phải ván của bạn!", ephemeral=True)
-                return
+            is_participant = interaction.user.id == games.chess_player_id(cid)
+        if await _deny_unless(interaction, is_participant):
+            return
 
         names = _chess_display_names(cid)
         text = games.chess_resign_text(cid, interaction.user.id, names)
@@ -315,8 +314,8 @@ def _add_chess_action_buttons(view, cid):
     )
 
     async def on_hint(interaction: discord.Interaction):
-        if interaction.user.id != _chess_current_player_id(cid):
-            await interaction.response.send_message("❌ Chỉ người đến lượt mới xin gợi ý được!", ephemeral=True)
+        allowed = interaction.user.id == _chess_current_player_id(cid)
+        if await _deny_unless(interaction, allowed, "❌ Chỉ người đến lượt mới xin gợi ý được!"):
             return
         hint_text, new_elo = games.chess_hint(cid, interaction.user.id)
         await interaction.response.send_message(
@@ -337,11 +336,28 @@ def _chess_board_embed(cid, extra_line=None):
     return embed
 
 
-class ChessFromView(discord.ui.View):
+class ChessTimeoutView(discord.ui.View):
+    """View cơ sở cho các bước đi cờ vua — tự dọn ván nếu quá lâu không ai thao tác,
+    tránh việc ván bị 'kẹt' và phải dùng /chess_reset thủ công."""
+    def __init__(self, cid, timeout=180):
+        super().__init__(timeout=timeout)
+        self.cid = cid
+
+    async def on_timeout(self):
+        if not games.chess_active(self.cid):
+            return
+        games.chess_end(self.cid)
+        if self.message:
+            try:
+                await self.message.edit(content="⌛ Ván cờ đã tự hủy do quá lâu không có nước đi.", view=None)
+            except discord.HTTPException:
+                pass
+
+
+class ChessFromView(ChessTimeoutView):
     """Bước 1: chọn quân muốn đi"""
     def __init__(self, cid):
-        super().__init__(timeout=180)
-        self.cid = cid
+        super().__init__(cid, timeout=180)
         options = games.chess_from_options(cid)[:25]
         select = discord.ui.Select(
             placeholder="♟️ Chọn quân muốn đi...",
@@ -353,18 +369,18 @@ class ChessFromView(discord.ui.View):
         _add_chess_action_buttons(self, cid)
 
     async def on_select(self, interaction: discord.Interaction):
-        if interaction.user.id != _chess_current_player_id(self.cid):
-            await interaction.response.send_message("❌ Chưa đến lượt bạn!", ephemeral=True)
+        if await _deny_unless(interaction, interaction.user.id == _chess_current_player_id(self.cid), "❌ Chưa đến lượt bạn!"):
             return
         from_sq = interaction.data["values"][0]
-        await interaction.response.edit_message(view=ChessToView(self.cid, interaction.user.id, from_sq))
+        new_view = ChessToView(self.cid, interaction.user.id, from_sq)
+        await interaction.response.edit_message(view=new_view)
+        new_view.message = await interaction.original_response()
 
 
-class ChessToView(discord.ui.View):
+class ChessToView(ChessTimeoutView):
     """Bước 2: chọn ô muốn đi tới"""
     def __init__(self, cid, player_id, from_sq):
-        super().__init__(timeout=180)
-        self.cid = cid
+        super().__init__(cid, timeout=180)
         self.player_id = player_id
         self.from_sq = from_sq
         options = games.chess_to_options(cid, from_sq)[:25]
@@ -381,38 +397,49 @@ class ChessToView(discord.ui.View):
         _add_chess_action_buttons(self, cid)
 
     async def on_back(self, interaction: discord.Interaction):
-        if interaction.user.id != self.player_id:
-            await interaction.response.send_message("❌ Đây không phải ván của bạn!", ephemeral=True)
+        if await _deny_unless(interaction, interaction.user.id == self.player_id):
             return
-        await interaction.response.edit_message(view=ChessFromView(self.cid))
+        new_view = ChessFromView(self.cid)
+        await interaction.response.edit_message(view=new_view)
+        new_view.message = await interaction.original_response()
 
     async def on_select(self, interaction: discord.Interaction):
-        if interaction.user.id != self.player_id:
-            await interaction.response.send_message("❌ Đây không phải ván của bạn!", ephemeral=True)
+        if await _deny_unless(interaction, interaction.user.id == self.player_id):
             return
 
         to_sq = interaction.data["values"][0]
-        outcome = games.chess_make_move(self.cid, self.from_sq, to_sq)
+        ok, outcome, annotation = games.chess_make_move(self.cid, self.from_sq, to_sq)
+        if not ok:
+            await interaction.response.send_message("⚠️ Nước đi này không còn hợp lệ, hãy chọn lại!", ephemeral=True)
+            return
 
-        # Vs Bot: sau khi người đi xong, đến lượt bot đánh ngay
+        # Vs Bot: sau khi người đi xong, đến lượt bot đánh ngay.
+        # Nếu ván tiếp tục, nhãn hiển thị đổi sang nước bot vừa đi (đó mới là nước gần nhất).
         if outcome is None and not games.chess_is_pvp(self.cid):
-            outcome = games.chess_bot_move(self.cid)
+            outcome, bot_annotation = games.chess_bot_move(self.cid)
+            annotation = bot_annotation
 
         image = games.chess_board_image(self.cid)
         file = discord.File(image, filename="board.png")
+        annotation_line = MOVE_ANNOTATION_TEXT.get(annotation)
 
         if outcome is not None:
             names = _chess_display_names(self.cid)
             text = games.chess_outcome_text(self.cid, outcome, names)
+            if annotation_line:
+                text += f"\n\n{annotation_line}"
             games.chess_end(self.cid)
             embed = discord.Embed(description=text, color=0x2C3E50)
             embed.set_image(url="attachment://board.png")
             await interaction.response.edit_message(embed=embed, attachments=[file], view=None)
         else:
             extra = f"👉 Đến lượt <@{games.chess_current_turn_id(self.cid)}>!" if games.chess_is_pvp(self.cid) else None
+            if annotation_line:
+                extra = f"{extra}\n{annotation_line}" if extra else annotation_line
             embed = _chess_board_embed(self.cid, extra)
             new_view = ChessFromView(self.cid)
             await interaction.response.edit_message(embed=embed, attachments=[file], view=new_view)
+            new_view.message = await interaction.original_response()
 
 
 
@@ -427,7 +454,7 @@ async def ping_slash(interaction: discord.Interaction):
 async def about_slash(interaction: discord.Interaction):
     embed = discord.Embed(
         title="🤖 About Bot",
-        description="Bot mini-game vui nhộn cho server: đoán chữ, đoán cờ, đoán trái cây, cờ caro, cờ vua và bói vui.",
+        description="Bot mini-game vui nhộn cho server: đoán chữ, đoán cờ, cờ caro, cờ vua và bói vui.",
         color=0x5865F2,
     )
     embed.add_field(
@@ -435,13 +462,13 @@ async def about_slash(interaction: discord.Interaction):
         value=(
             "`/wordle` — đoán từ 5 chữ\n"
             "`/flag` — đoán cờ các nước\n"
-            "`/fruit` — đoán tên trái cây qua hình\n"
             "`/caro` — cờ caro vs bot\n"
             "`/chess` — cờ vua vs bot\n"
             "`/chess_invite @ai_đó` — mời PvP cờ vua\n"
             "`/chess_reset` — xóa ván cờ bị kẹt (nếu bot báo lỗi)\n"
             "`/whatuinto` — bói vui\n"
             "`/wiki <từ khóa>` — tra bách khoa toàn thư\n"
+            "`/randomimage` — lấy ngẫu nhiên 1 ảnh mà mọi người từng đăng trong server\n"
             "`/ping` — kiểm tra độ trễ"
         ),
         inline=False,
@@ -489,22 +516,6 @@ async def flag_slash(interaction: discord.Interaction):
     await interaction.response.send_message(embed=embed, view=view)
 
 
-@bot.tree.command(name="fruit", description="Đoán tên trái cây qua hình ảnh")
-async def fruit_slash(interaction: discord.Interaction):
-    cid = interaction.channel_id
-    if games.fruit_active(cid):
-        await interaction.response.send_message("⚠️ Đang có ván đoán trái cây chưa xong!", ephemeral=True)
-        return
-    url = games.fruit_start(cid)
-    embed = discord.Embed(
-        title=f"🍉 Đoán trái cây! (1/{games.ROUNDS_PER_GAME})",
-        description="Chat thẳng tên trái cây (tiếng Anh) để đoán!",
-        color=0xE8590C,
-    )
-    embed.set_image(url=url)
-    await interaction.response.send_message(embed=embed, view=EndGameView(cid, "fruit"))
-
-
 @bot.tree.command(name="whatuinto", description="Bói vui xem bạn 'thích' thể loại gì 👀")
 async def whatuinto_slash(interaction: discord.Interaction):
     label, caption, percent = games.whatuinto_roll()
@@ -540,8 +551,7 @@ class ChessDifficultyView(discord.ui.View):
         self.player_id = player_id
 
     async def _start(self, interaction, bot_elo):
-        if interaction.user.id != self.player_id:
-            await interaction.response.send_message("❌ Đây không phải ván của bạn!", ephemeral=True)
+        if await _deny_unless(interaction, interaction.user.id == self.player_id):
             return
         if games.chess_active(self.cid):
             await interaction.response.send_message("⚠️ Đang có ván cờ vua chưa xong trong kênh này!", ephemeral=True)
@@ -551,7 +561,9 @@ class ChessDifficultyView(discord.ui.View):
         image = games.chess_board_image(self.cid)
         file = discord.File(image, filename="board.png")
         embed = _chess_board_embed(self.cid, "Chọn **quân** rồi chọn **ô muốn đi tới** bằng menu bên dưới.")
-        await interaction.response.edit_message(content=None, embed=embed, attachments=[file], view=ChessFromView(self.cid))
+        new_view = ChessFromView(self.cid)
+        await interaction.response.edit_message(content=None, embed=embed, attachments=[file], view=new_view)
+        new_view.message = await interaction.original_response()
 
     @discord.ui.button(label="🟢 Dễ (800 Elo)", style=discord.ButtonStyle.success)
     async def easy(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -596,8 +608,7 @@ class ChessInviteView(discord.ui.View):
 
     @discord.ui.button(label="✅ Chấp nhận", style=discord.ButtonStyle.success)
     async def accept(self, interaction: discord.Interaction, button: discord.ui.Button):
-        if interaction.user.id != self.invitee_id:
-            await interaction.response.send_message("❌ Lời mời này không dành cho bạn!", ephemeral=True)
+        if await _deny_unless(interaction, interaction.user.id == self.invitee_id, "❌ Lời mời này không dành cho bạn!"):
             return
         if games.chess_get_invite(self.cid) is None:
             await interaction.response.send_message("❌ Lời mời đã hết hạn hoặc bị hủy.", ephemeral=True)
@@ -611,12 +622,13 @@ class ChessInviteView(discord.ui.View):
         image = games.chess_board_image(self.cid)
         file = discord.File(image, filename="board.png")
         embed = _chess_board_embed(self.cid, f"👉 Đến lượt <@{self.inviter_id}>!")
-        await interaction.response.edit_message(content=None, embed=embed, attachments=[file], view=ChessFromView(self.cid))
+        new_view = ChessFromView(self.cid)
+        await interaction.response.edit_message(content=None, embed=embed, attachments=[file], view=new_view)
+        new_view.message = await interaction.original_response()
 
     @discord.ui.button(label="❌ Từ chối", style=discord.ButtonStyle.danger)
     async def decline(self, interaction: discord.Interaction, button: discord.ui.Button):
-        if interaction.user.id != self.invitee_id:
-            await interaction.response.send_message("❌ Lời mời này không dành cho bạn!", ephemeral=True)
+        if await _deny_unless(interaction, interaction.user.id == self.invitee_id, "❌ Lời mời này không dành cho bạn!"):
             return
         games.chess_clear_invite(self.cid)
         await interaction.response.edit_message(content="❌ Đã từ chối lời mời chơi cờ vua.", embed=None, view=None)
@@ -646,6 +658,23 @@ async def chess_invite_slash(interaction: discord.Interaction, doi_thu: discord.
         ),
         view=view,
     )
+
+
+@bot.tree.command(name="randomimage", description="Lấy ngẫu nhiên 1 ảnh mà mọi người từng đăng trong server")
+async def randomimage_slash(interaction: discord.Interaction):
+    if interaction.guild is None:
+        await interaction.response.send_message("❌ Lệnh này chỉ dùng được trong server, không dùng được ở DM.", ephemeral=True)
+        return
+
+    url = games.random_image(interaction.guild_id)
+    if url is None:
+        await interaction.response.send_message("📭 Server này chưa thu thập được ảnh nào cả — hãy đăng vài tấm ảnh rồi thử lại!", ephemeral=True)
+        return
+
+    embed = discord.Embed(title="🎲 Ảnh ngẫu nhiên từ server", color=0x9B59B6)
+    embed.set_image(url=url)
+    embed.set_footer(text=f"Kho ảnh hiện có: {games.image_pool_size(interaction.guild_id)} ảnh")
+    await interaction.response.send_message(embed=embed)
 
 
 @bot.tree.command(name="wiki", description="Tra cứu bách khoa toàn thư (Wikipedia tiếng Việt)")
