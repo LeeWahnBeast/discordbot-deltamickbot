@@ -6,7 +6,7 @@ import json
 import chess  # pip install chess
 from PIL import Image, ImageDraw, ImageFont  # đã có sẵn vì bạn dùng PIL cho gen_smoke.py
 
-# ============ FOLK VALLEY RANKING (dùng chung cho flag & fruit) ============
+# ============ FOLK VALLEY RANKING (dùng chung cho flag) ============
 def folk_valley_rank(score, total=5):
     if score <= 1:
         return ("🐓 GÀ",
@@ -157,73 +157,6 @@ def flag_progress(cid):
 
 def flag_end(cid):
     _flag_games.pop(cid, None)
-
-
-# ============ ĐOÁN TRÁI CÂY ============
-# CHỈ lưu tên file Wikimedia — dựng URL qua Special:FilePath để luôn ra đúng ảnh
-# (URL thumb "upload.wikimedia.org/.../thumb/x/xx/..." cũ bị sai mã hash nên ảnh không hiện)
-FRUITS = {
-    "apple": "Red_Apple.jpg",
-    "banana": "Banana-Single.jpg",
-    "mango": "Mango_Alphonso.jpg",
-    "grape": "Table_grapes_on_white.jpg",
-    "orange": "Orange-Fruit-Pieces.jpg",
-    "watermelon": "Watermelon_cross_BNC.jpg",
-    "pineapple": "Pineapple_and_cross_section.jpg",
-    "strawberry": "PerfectStrawberry.jpg",
-    "pear": "Pears.jpg",
-    "peach": "Autumn_Red_peaches.jpg",
-    "kiwi": "Kiwi_aka.jpg",
-    "lemon": "Lemon.jpg",
-    "cherry": "Cherry_Stella444.jpg",
-    "coconut": "Kokosnuss.jpg",
-    "papaya": "Carica_papaya_fruits.jpg",
-}
-_fruit_games = {}  # {channel_id: {"round", "score", "fruit"}}
-
-
-def _fruit_image_url(filename):
-    return f"https://commons.wikimedia.org/wiki/Special:FilePath/{filename}?width=320"
-
-
-def fruit_active(cid):
-    return cid in _fruit_games
-
-
-def fruit_start(cid):
-    _fruit_games[cid] = {"round": 0, "score": 0, "fruit": None}
-    return fruit_next(cid)
-
-
-def fruit_next(cid):
-    game = _fruit_games[cid]
-    if game["round"] >= ROUNDS_PER_GAME:
-        return None
-    fruit = random.choice(list(FRUITS.keys()))
-    game["fruit"] = fruit
-    game["round"] += 1
-    return _fruit_image_url(FRUITS[fruit])
-
-
-def fruit_check(cid, guess):
-    game = _fruit_games[cid]
-    correct = guess.strip().lower() == game["fruit"]
-    if correct:
-        game["score"] += 1
-    return correct, game["round"] < ROUNDS_PER_GAME
-
-
-def fruit_answer(cid):
-    return _fruit_games[cid]["fruit"]
-
-
-def fruit_progress(cid):
-    g = _fruit_games[cid]
-    return g["round"], ROUNDS_PER_GAME, g["score"]
-
-
-def fruit_end(cid):
-    _fruit_games.pop(cid, None)
 
 
 # ============ /whatuinto — bói vui ngẫu nhiên ============
@@ -461,15 +394,6 @@ def apply_hint_penalty(user_id):
     return new_elo
 
 
-def chess_resign(cid, resigner_id):
-    """Người chơi đầu hàng. Trả về id người thắng (None nếu là vs Bot và bot 'thắng')."""
-    game = _chess_games[cid]
-    if game["is_pvp"]:
-        winner_id = game["black_id"] if resigner_id == game["white_id"] else game["white_id"]
-        return winner_id
-    return None  # vs bot: không có id thắng thật, xử lý riêng ở caller
-
-
 PIECE_NAME_VN = {
     chess.PAWN: "Tốt", chess.KNIGHT: "Mã", chess.BISHOP: "Tượng",
     chess.ROOK: "Xe", chess.QUEEN: "Hậu", chess.KING: "Vua",
@@ -501,29 +425,41 @@ def chess_to_options(cid, from_square_name):
             continue  # bỏ phong cấp khác Hậu để danh sách gọn
         to_name = chess.square_name(move.to_square)
         captured = board.piece_at(move.to_square)
-        label = f"{to_name} (ăn {PIECE_NAME_VN[captured.piece_type]})" if captured else to_name
+        if captured:
+            label = f"{to_name} (ăn {PIECE_NAME_VN[captured.piece_type]})"
+        elif board.is_en_passant(move):
+            label = f"{to_name} (ăn Tốt qua đường)"
+        else:
+            label = to_name
         options.append((to_name, label))
     return options
 
 
 def chess_make_move(cid, from_square_name, to_square_name):
-    """Thực hiện nước đi được chọn từ dropdown. Trả về outcome hoặc None nếu ván tiếp tục."""
+    """Thực hiện nước đi được chọn từ dropdown.
+    Trả về (True, outcome, annotation) nếu đi thành công (outcome=None nếu ván tiếp tục,
+    annotation là '!!'/'??'/None), hoặc (False, None, None) nếu nước đi không còn hợp lệ
+    (VD: bàn cờ đã đổi giữa lúc chọn)."""
     game = _chess_games[cid]
     board = game["board"]
     from_sq = chess.parse_square(from_square_name)
     to_sq = chess.parse_square(to_square_name)
-    move = None
-    for m in board.legal_moves:
-        if m.from_square == from_sq and m.to_square == to_sq:
-            if m.promotion and m.promotion != chess.QUEEN:
-                continue
-            move = m
-            break
+    move = next(
+        (m for m in board.legal_moves
+         if m.from_square == from_sq and m.to_square == to_sq
+         and not (m.promotion and m.promotion != chess.QUEEN)),
+        None,
+    )
     if move is None:
-        return None
+        return False, None, None
+
+    mover_color = board.turn
+    scored = _score_all_moves(board, mover_color)
+    annotation = _annotate_move(board, move, mover_color, scored)
+
     board.push(move)
     _touch(cid)
-    return board.outcome()
+    return True, board.outcome(claim_draw=True), annotation
 
 
 _SQUARE_PX = 60
@@ -645,37 +581,75 @@ def _material_score(board, color):
     return score
 
 
+# ============ CHẤM ĐIỂM NƯỚC ĐI (dùng chung cho bot chọn nước / gợi ý / gắn nhãn !! ??) ============
+# Chỉ đánh giá NÔNG 1 nước (vật chất + chiếu) — không đệ quy minimax sâu — để giữ
+# CPU cực thấp (phù hợp máy chủ 0.1 CPU / 256MB RAM). Mọi nơi cần "nước nào tốt nhất"
+# đều tái dùng CÙNG 1 lượt chấm điểm này thay vì tự lặp lại, vừa đỡ code vừa đỡ CPU.
+def _score_all_moves(board, color):
+    """Trả về [(move, điểm), ...] cho toàn bộ nước đi hợp lệ hiện tại, từ góc nhìn `color`."""
+    scored = []
+    for move in board.legal_moves:
+        board.push(move)
+        score = 1000 if board.is_checkmate() else _material_score(board, color) + (0.5 if board.is_check() else 0)
+        board.pop()
+        scored.append((move, score))
+    return scored
+
+
+BRILLIANT_MARGIN = 3   # hơn nước nhì ít nhất giá trị 1 Mã/Tượng -> "!!"
+BLUNDER_HANG_VALUE = 5  # sau khi đi, để hở Xe/Hậu cho đối phương ăn miễn phí -> "??"
+BLUNDER_MARGIN = 5      # bỏ lỡ phương án tốt hơn ít nhất giá trị 1 Xe -> "??"
+
+
+def _annotate_move(board, move, color, scored):
+    """Gắn nhãn !! (thiên tài) / ?? (ngớ ngẩn) cho nước vừa đi, hoặc None nếu là nước bình thường.
+    Tái dùng `scored` đã chấm sẵn (không chấm lại) + nhìn thêm ĐÚNG 1 nước để bắt lỗi thí quân
+    miễn phí — vẫn cực nhẹ CPU, không tìm kiếm đệ quy."""
+    played_score = next(s for m, s in scored if m == move)
+    if played_score >= 900:
+        return "!!"  # chiếu bí luôn là nước thiên tài
+
+    scores_desc = sorted((s for _, s in scored), reverse=True)
+    best_score = scores_desc[0]
+    second_score = scores_desc[1] if len(scores_desc) > 1 else best_score
+
+    if played_score >= best_score and best_score - second_score >= BRILLIANT_MARGIN and best_score > 0:
+        return "!!"
+
+    board.push(move)
+    hang = 0
+    if not board.is_game_over():
+        for reply in board.legal_moves:
+            captured = board.piece_at(reply.to_square)
+            if captured:
+                hang = max(hang, _PIECE_VALUES.get(captured.piece_type, 0))
+    board.pop()
+
+    if hang >= BLUNDER_HANG_VALUE or best_score - played_score >= BLUNDER_MARGIN:
+        return "??"
+    return None
+
+
 def chess_bot_move(cid):
     """Bot đi 1 nước — đánh giá nông (1 ply), rất nhẹ CPU. Độ khó điều chỉnh xác suất
     bot đi bừa thay vì đi nước tốt nhất (Dễ = hay đi bừa, Khó = luôn đi tốt nhất).
-    Trả về outcome hoặc None."""
+    Trả về (outcome, annotation) — annotation là '!!'/'??'/None."""
     game = _chess_games[cid]
     board = game["board"]
     bot_color = not game["player_color"]
     random_chance = BOT_LEVELS[game["bot_elo"]]["random_chance"]
 
-    legal_moves = list(board.legal_moves)
+    scored = _score_all_moves(board, bot_color)
+    best_score = max(s for _, s in scored)
+
     if random_chance > 0 and random.random() < random_chance:
-        board.push(random.choice(legal_moves))
-        return board.outcome()
+        move = random.choice([m for m, _ in scored])
+    else:
+        move = random.choice([m for m, s in scored if s == best_score])
 
-    best_score = None
-    best_moves = []
-    for move in legal_moves:
-        board.push(move)
-        if board.is_checkmate():
-            score = 1000
-        else:
-            score = _material_score(board, bot_color) + (0.5 if board.is_check() else 0)
-        board.pop()
-        if best_score is None or score > best_score:
-            best_score = score
-            best_moves = [move]
-        elif score == best_score:
-            best_moves.append(move)
-
-    board.push(random.choice(best_moves))
-    return board.outcome()
+    annotation = _annotate_move(board, move, bot_color, scored)
+    board.push(move)
+    return board.outcome(claim_draw=True), annotation
 
 
 def chess_outcome_text(cid, outcome, display_names=None):
@@ -769,28 +743,16 @@ def chess_resign_text(cid, resigner_id, display_names=None):
 
 
 def chess_hint(cid, hinter_id):
-    """Gợi ý nước đi tốt nhất theo đánh giá vật chất nông (dùng lại logic của bot).
+    """Gợi ý nước đi tốt nhất theo đánh giá vật chất nông (dùng chung _score_all_moves với bot).
     Trừ Elo người xin gợi ý. Trả về (text_gợi_ý, elo_mới)."""
     game = _chess_games[cid]
     board = game["board"]
     mover_color = board.turn
 
-    best_score = None
-    best_moves = []
-    for move in board.legal_moves:
-        board.push(move)
-        if board.is_checkmate():
-            score = 1000
-        else:
-            score = _material_score(board, mover_color) + (0.5 if board.is_check() else 0)
-        board.pop()
-        if best_score is None or score > best_score:
-            best_score = score
-            best_moves = [move]
-        elif score == best_score:
-            best_moves.append(move)
+    scored = _score_all_moves(board, mover_color)
+    best_score = max(s for _, s in scored)
+    move = random.choice([m for m, s in scored if s == best_score])
 
-    move = random.choice(best_moves)
     piece = board.piece_at(move.from_square)
     piece_name = PIECE_NAME_VN[piece.piece_type]
     from_sq = chess.square_name(move.from_square)
@@ -883,3 +845,39 @@ def wiki_lookup(keyword):
     except Exception as e:
         print(f"[wiki] Lỗi khi tra '{keyword}': {type(e).__name__}: {e}")
         return None
+
+
+# ============ THU THẬP ẢNH CHAT (dùng cho /randomimage) ============
+# Mỗi khi ai đó gửi ảnh trong server, lưu lại URL. Gom theo server (guild),
+# không theo kênh, để /randomimage có thể trả về ảnh từ bất kỳ kênh nào.
+MAX_IMAGES_PER_GUILD = 500  # giới hạn để không phình bộ nhớ vô hạn
+_IMAGE_EXTENSIONS = (".png", ".jpg", ".jpeg", ".gif", ".webp")
+_guild_images = {}  # {guild_id: [url, url, ...]}
+
+
+def _is_image_attachment(attachment):
+    if attachment.content_type and attachment.content_type.startswith("image/"):
+        return True
+    return attachment.filename.lower().endswith(_IMAGE_EXTENSIONS)
+
+
+def collect_images(guild_id, attachments):
+    """Lưu URL ảnh đính kèm của 1 tin nhắn vào kho ảnh của server. Bỏ qua nếu không có ảnh nào."""
+    urls = [a.url for a in attachments if _is_image_attachment(a)]
+    if not urls:
+        return
+    pool = _guild_images.setdefault(guild_id, [])
+    pool.extend(urls)
+    overflow = len(pool) - MAX_IMAGES_PER_GUILD
+    if overflow > 0:
+        del pool[:overflow]  # bỏ ảnh cũ nhất khi vượt giới hạn
+
+
+def random_image(guild_id):
+    """Trả về 1 URL ảnh ngẫu nhiên đã thu thập trong server, hoặc None nếu chưa có ảnh nào."""
+    pool = _guild_images.get(guild_id)
+    return random.choice(pool) if pool else None
+
+
+def image_pool_size(guild_id):
+    return len(_guild_images.get(guild_id, []))
