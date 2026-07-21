@@ -533,6 +533,39 @@ async def caro_slash(interaction: discord.Interaction):
     )
 
 
+class ChessDifficultyView(discord.ui.View):
+    def __init__(self, cid, player_id):
+        super().__init__(timeout=30)
+        self.cid = cid
+        self.player_id = player_id
+
+    async def _start(self, interaction, bot_elo):
+        if interaction.user.id != self.player_id:
+            await interaction.response.send_message("❌ Đây không phải ván của bạn!", ephemeral=True)
+            return
+        if games.chess_active(self.cid):
+            await interaction.response.send_message("⚠️ Đang có ván cờ vua chưa xong trong kênh này!", ephemeral=True)
+            return
+
+        games.chess_start(self.cid, self.player_id, bot_elo)
+        image = games.chess_board_image(self.cid)
+        file = discord.File(image, filename="board.png")
+        embed = _chess_board_embed(self.cid, "Chọn **quân** rồi chọn **ô muốn đi tới** bằng menu bên dưới.")
+        await interaction.response.edit_message(content=None, embed=embed, attachments=[file], view=ChessFromView(self.cid))
+
+    @discord.ui.button(label="🟢 Dễ (800 Elo)", style=discord.ButtonStyle.success)
+    async def easy(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self._start(interaction, 800)
+
+    @discord.ui.button(label="🟡 Vừa (1200 Elo)", style=discord.ButtonStyle.primary)
+    async def medium(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self._start(interaction, 1200)
+
+    @discord.ui.button(label="🔴 Khó (1600 Elo)", style=discord.ButtonStyle.danger)
+    async def hard(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self._start(interaction, 1600)
+
+
 @bot.tree.command(name="chess", description="Chơi cờ vua với bot (bạn cầm quân Trắng)")
 async def chess_slash(interaction: discord.Interaction):
     cid = interaction.channel_id
@@ -540,11 +573,8 @@ async def chess_slash(interaction: discord.Interaction):
         await interaction.response.send_message("⚠️ Đang có ván cờ vua chưa xong trong kênh này!", ephemeral=True)
         return
 
-    games.chess_start(cid, interaction.user.id)
-    image = games.chess_board_image(cid)
-    file = discord.File(image, filename="board.png")
-    embed = _chess_board_embed(cid, "Chọn **quân** rồi chọn **ô muốn đi tới** bằng menu bên dưới.")
-    await interaction.response.send_message(embed=embed, file=file, view=ChessFromView(cid))
+    view = ChessDifficultyView(cid, interaction.user.id)
+    await interaction.response.send_message("♟️ Chọn độ khó cho bot:", view=view)
 
 
 @bot.tree.command(name="chess_reset", description="Xóa cưỡng bức trạng thái ván cờ bị kẹt trong kênh này")
