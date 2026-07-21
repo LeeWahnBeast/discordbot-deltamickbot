@@ -355,7 +355,28 @@ BOT_LEVELS = {
     1600: {"label": "🔴 Khó", "random_chance": 0.0},
 }
 
-_user_elo = {}  # {user_id: elo}
+ELO_FILE = "chess_elo.json"
+
+
+def _load_elo():
+    """Đọc Elo đã lưu từ file, tránh mất sạch khi bot restart (Render free tier hay bị sleep)."""
+    try:
+        with open(ELO_FILE, "r", encoding="utf-8") as f:
+            raw = json.load(f)
+        return {int(k): v for k, v in raw.items()}
+    except (FileNotFoundError, json.JSONDecodeError):
+        return {}
+
+
+def _save_elo():
+    try:
+        with open(ELO_FILE, "w", encoding="utf-8") as f:
+            json.dump(_user_elo, f)
+    except OSError as e:
+        print(f"[chess] Lỗi lưu Elo ra file: {e!r}")
+
+
+_user_elo = _load_elo()  # {user_id: elo}
 
 
 def get_elo(user_id):
@@ -382,6 +403,7 @@ def update_elo(id_a, elo_a, id_b, elo_b, score_a):
         _user_elo[id_a] = new_a
     if id_b is not None:
         _user_elo[id_b] = new_b
+    _save_elo()
 
     return new_a, new_b, delta_a, delta_b
 
@@ -391,6 +413,7 @@ def apply_hint_penalty(user_id):
     current = get_elo(user_id)
     new_elo = max(100, current - HINT_ELO_PENALTY)
     _user_elo[user_id] = new_elo
+    _save_elo()
     return new_elo
 
 
