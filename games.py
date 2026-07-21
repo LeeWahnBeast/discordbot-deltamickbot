@@ -525,17 +525,20 @@ WIKI_SUMMARY_MAX = 700  # ký tự, tránh embed quá dài
 def wiki_lookup(keyword):
     """Tra cứu tóm tắt bài viết trên Wikipedia tiếng Việt.
     Trả về (tiêu_đề, tóm_tắt, url_ảnh_hoặc_None, url_bài_viết) hoặc None nếu không tìm thấy."""
+    headers = {"User-Agent": "TornadoAddonBot/1.0 (Discord bot; contact: n/a)"}
     try:
         # Bước 1: tìm bài viết khớp nhất với từ khóa
         search_params = urllib.parse.urlencode({
             "action": "query", "list": "search", "srsearch": keyword,
             "format": "json", "srlimit": 1,
         })
-        with urllib.request.urlopen(f"{WIKI_API}?{search_params}", timeout=6) as resp:
+        req = urllib.request.Request(f"{WIKI_API}?{search_params}", headers=headers)
+        with urllib.request.urlopen(req, timeout=8) as resp:
             search_data = json.loads(resp.read())
 
         results = search_data.get("query", {}).get("search", [])
         if not results:
+            print(f"[wiki] Không có kết quả search cho: {keyword}")
             return None
         title = results[0]["title"]
 
@@ -545,13 +548,15 @@ def wiki_lookup(keyword):
             "exintro": 1, "explaintext": 1, "piprop": "thumbnail",
             "pithumbsize": 400, "titles": title, "format": "json",
         })
-        with urllib.request.urlopen(f"{WIKI_API}?{extract_params}", timeout=6) as resp:
+        req2 = urllib.request.Request(f"{WIKI_API}?{extract_params}", headers=headers)
+        with urllib.request.urlopen(req2, timeout=8) as resp:
             extract_data = json.loads(resp.read())
 
         pages = extract_data.get("query", {}).get("pages", {})
         page = next(iter(pages.values()))
         summary = page.get("extract", "").strip()
         if not summary:
+            print(f"[wiki] Bài '{title}' không có extract")
             return None
         if len(summary) > WIKI_SUMMARY_MAX:
             summary = summary[:WIKI_SUMMARY_MAX].rsplit(" ", 1)[0] + "..."
@@ -559,5 +564,6 @@ def wiki_lookup(keyword):
         thumbnail = page.get("thumbnail", {}).get("source")
         article_url = f"https://vi.wikipedia.org/wiki/{urllib.parse.quote(title.replace(' ', '_'))}"
         return title, summary, thumbnail, article_url
-    except Exception:
+    except Exception as e:
+        print(f"[wiki] Lỗi khi tra '{keyword}': {type(e).__name__}: {e}")
         return None
