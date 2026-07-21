@@ -51,10 +51,6 @@ async def on_message(message):
             await _handle_round(message, content, "fruit", 0xE8590C, "🍉")
             return
 
-        if games.chess_active(cid):
-            await _handle_chess_move(message, content)
-            return
-
     await bot.process_commands(message)
 
 
@@ -97,30 +93,6 @@ async def _handle_round(message, guess_text, kind, color, icon):
         embed.add_field(name="Xếp loại", value=f"## {tier}")
         embed.set_footer(text="Folk Valley thì thầm: hẹn gặp lại ở vòng đoán sau...")
         await message.channel.send(embed=embed)
-
-
-async def _handle_chess_move(message, content):
-    """Xử lý 1 nước đi cờ vua gõ qua chat (chỉ người chơi ván đó mới được đánh)"""
-    cid = message.channel.id
-    if message.author.id != games.chess_player_id(cid):
-        return
-
-    valid, outcome = games.chess_player_move(cid, content)
-    if not valid:
-        return  # không phải nước đi hợp lệ -> coi như chat thường, bỏ qua
-
-    if outcome is None:
-        outcome = games.chess_bot_move(cid)
-
-    board_text = games.chess_render(cid)
-
-    if outcome is not None:
-        text = games.chess_outcome_text(cid, outcome)
-        games.chess_end(cid)
-        await message.channel.send(f"```\n{board_text}\n```\n{text}")
-    else:
-        embed = discord.Embed(description=f"```\n{board_text}\n```", color=0x2C3E50)
-        await message.channel.send(embed=embed, view=EndGameView(cid, "chess"))
 
 
 # ============ NÚT "🛑 Kết thúc" DÙNG CHUNG CHO MỌI GAME ============
@@ -296,6 +268,81 @@ def _ttt_result_text(result, user):
         return "🤝 Hòa! Cả hai đều chơi khá lắm."
 
 
+# ============ UI CỜ VUA (chọn quân + chọn ô bằng dropdown, không cần gõ ký hiệu) ============
+class ChessFromView(discord.ui.View):
+    """Bước 1: chọn quân muốn đi"""
+    def __init__(self, cid, player_id):
+        super().__init__(timeout=180)
+        self.cid = cid
+        self.player_id = player_id
+        options = games.chess_from_options(cid)[:25]
+        select = discord.ui.Select(
+            placeholder="♟️ Chọn quân muốn đi...",
+            options=[discord.SelectOption(label=label, value=val) for val, label in options],
+        )
+        select.callback = self.on_select
+        self.add_item(select)
+        self.add_item(make_end_button(cid, "chess"))
+
+    async def on_select(self, interaction: discord.Interaction):
+        if interaction.user.id != self.player_id:
+            await interaction.response.send_message("❌ Đây không phải ván của bạn!", ephemeral=True)
+            return
+        from_sq = interaction.data["values"][0]
+        await interaction.response.edit_message(view=ChessToView(self.cid, self.player_id, from_sq))
+
+
+class ChessToView(discord.ui.View):
+    """Bước 2: chọn ô muốn đi tới"""
+    def __init__(self, cid, player_id, from_sq):
+        super().__init__(timeout=180)
+        self.cid = cid
+        self.player_id = player_id
+        self.from_sq = from_sq
+        options = games.chess_to_options(cid, from_sq)[:25]
+        select = discord.ui.Select(
+            placeholder=f"👉 Đi quân ở {from_sq} đến đâu?",
+            options=[discord.SelectOption(label=label, value=val) for val, label in options],
+        )
+        select.callback = self.on_select
+        self.add_item(select)
+        back = discord.ui.Button(label="🔙 Chọn lại", style=discord.ButtonStyle.secondary)
+        back.callback = self.on_back
+        self.add_item(back)
+        self.add_item(make_end_button(cid, "chess"))
+
+    async def on_back(self, interaction: discord.Interaction):
+        if interaction.user.id != self.player_id:
+            await interaction.response.send_message("❌ Đây không phải ván của bạn!", ephemeral=True)
+            return
+        await interaction.response.edit_message(view=ChessFromView(self.cid, self.player_id))
+
+    async def on_select(self, interaction: discord.Interaction):
+        if interaction.user.id != self.player_id:
+            await interaction.response.send_message("❌ Đây không phải ván của bạn!", ephemeral=True)
+            return
+
+        to_sq = interaction.data["values"][0]
+        outcome = games.chess_make_move(self.cid, self.from_sq, to_sq)
+        if outcome is None:
+            outcome = games.chess_bot_move(self.cid)
+
+        image = games.chess_board_image(self.cid)
+        file = discord.File(image, filename="board.png")
+
+        if outcome is not None:
+            text = games.chess_outcome_text(self.cid, outcome)
+            games.chess_end(self.cid)
+            embed = discord.Embed(description=text, color=0x2C3E50)
+            embed.set_image(url="attachment://board.png")
+            await interaction.response.edit_message(embed=embed, attachments=[file], view=None)
+        else:
+            embed = discord.Embed(color=0x2C3E50)
+            embed.set_image(url="attachment://board.png")
+            new_view = ChessFromView(self.cid, self.player_id)
+            await interaction.response.edit_message(embed=embed, attachments=[file], view=new_view)
+
+
 # ============ SLASH COMMANDS ============
 @bot.tree.command(name="ping", description="Kiểm tra độ trễ của bot")
 async def ping_slash(interaction: discord.Interaction):
@@ -417,16 +464,15 @@ async def chess_slash(interaction: discord.Interaction):
         return
 
     games.chess_start(cid, interaction.user.id)
-    board_text = games.chess_render(cid)
+    image = games.chess_board_image(cid)
+    file = discord.File(image, filename="board.png")
     embed = discord.Embed(
         title="♟️ Cờ vua — bạn cầm Trắng, đi trước!",
-        description=(
-            f"```\n{board_text}\n```\n"
-            "Gõ nước đi bằng SAN (vd: `e4`, `Nf3`) hoặc UCI (vd: `e2e4`) để đánh."
-        ),
+        description="Chọn **quân** rồi chọn **ô muốn đi tới** bằng menu bên dưới, không cần gõ chữ.",
         color=0x2C3E50,
     )
-    await interaction.response.send_message(embed=embed, view=EndGameView(cid, "chess"))
+    embed.set_image(url="attachment://board.png")
+    await interaction.response.send_message(embed=embed, file=file, view=ChessFromView(cid, interaction.user.id))
 
 
 # Khởi chạy web server để tránh bị Render tắt
