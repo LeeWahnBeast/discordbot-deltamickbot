@@ -383,6 +383,60 @@ def chess_player_id(cid):
     return _chess_games[cid]["player_id"]
 
 
+# ============ HỆ THỐNG ELO (giống chess.com) ============
+DEFAULT_ELO = 800
+BOT_ELO = 1200  # Elo cố định của bot AI (đánh giá nông 1 nước, ngang trình độ mới chơi)
+K_FACTOR = 32
+HINT_ELO_PENALTY = 100
+
+_user_elo = {}  # {user_id: elo}
+
+
+def get_elo(user_id):
+    return _user_elo.get(user_id, DEFAULT_ELO)
+
+
+def _expected_score(elo_a, elo_b):
+    return 1 / (1 + 10 ** ((elo_b - elo_a) / 400))
+
+
+def update_elo(id_a, elo_a, id_b, elo_b, score_a):
+    """score_a: 1 = A thắng, 0.5 = hòa, 0 = A thua. Trả về (elo_a_mới, elo_b_mới, thay_đổi_a, thay_đổi_b)"""
+    expected_a = _expected_score(elo_a, elo_b)
+    expected_b = 1 - expected_a
+    score_b = 1 - score_a
+
+    delta_a = round(K_FACTOR * (score_a - expected_a))
+    delta_b = round(K_FACTOR * (score_b - expected_b))
+
+    new_a = max(100, elo_a + delta_a)
+    new_b = max(100, elo_b + delta_b)
+
+    if id_a is not None:
+        _user_elo[id_a] = new_a
+    if id_b is not None:
+        _user_elo[id_b] = new_b
+
+    return new_a, new_b, delta_a, delta_b
+
+
+def apply_hint_penalty(user_id):
+    """Trừ Elo khi dùng gợi ý. Trả về Elo mới."""
+    current = get_elo(user_id)
+    new_elo = max(100, current - HINT_ELO_PENALTY)
+    _user_elo[user_id] = new_elo
+    return new_elo
+
+
+def chess_resign(cid, resigner_id):
+    """Người chơi đầu hàng. Trả về id người thắng (None nếu là vs Bot và bot 'thắng')."""
+    game = _chess_games[cid]
+    if game["is_pvp"]:
+        winner_id = game["black_id"] if resigner_id == game["white_id"] else game["white_id"]
+        return winner_id
+    return None  # vs bot: không có id thắng thật, xử lý riêng ở caller
+
+
 PIECE_NAME_VN = {
     chess.PAWN: "Tốt", chess.KNIGHT: "Mã", chess.BISHOP: "Tượng",
     chess.ROOK: "Xe", chess.QUEEN: "Hậu", chess.KING: "Vua",
@@ -444,37 +498,36 @@ _LIGHT = (240, 217, 181)
 _DARK = (181, 136, 99)
 
 # Bộ ảnh quân cờ "Cburnett" (chuẩn Lichess/Wikipedia dùng, giấy phép GPL/CC-BY-SA — dùng tự do)
-_PIECE_IMAGE_URLS = {
-    (chess.PAWN, True): "https://upload.wikimedia.org/wikipedia/commons/4/45/Chess_plt45.svg",
-    (chess.KNIGHT, True): "https://upload.wikimedia.org/wikipedia/commons/7/70/Chess_nlt45.svg",
-    (chess.BISHOP, True): "https://upload.wikimedia.org/wikipedia/commons/b/b1/Chess_blt45.svg",
-    (chess.ROOK, True): "https://upload.wikimedia.org/wikipedia/commons/7/72/Chess_rlt45.svg",
-    (chess.QUEEN, True): "https://upload.wikimedia.org/wikipedia/commons/1/15/Chess_qlt45.svg",
-    (chess.KING, True): "https://upload.wikimedia.org/wikipedia/commons/4/42/Chess_klt45.svg",
-    (chess.PAWN, False): "https://upload.wikimedia.org/wikipedia/commons/c/c7/Chess_pdt45.svg",
-    (chess.KNIGHT, False): "https://upload.wikimedia.org/wikipedia/commons/e/ef/Chess_ndt45.svg",
-    (chess.BISHOP, False): "https://upload.wikimedia.org/wikipedia/commons/9/98/Chess_bdt45.svg",
-    (chess.ROOK, False): "https://upload.wikimedia.org/wikipedia/commons/f/ff/Chess_rdt45.svg",
-    (chess.QUEEN, False): "https://upload.wikimedia.org/wikipedia/commons/4/47/Chess_qdt45.svg",
-    (chess.KING, False): "https://upload.wikimedia.org/wikipedia/commons/f/f0/Chess_kdt45.svg",
+# Chỉ lưu TÊN FILE — dựng URL qua Special:FilePath để Wikimedia tự tìm đúng ảnh,
+# tránh lỗi đoán sai hash thư mục thumbnail (nguyên nhân quân Trắng trước đây bị lỗi không hiện ảnh).
+_PIECE_FILENAMES = {
+    (chess.PAWN, True): "Chess_plt45.svg",
+    (chess.KNIGHT, True): "Chess_nlt45.svg",
+    (chess.BISHOP, True): "Chess_blt45.svg",
+    (chess.ROOK, True): "Chess_rlt45.svg",
+    (chess.QUEEN, True): "Chess_qlt45.svg",
+    (chess.KING, True): "Chess_klt45.svg",
+    (chess.PAWN, False): "Chess_pdt45.svg",
+    (chess.KNIGHT, False): "Chess_ndt45.svg",
+    (chess.BISHOP, False): "Chess_bdt45.svg",
+    (chess.ROOK, False): "Chess_rdt45.svg",
+    (chess.QUEEN, False): "Chess_qdt45.svg",
+    (chess.KING, False): "Chess_kdt45.svg",
 }
 
 _piece_image_cache = {}  # {(piece_type, color): PIL.Image} — tải 1 lần, dùng lại mãi
 
 
 def _get_piece_image(piece_type, color):
-    """Tải & cache ảnh quân cờ PNG (chuyển từ SVG qua API render của Wikimedia).
-    Chỉ tải mạng lần đầu tiên cho mỗi loại quân; các lần sau lấy từ RAM cache."""
+    """Tải & cache ảnh quân cờ PNG qua Wikimedia Special:FilePath (luôn ra đúng ảnh,
+    không phụ thuộc việc đoán đúng hash thư mục thumbnail). Chỉ tải mạng lần đầu
+    tiên cho mỗi loại quân; các lần sau lấy từ RAM cache."""
     key = (piece_type, color)
     if key in _piece_image_cache:
         return _piece_image_cache[key]
 
-    svg_url = _PIECE_IMAGE_URLS[key]
-    # Dùng dịch vụ render PNG của Wikimedia thay vì tự parse SVG (nhẹ CPU hơn nhiều)
-    png_url = svg_url.replace(
-        "upload.wikimedia.org/wikipedia/commons/",
-        "upload.wikimedia.org/wikipedia/commons/thumb/",
-    ) + f"/{_SQUARE_PX}px-{svg_url.rsplit('/', 1)[-1].rsplit('.', 1)[0]}.png"
+    filename = _PIECE_FILENAMES[key]
+    png_url = f"https://commons.wikimedia.org/wiki/Special:FilePath/{filename}?width={_SQUARE_PX * 2}"
 
     try:
         req = urllib.request.Request(png_url, headers={"User-Agent": "DiscordChessBot/1.0"})
@@ -581,19 +634,141 @@ def chess_bot_move(cid):
     return board.outcome()
 
 
-def chess_outcome_text(cid, outcome, mentions=None):
-    """mentions: dict {True: white_mention, False: black_mention} — chỉ cần cho PvP"""
+def chess_outcome_text(cid, outcome, display_names=None):
+    """display_names: dict {True: tên_trắng, False: tên_đen} — chỉ cần cho PvP.
+    Trả về text kết quả kèm thay đổi Elo."""
     game = _chess_games[cid]
-    if outcome.winner is None:
-        return "🤝 Hòa!"
 
     if game["is_pvp"]:
-        winner_mention = mentions[outcome.winner]
-        return f"🎉 {winner_mention} thắng! Chiếu bí!"
+        white_id, black_id = game["white_id"], game["black_id"]
+        white_elo, black_elo = get_elo(white_id), get_elo(black_id)
 
+        if outcome.winner is None:
+            score_white = 0.5
+        elif outcome.winner == chess.WHITE:
+            score_white = 1
+        else:
+            score_white = 0
+
+        new_white, new_black, d_white, d_black = update_elo(
+            white_id, white_elo, black_id, black_elo, score_white
+        )
+
+        white_name = display_names[True] if display_names else f"<@{white_id}>"
+        black_name = display_names[False] if display_names else f"<@{black_id}>"
+        sign_w = f"+{d_white}" if d_white >= 0 else str(d_white)
+        sign_b = f"+{d_black}" if d_black >= 0 else str(d_black)
+
+        if outcome.winner is None:
+            result_line = "🤝 Hòa!"
+        else:
+            winner_name = white_name if outcome.winner == chess.WHITE else black_name
+            result_line = f"🎉 {winner_name} thắng! Chiếu bí!"
+
+        return (
+            f"{result_line}\n\n"
+            f"⚪ {white_name}: {new_white} Elo ({sign_w})\n"
+            f"⚫ {black_name}: {new_black} Elo ({sign_b})"
+        )
+
+    # --- vs Bot ---
+    player_id = game["player_id"]
+    player_elo = get_elo(player_id)
     player_color = game["player_color"]
-    won = outcome.winner == player_color
-    return "🎉 Bạn thắng! Bot chịu thua." if won else "🤖 Bot chiếu bí! Bạn thua rồi."
+
+    if outcome.winner is None:
+        score_player = 0.5
+    else:
+        score_player = 1 if outcome.winner == player_color else 0
+
+    new_player_elo, _, d_player, _ = update_elo(player_id, player_elo, None, BOT_ELO, score_player)
+    sign = f"+{d_player}" if d_player >= 0 else str(d_player)
+
+    if outcome.winner is None:
+        result_line = "🤝 Hòa!"
+    elif score_player == 1:
+        result_line = "🎉 Bạn thắng! Bot chịu thua."
+    else:
+        result_line = "🤖 Bot chiếu bí! Bạn thua rồi."
+
+    return f"{result_line}\n\nElo của bạn: {new_player_elo} ({sign})"
+
+
+def chess_resign_text(cid, resigner_id, display_names=None):
+    """Xử lý đầu hàng — cập nhật Elo tương tự thua ván, trả về text hiển thị."""
+    game = _chess_games[cid]
+
+    if game["is_pvp"]:
+        white_id, black_id = game["white_id"], game["black_id"]
+        white_elo, black_elo = get_elo(white_id), get_elo(black_id)
+        score_white = 0 if resigner_id == white_id else 1
+        new_white, new_black, d_white, d_black = update_elo(
+            white_id, white_elo, black_id, black_elo, score_white
+        )
+        white_name = display_names[True] if display_names else f"<@{white_id}>"
+        black_name = display_names[False] if display_names else f"<@{black_id}>"
+        resigner_name = white_name if resigner_id == white_id else black_name
+        winner_name = black_name if resigner_id == white_id else white_name
+        sign_w = f"+{d_white}" if d_white >= 0 else str(d_white)
+        sign_b = f"+{d_black}" if d_black >= 0 else str(d_black)
+        return (
+            f"🏳️ {resigner_name} đã đầu hàng! {winner_name} thắng!\n\n"
+            f"⚪ {white_name}: {new_white} Elo ({sign_w})\n"
+            f"⚫ {black_name}: {new_black} Elo ({sign_b})"
+        )
+
+    player_id = game["player_id"]
+    player_elo = get_elo(player_id)
+    new_player_elo, _, d_player, _ = update_elo(player_id, player_elo, None, BOT_ELO, 0)
+    sign = f"+{d_player}" if d_player >= 0 else str(d_player)
+    return f"🏳️ Bạn đã đầu hàng! Bot thắng.\n\nElo của bạn: {new_player_elo} ({sign})"
+
+
+def chess_hint(cid, hinter_id):
+    """Gợi ý nước đi tốt nhất theo đánh giá vật chất nông (dùng lại logic của bot).
+    Trừ Elo người xin gợi ý. Trả về (text_gợi_ý, elo_mới)."""
+    game = _chess_games[cid]
+    board = game["board"]
+    mover_color = board.turn
+
+    best_score = None
+    best_moves = []
+    for move in board.legal_moves:
+        board.push(move)
+        if board.is_checkmate():
+            score = 1000
+        else:
+            score = _material_score(board, mover_color) + (0.5 if board.is_check() else 0)
+        board.pop()
+        if best_score is None or score > best_score:
+            best_score = score
+            best_moves = [move]
+        elif score == best_score:
+            best_moves.append(move)
+
+    move = random.choice(best_moves)
+    piece = board.piece_at(move.from_square)
+    piece_name = PIECE_NAME_VN[piece.piece_type]
+    from_sq = chess.square_name(move.from_square)
+    to_sq = chess.square_name(move.to_square)
+
+    new_elo = apply_hint_penalty(hinter_id)
+    hint_text = f"💡 Gợi ý: đi **{piece_name} {from_sq} → {to_sq}**"
+    return hint_text, new_elo
+
+
+def chess_header_text(cid, display_names=None):
+    """Dòng hiển thị 2 người chơi + Elo, kiểu chess.com, đặt phía trên bàn cờ."""
+    game = _chess_games[cid]
+    if game["is_pvp"]:
+        white_id, black_id = game["white_id"], game["black_id"]
+        white_name = display_names[True] if display_names else f"<@{white_id}>"
+        black_name = display_names[False] if display_names else f"<@{black_id}>"
+        return f"⚪ **{white_name}** — {get_elo(white_id)} Elo\n⚫ **{black_name}** — {get_elo(black_id)} Elo"
+
+    player_id = game["player_id"]
+    player_name = display_names[True] if display_names else f"<@{player_id}>"
+    return f"⚪ **{player_name}** — {get_elo(player_id)} Elo\n⚫ **Bot** — {BOT_ELO} Elo"
 
 
 # ============ MỜI ĐẤU CỜ VUA PvP ============
