@@ -439,6 +439,7 @@ async def about_slash(interaction: discord.Interaction):
             "`/caro` — cờ caro vs bot\n"
             "`/chess` — cờ vua vs bot\n"
             "`/chess_invite @ai_đó` — mời PvP cờ vua\n"
+            "`/chess_reset` — xóa ván cờ bị kẹt (nếu bot báo lỗi)\n"
             "`/whatuinto` — bói vui\n"
             "`/wiki <từ khóa>` — tra bách khoa toàn thư\n"
             "`/ping` — kiểm tra độ trễ"
@@ -544,6 +545,16 @@ async def chess_slash(interaction: discord.Interaction):
     file = discord.File(image, filename="board.png")
     embed = _chess_board_embed(cid, "Chọn **quân** rồi chọn **ô muốn đi tới** bằng menu bên dưới.")
     await interaction.response.send_message(embed=embed, file=file, view=ChessFromView(cid))
+
+
+@bot.tree.command(name="chess_reset", description="Xóa cưỡng bức trạng thái ván cờ bị kẹt trong kênh này")
+async def chess_reset_slash(interaction: discord.Interaction):
+    cid = interaction.channel_id
+    existed = games.chess_force_reset(cid)
+    if existed:
+        await interaction.response.send_message("🧹 Đã xóa trạng thái ván cờ cũ. Giờ có thể dùng `/chess` hoặc `/chess_invite` lại bình thường.")
+    else:
+        await interaction.response.send_message("ℹ️ Không có ván cờ nào được lưu trong kênh này để xóa.")
 
 
 class ChessInviteView(discord.ui.View):
