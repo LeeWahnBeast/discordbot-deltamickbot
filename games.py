@@ -1,5 +1,8 @@
 import random
 import io
+import urllib.request
+import urllib.parse
+import json
 import chess  # pip install chess
 from PIL import Image, ImageDraw, ImageFont  # đã có sẵn vì bạn dùng PIL cho gen_smoke.py
 
@@ -336,7 +339,7 @@ def ttt_bot_move(cid):
 # Dùng thư viện "chess" để quản lý luật + tính hợp lệ nước đi.
 # Bot chỉ đánh giá nông 1 nước (vật chất + chiếu) thay vì minimax đệ quy sâu,
 # để giữ CPU cực thấp — phù hợp máy chủ 0.1 CPU.
-_chess_games = {}  # {channel_id: {"board": chess.Board, "player_id": int, "player_color": bool}}
+_chess_games = {}  # {channel_id: {"board", "is_pvp", "player_id"/"white_id"+"black_id", "player_color"}}
 _PIECE_VALUES = {chess.PAWN: 1, chess.KNIGHT: 3, chess.BISHOP: 3, chess.ROOK: 5, chess.QUEEN: 9}
 
 
@@ -345,7 +348,30 @@ def chess_active(cid):
 
 
 def chess_start(cid, player_id):
-    _chess_games[cid] = {"board": chess.Board(), "player_id": player_id, "player_color": chess.WHITE}
+    """Bắt đầu ván vs Bot — người chơi luôn cầm Trắng"""
+    _chess_games[cid] = {
+        "board": chess.Board(), "is_pvp": False,
+        "player_id": player_id, "player_color": chess.WHITE,
+    }
+
+
+def chess_start_pvp(cid, white_id, black_id):
+    """Bắt đầu ván PvP giữa 2 người thật"""
+    _chess_games[cid] = {
+        "board": chess.Board(), "is_pvp": True,
+        "white_id": white_id, "black_id": black_id,
+    }
+
+
+def chess_is_pvp(cid):
+    return _chess_games[cid]["is_pvp"]
+
+
+def chess_current_turn_id(cid):
+    """Trả về user_id của người cần đi nước tiếp theo (chỉ dùng cho PvP)"""
+    game = _chess_games[cid]
+    board = game["board"]
+    return game["white_id"] if board.turn == chess.WHITE else game["black_id"]
 
 
 def chess_end(cid):
@@ -353,6 +379,7 @@ def chess_end(cid):
 
 
 def chess_player_id(cid):
+    """Chỉ dùng cho chế độ vs Bot"""
     return _chess_games[cid]["player_id"]
 
 
@@ -415,12 +442,54 @@ _SQUARE_PX = 60
 _BOARD_PX = _SQUARE_PX * 8
 _LIGHT = (240, 217, 181)
 _DARK = (181, 136, 99)
-_PIECE_LETTER = {chess.PAWN: "P", chess.KNIGHT: "N", chess.BISHOP: "B",
-                 chess.ROOK: "R", chess.QUEEN: "Q", chess.KING: "K"}
+
+# Bộ ảnh quân cờ "Cburnett" (chuẩn Lichess/Wikipedia dùng, giấy phép GPL/CC-BY-SA — dùng tự do)
+_PIECE_IMAGE_URLS = {
+    (chess.PAWN, True): "https://upload.wikimedia.org/wikipedia/commons/4/45/Chess_plt45.svg",
+    (chess.KNIGHT, True): "https://upload.wikimedia.org/wikipedia/commons/7/70/Chess_nlt45.svg",
+    (chess.BISHOP, True): "https://upload.wikimedia.org/wikipedia/commons/b/b1/Chess_blt45.svg",
+    (chess.ROOK, True): "https://upload.wikimedia.org/wikipedia/commons/7/72/Chess_rlt45.svg",
+    (chess.QUEEN, True): "https://upload.wikimedia.org/wikipedia/commons/1/15/Chess_qlt45.svg",
+    (chess.KING, True): "https://upload.wikimedia.org/wikipedia/commons/4/42/Chess_klt45.svg",
+    (chess.PAWN, False): "https://upload.wikimedia.org/wikipedia/commons/c/c7/Chess_pdt45.svg",
+    (chess.KNIGHT, False): "https://upload.wikimedia.org/wikipedia/commons/e/ef/Chess_ndt45.svg",
+    (chess.BISHOP, False): "https://upload.wikimedia.org/wikipedia/commons/9/98/Chess_bdt45.svg",
+    (chess.ROOK, False): "https://upload.wikimedia.org/wikipedia/commons/f/ff/Chess_rdt45.svg",
+    (chess.QUEEN, False): "https://upload.wikimedia.org/wikipedia/commons/4/47/Chess_qdt45.svg",
+    (chess.KING, False): "https://upload.wikimedia.org/wikipedia/commons/f/f0/Chess_kdt45.svg",
+}
+
+_piece_image_cache = {}  # {(piece_type, color): PIL.Image} — tải 1 lần, dùng lại mãi
+
+
+def _get_piece_image(piece_type, color):
+    """Tải & cache ảnh quân cờ PNG (chuyển từ SVG qua API render của Wikimedia).
+    Chỉ tải mạng lần đầu tiên cho mỗi loại quân; các lần sau lấy từ RAM cache."""
+    key = (piece_type, color)
+    if key in _piece_image_cache:
+        return _piece_image_cache[key]
+
+    svg_url = _PIECE_IMAGE_URLS[key]
+    # Dùng dịch vụ render PNG của Wikimedia thay vì tự parse SVG (nhẹ CPU hơn nhiều)
+    png_url = svg_url.replace(
+        "upload.wikimedia.org/wikipedia/commons/",
+        "upload.wikimedia.org/wikipedia/commons/thumb/",
+    ) + f"/{_SQUARE_PX}px-{svg_url.rsplit('/', 1)[-1].rsplit('.', 1)[0]}.png"
+
+    try:
+        req = urllib.request.Request(png_url, headers={"User-Agent": "DiscordChessBot/1.0"})
+        with urllib.request.urlopen(req, timeout=8) as resp:
+            img = Image.open(io.BytesIO(resp.read())).convert("RGBA")
+        img = img.resize((_SQUARE_PX, _SQUARE_PX), Image.LANCZOS)
+        _piece_image_cache[key] = img
+        return img
+    except Exception as e:
+        print(f"[chess] Không tải được ảnh quân cờ {key}: {e}")
+        _piece_image_cache[key] = None
+        return None
 
 
 def _chess_font(size):
-    """Cố dùng font hệ thống có sẵn, nếu không có thì rơi về font mặc định của PIL"""
     for path in ("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
                  "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"):
         try:
@@ -428,27 +497,34 @@ def _chess_font(size):
         except Exception:
             continue
     try:
-        return ImageFont.load_default(size=size)  # Pillow >= 10.1
+        return ImageFont.load_default(size=size)
     except TypeError:
         return ImageFont.load_default()
 
 
-def _draw_piece_icon(draw, cx, cy, piece, font):
-    """Vẽ quân cờ dạng 'token' tròn (nền trắng/đen + chữ) — trông giống icon hơn
-    chữ trần, và không phụ thuộc font unicode đặc biệt nào nên luôn hiện đúng."""
-    radius = _SQUARE_PX * 0.38
-    is_white = piece.color == chess.WHITE
-    fill = "#f5f5f5" if is_white else "#2b2b2b"
-    outline = "#2b2b2b" if is_white else "#f5f5f5"
-    text_fill = "#2b2b2b" if is_white else "#f5f5f5"
-    draw.ellipse([cx - radius, cy - radius, cx + radius, cy + radius], fill=fill, outline=outline, width=3)
-    draw.text((cx, cy), _PIECE_LETTER[piece.piece_type], font=font, fill=text_fill, anchor="mm")
+_PIECE_LETTER_FALLBACK = {chess.PAWN: "P", chess.KNIGHT: "N", chess.BISHOP: "B",
+                          chess.ROOK: "R", chess.QUEEN: "Q", chess.KING: "K"}
+
+
+def _draw_piece(img, draw, cx, cy, piece, font):
+    """Vẽ quân cờ bằng ảnh PNG thật; nếu tải ảnh lỗi thì rơi về icon chữ (không bao giờ crash)."""
+    piece_img = _get_piece_image(piece.piece_type, piece.color)
+    if piece_img is not None:
+        top_left = (int(cx - _SQUARE_PX / 2), int(cy - _SQUARE_PX / 2))
+        img.paste(piece_img, top_left, piece_img)
+    else:
+        radius = _SQUARE_PX * 0.38
+        is_white = piece.color == chess.WHITE
+        fill = "#f5f5f5" if is_white else "#2b2b2b"
+        outline = "#2b2b2b" if is_white else "#f5f5f5"
+        draw.ellipse([cx - radius, cy - radius, cx + radius, cy + radius], fill=fill, outline=outline, width=3)
+        draw.text((cx, cy), _PIECE_LETTER_FALLBACK[piece.piece_type], font=font, fill=outline, anchor="mm")
 
 
 def chess_board_image(cid):
-    """Vẽ bàn cờ ra ảnh PNG (nhẹ CPU: chỉ vẽ 64 ô + chữ, không dùng ảnh quân cờ tải mạng)"""
+    """Vẽ bàn cờ ra ảnh PNG dùng ảnh quân cờ thật (cache sẵn sau lần tải đầu)."""
     board = _chess_games[cid]["board"]
-    img = Image.new("RGB", (_BOARD_PX, _BOARD_PX + 24), "white")
+    img = Image.new("RGBA", (_BOARD_PX, _BOARD_PX + 24), "white")
     draw = ImageDraw.Draw(img)
     piece_font = _chess_font(28)
     coord_font = _chess_font(14)
@@ -461,13 +537,13 @@ def chess_board_image(cid):
             sq = chess.square(col, 7 - row)
             piece = board.piece_at(sq)
             if piece:
-                _draw_piece_icon(draw, x0 + _SQUARE_PX / 2, y0 + _SQUARE_PX / 2, piece, piece_font)
+                _draw_piece(img, draw, x0 + _SQUARE_PX / 2, y0 + _SQUARE_PX / 2, piece, piece_font)
 
     for col in range(8):
         draw.text((col * _SQUARE_PX + 4, _BOARD_PX + 4), chr(ord('a') + col), font=coord_font, fill="black")
 
     buf = io.BytesIO()
-    img.save(buf, format="PNG")
+    img.convert("RGB").save(buf, format="PNG")
     buf.seek(0)
     return buf
 
@@ -505,19 +581,38 @@ def chess_bot_move(cid):
     return board.outcome()
 
 
-def chess_outcome_text(cid, outcome):
-    player_color = _chess_games[cid]["player_color"]
+def chess_outcome_text(cid, outcome, mentions=None):
+    """mentions: dict {True: white_mention, False: black_mention} — chỉ cần cho PvP"""
+    game = _chess_games[cid]
     if outcome.winner is None:
         return "🤝 Hòa!"
+
+    if game["is_pvp"]:
+        winner_mention = mentions[outcome.winner]
+        return f"🎉 {winner_mention} thắng! Chiếu bí!"
+
+    player_color = game["player_color"]
     won = outcome.winner == player_color
     return "🎉 Bạn thắng! Bot chịu thua." if won else "🤖 Bot chiếu bí! Bạn thua rồi."
 
 
-# ============ /wiki — bách khoa toàn thư (Wikipedia tiếng Việt) ============
-import urllib.request
-import urllib.parse
-import json
+# ============ MỜI ĐẤU CỜ VUA PvP ============
+_chess_invites = {}  # {channel_id: {"inviter_id": int, "invitee_id": int}}
 
+
+def chess_create_invite(cid, inviter_id, invitee_id):
+    _chess_invites[cid] = {"inviter_id": inviter_id, "invitee_id": invitee_id}
+
+
+def chess_get_invite(cid):
+    return _chess_invites.get(cid)
+
+
+def chess_clear_invite(cid):
+    _chess_invites.pop(cid, None)
+
+
+# ============ /wiki — bách khoa toàn thư (Wikipedia tiếng Việt) ============
 WIKI_API = "https://vi.wikipedia.org/w/api.php"
 WIKI_SUMMARY_MAX = 700  # ký tự, tránh embed quá dài
 
