@@ -515,10 +515,10 @@ async def about_slash(interaction: discord.Interaction):
             "`/wiki <từ khóa>` — tra bách khoa toàn thư\n"
             "`/ping` — kiểm tra độ trễ\n\n"
             "**🔒 Nhà tù (Admin)**\n"
-            "`/Dsetuptu` — cấu hình kênh giam + vai trò tù nhân\n"
-            "`/Dphattu @ai_đó {số_lần} {lý_do}` — bỏ tù, cấp số lượt dọn tù\n"
-            "`/DAnxa @ai_đó` — ân xá, thả tự do\n"
-            "`/Dlaudon` — (tù nhân dùng trong kênh giam) dọn sạch kênh, cooldown 5 phút/lượt"
+            "`/setuptu` — cấu hình kênh giam + vai trò tù nhân\n"
+            "`/phattu @ai_đó {số_lần} {lý_do}` — bỏ tù, cấp số lượt dọn tù\n"
+            "`/anxa @ai_đó` — ân xá, thả tự do\n"
+            "`/laudon` — (tù nhân dùng trong kênh giam) dọn sạch kênh, cooldown 5 phút/lượt"
         ),
         inline=False,
     )
@@ -822,7 +822,7 @@ class JailSetupView(discord.ui.View):
                 await interaction.followup.send("⚠️ Có lỗi khi cấu hình, thử lại nhé.", ephemeral=True)
 
 
-@bot.tree.command(name="dsetuptu", description="[Admin] Cấu hình kênh Nhà Giam và vai trò Tù Nhân")
+@bot.tree.command(name="setuptu", description="[Admin] Cấu hình kênh Nhà Giam và vai trò Tù Nhân")
 async def dsetuptu_slash(interaction: discord.Interaction):
     if not _is_admin(interaction):
         await interaction.response.send_message("❌ Chỉ Admin mới dùng được lệnh này.", ephemeral=True)
@@ -846,14 +846,14 @@ async def dsetuptu_slash(interaction: discord.Interaction):
     await interaction.response.send_message(embed=embed, view=JailSetupView(interaction.guild_id), ephemeral=True)
 
 
-@bot.tree.command(name="dphattu", description="[Admin] Bỏ tù 1 thành viên")
-@app_commands.describe(member="Thành viên vi phạm", lan="Số lượt được dùng /Dlaudon", ly_do="Lý do phạt tù")
+@bot.tree.command(name="phattu", description="[Admin] Bỏ tù 1 thành viên")
+@app_commands.describe(member="Thành viên vi phạm", lan="Số lượt được dùng /laudon", ly_do="Lý do phạt tù")
 async def dphattu_slash(interaction: discord.Interaction, member: discord.Member, lan: int, ly_do: str):
     if not _is_admin(interaction):
         await interaction.response.send_message("❌ Chỉ Admin mới dùng được lệnh này.", ephemeral=True)
         return
     if not games.jail_is_configured(interaction.guild_id):
-        await interaction.response.send_message("⚠️ Server chưa cấu hình nhà tù. Dùng `/dsetuptu` trước đã.", ephemeral=True)
+        await interaction.response.send_message("⚠️ Server chưa cấu hình nhà tù. Dùng `/setuptu` trước đã.", ephemeral=True)
         return
     if lan < 1:
         await interaction.response.send_message("⚠️ Số lượt dọn tù phải lớn hơn 0.", ephemeral=True)
@@ -863,29 +863,28 @@ async def dphattu_slash(interaction: discord.Interaction, member: discord.Member
         _, role_id = games.jail_config(interaction.guild_id)
         role = interaction.guild.get_role(role_id)
         if role is None:
-            await interaction.response.send_message("❌ Vai trò Tù Nhân đã bị xóa, hãy `/dsetuptu` lại.", ephemeral=True)
+            await interaction.response.send_message("❌ Vai trò Tù Nhân đã bị xóa, hãy `/setuptu` lại.", ephemeral=True)
             return
 
         await member.add_roles(role, reason=f"Phạt tù bởi {interaction.user}: {ly_do}")
         games.jail_imprison(interaction.guild_id, member.id, lan, ly_do)
 
-        embed = discord.Embed(
-            title="🔒 Đã bỏ tù",
-            description=f"{member.mention} đã bị đưa vào Nhà Giam.",
-            color=0xE74C3C,
+        text = (
+            "<a:b66:1527986691833593899> **TÙ NHÂN MỚI** <a:b66:1527986691833593899>\n"
+            f"{member.mention} vừa bị chuyển vào đây!\n"
+            f"> 🧹 **Hình phạt:** `{lan}` lần lau dọn.\n"
+            f"> 📄 **Lý do:** {ly_do}"
         )
-        embed.add_field(name="Số lượt dọn tù", value=str(lan))
-        embed.add_field(name="Lý do", value=ly_do, inline=False)
-        await interaction.response.send_message(embed=embed)
+        await interaction.response.send_message(text)
     except discord.Forbidden:
         await interaction.response.send_message("❌ Bot thiếu quyền gán vai trò cho thành viên này.", ephemeral=True)
     except Exception as e:
-        print(f"[jail] Lỗi /dphattu: {e!r}")
+        print(f"[jail] Lỗi /phattu: {e!r}")
         if not interaction.response.is_done():
             await interaction.response.send_message("⚠️ Có lỗi khi bỏ tù, thử lại nhé.", ephemeral=True)
 
 
-@bot.tree.command(name="danxa", description="[Admin] Ân xá, thả tự do cho tù nhân")
+@bot.tree.command(name="anxa", description="[Admin] Ân xá, thả tự do cho tù nhân")
 @app_commands.describe(member="Thành viên cần ân xá")
 async def danxa_slash(interaction: discord.Interaction, member: discord.Member):
     if not _is_admin(interaction):
@@ -909,19 +908,19 @@ async def danxa_slash(interaction: discord.Interaction, member: discord.Member):
     except discord.Forbidden:
         await interaction.response.send_message("❌ Bot thiếu quyền gỡ vai trò cho thành viên này.", ephemeral=True)
     except Exception as e:
-        print(f"[jail] Lỗi /danxa: {e!r}")
+        print(f"[jail] Lỗi /anxa: {e!r}")
         if not interaction.response.is_done():
             await interaction.response.send_message("⚠️ Có lỗi khi ân xá, thử lại nhé.", ephemeral=True)
 
 
-@bot.tree.command(name="dlaudon", description="[Tù nhân] Dọn sạch kênh Nhà Giam — cooldown 5 phút/lượt")
+@bot.tree.command(name="laudon", description="[Tù nhân] Dọn sạch kênh Nhà Giam — cooldown 5 phút/lượt")
 async def dlaudon_slash(interaction: discord.Interaction):
     try:
         if not games.jail_is_configured(interaction.guild_id):
             await interaction.response.send_message("⚠️ Server chưa cấu hình nhà tù.", ephemeral=True)
             return
 
-        jail_channel_id, _ = games.jail_config(interaction.guild_id)
+        jail_channel_id, role_id = games.jail_config(interaction.guild_id)
         if interaction.channel_id != jail_channel_id:
             await interaction.response.send_message("❌ Lệnh này chỉ dùng được trong kênh Nhà Giam.", ephemeral=True)
             return
@@ -931,14 +930,29 @@ async def dlaudon_slash(interaction: discord.Interaction):
             await interaction.response.send_message(error_msg, ephemeral=True)
             return
 
-        await interaction.response.send_message(f"🧹 Đang dọn sạch kênh... (còn lại **{remaining}** lượt)", ephemeral=True)
+        member = interaction.user
+        name = member.display_name
+
+        await interaction.response.send_message(
+            f"<a:lunari_r_20:1475793473750700043> __**{name}**__ ┊ đang cặm cụi lau dọn... (Còn lại: **`{remaining}`** lần)",
+            ephemeral=True,
+        )
         deleted_total = 0
         while True:
             deleted = await interaction.channel.purge(limit=100)
             deleted_total += len(deleted)
             if len(deleted) < 100:
                 break
-        await interaction.channel.send(f"🧹 Đã dọn sạch **{deleted_total}** tin nhắn. Lượt dọn còn lại: **{remaining}**.")
+
+        if remaining <= 0:
+            games.jail_release(interaction.guild_id, member.id)
+            role = interaction.guild.get_role(role_id)
+            if role and role in member.roles:
+                await member.remove_roles(role, reason="Hoàn thành án phạt lau dọn")
+            await interaction.channel.send(
+                "<:lunari_yess:1523023578436603984> **CẢI TẠO TỐT!**\n"
+                f"__**{name}**__ đã hoàn thành án phạt lau dọn, được khôi phục chức vụ và trả tự do!"
+            )
     except discord.Forbidden:
         msg = "❌ Bot thiếu quyền xóa tin nhắn ở kênh này."
         if interaction.response.is_done():
@@ -946,7 +960,7 @@ async def dlaudon_slash(interaction: discord.Interaction):
         else:
             await interaction.response.send_message(msg, ephemeral=True)
     except Exception as e:
-        print(f"[jail] Lỗi /dlaudon: {e!r}")
+        print(f"[jail] Lỗi /laudon: {e!r}")
         msg = "⚠️ Có lỗi khi dọn kênh, thử lại nhé."
         if interaction.response.is_done():
             await interaction.followup.send(msg, ephemeral=True)
