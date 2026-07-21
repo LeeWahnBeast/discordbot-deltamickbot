@@ -1,4 +1,5 @@
 import random
+import chess  # pip install chess
 
 # ============ FOLK VALLEY RANKING (dùng chung cho flag & fruit) ============
 def folk_valley_rank(score, total=5):
@@ -46,6 +47,10 @@ def wordle_start(cid):
     word = random.choice(WORDS)
     _wordle_games[cid] = {"word": word, "guesses": 0}
     return word
+
+
+def wordle_word(cid):
+    return _wordle_games[cid]["word"]
 
 
 def wordle_end(cid):
@@ -150,24 +155,30 @@ def flag_end(cid):
 
 
 # ============ ĐOÁN TRÁI CÂY ============
+# CHỈ lưu tên file Wikimedia — dựng URL qua Special:FilePath để luôn ra đúng ảnh
+# (URL thumb "upload.wikimedia.org/.../thumb/x/xx/..." cũ bị sai mã hash nên ảnh không hiện)
 FRUITS = {
-    "apple": "https://upload.wikimedia.org/wikipedia/commons/thumb/1/15/Red_Apple.jpg/320px-Red_Apple.jpg",
-    "banana": "https://upload.wikimedia.org/wikipedia/commons/thumb/8/8a/Banana-Single.jpg/320px-Banana-Single.jpg",
-    "mango": "https://upload.wikimedia.org/wikipedia/commons/thumb/6/62/Mango_Alphonso.jpg/320px-Mango_Alphonso.jpg",
-    "grape": "https://upload.wikimedia.org/wikipedia/commons/thumb/a/a7/Table_grapes_on_white.jpg/320px-Table_grapes_on_white.jpg",
-    "orange": "https://upload.wikimedia.org/wikipedia/commons/thumb/c/c4/Orange-Fruit-Pieces.jpg/320px-Orange-Fruit-Pieces.jpg",
-    "watermelon": "https://upload.wikimedia.org/wikipedia/commons/thumb/2/29/Watermelon_cross_BNC.jpg/320px-Watermelon_cross_BNC.jpg",
-    "pineapple": "https://upload.wikimedia.org/wikipedia/commons/thumb/e/ed/Pineapple_and_cross_section.jpg/320px-Pineapple_and_cross_section.jpg",
-    "strawberry": "https://upload.wikimedia.org/wikipedia/commons/thumb/9/95/PerfectStrawberry.jpg/320px-PerfectStrawberry.jpg",
-    "pear": "https://upload.wikimedia.org/wikipedia/commons/thumb/2/28/Pears.jpg/320px-Pears.jpg",
-    "peach": "https://upload.wikimedia.org/wikipedia/commons/thumb/b/b6/Autumn_Red_peaches.jpg/320px-Autumn_Red_peaches.jpg",
-    "kiwi": "https://upload.wikimedia.org/wikipedia/commons/thumb/2/28/Kiwi_aka.jpg/320px-Kiwi_aka.jpg",
-    "lemon": "https://upload.wikimedia.org/wikipedia/commons/thumb/4/4b/Lemon.jpg/320px-Lemon.jpg",
-    "cherry": "https://upload.wikimedia.org/wikipedia/commons/thumb/4/45/Cherry_Stella444.jpg/320px-Cherry_Stella444.jpg",
-    "coconut": "https://upload.wikimedia.org/wikipedia/commons/thumb/2/2f/Kokosnuss.jpg/320px-Kokosnuss.jpg",
-    "papaya": "https://upload.wikimedia.org/wikipedia/commons/thumb/1/1a/Carica_papaya_fruits.jpg/320px-Carica_papaya_fruits.jpg",
+    "apple": "Red_Apple.jpg",
+    "banana": "Banana-Single.jpg",
+    "mango": "Mango_Alphonso.jpg",
+    "grape": "Table_grapes_on_white.jpg",
+    "orange": "Orange-Fruit-Pieces.jpg",
+    "watermelon": "Watermelon_cross_BNC.jpg",
+    "pineapple": "Pineapple_and_cross_section.jpg",
+    "strawberry": "PerfectStrawberry.jpg",
+    "pear": "Pears.jpg",
+    "peach": "Autumn_Red_peaches.jpg",
+    "kiwi": "Kiwi_aka.jpg",
+    "lemon": "Lemon.jpg",
+    "cherry": "Cherry_Stella444.jpg",
+    "coconut": "Kokosnuss.jpg",
+    "papaya": "Carica_papaya_fruits.jpg",
 }
 _fruit_games = {}  # {channel_id: {"round", "score", "fruit"}}
+
+
+def _fruit_image_url(filename):
+    return f"https://commons.wikimedia.org/wiki/Special:FilePath/{filename}?width=320"
 
 
 def fruit_active(cid):
@@ -186,7 +197,7 @@ def fruit_next(cid):
     fruit = random.choice(list(FRUITS.keys()))
     game["fruit"] = fruit
     game["round"] += 1
-    return FRUITS[fruit]
+    return _fruit_image_url(FRUITS[fruit])
 
 
 def fruit_check(cid, guess):
@@ -199,12 +210,6 @@ def fruit_check(cid, guess):
 
 def fruit_answer(cid):
     return _fruit_games[cid]["fruit"]
-
-
-def fruit_hint(cid):
-    """Gợi ý nhẹ: chữ cái đầu + số chữ cái, không lộ đáp án"""
-    fruit = _fruit_games[cid]["fruit"]
-    return f"Bắt đầu bằng **\"{fruit[0].upper()}\"**, có **{len(fruit)}** chữ cái"
 
 
 def fruit_progress(cid):
@@ -272,39 +277,30 @@ def _ttt_winner(board):
     return None
 
 
-def _ttt_minimax(board, is_bot_turn):
-    """Trả về (điểm, nước đi tốt nhất). Bot = O (maximize), Người = X (minimize)"""
+def _ttt_minimax(board, is_bot_turn, depth=0):
+    """Bot = O (maximize), Người = X (minimize).
+    Có tính độ sâu (thắng nhanh > thắng chậm) và random hoá giữa các nước ngang điểm
+    để bot chơi đa dạng hơn, tránh việc người chơi thuộc lòng 1 nước đi để hoà mãi."""
     winner = _ttt_winner(board)
     if winner == "O":
-        return 1, None
+        return 10 - depth, None
     if winner == "X":
-        return -1, None
+        return depth - 10, None
     if winner == "draw":
         return 0, None
 
     moves = [i for i in range(9) if board[i] == ""]
-    best_move = moves[0]
+    mark = "O" if is_bot_turn else "X"
+    scored = []
+    for m in moves:
+        board[m] = mark
+        score, _ = _ttt_minimax(board, not is_bot_turn, depth + 1)
+        board[m] = ""
+        scored.append((score, m))
 
-    if is_bot_turn:
-        best_score = -2
-        for m in moves:
-            board[m] = "O"
-            score, _ = _ttt_minimax(board, False)
-            board[m] = ""
-            if score > best_score:
-                best_score = score
-                best_move = m
-    else:
-        best_score = 2
-        for m in moves:
-            board[m] = "X"
-            score, _ = _ttt_minimax(board, True)
-            board[m] = ""
-            if score < best_score:
-                best_score = score
-                best_move = m
-
-    return best_score, best_move
+    best = max(scored)[0] if is_bot_turn else min(scored)[0]
+    best_moves = [m for s, m in scored if s == best]
+    return best, random.choice(best_moves)
 
 
 def ttt_player_move(cid, index):
@@ -332,3 +328,99 @@ def ttt_bot_move(cid):
     result = _ttt_winner(board)
     game["turn"] = "X"
     return result
+
+
+# ============ CỜ VUA vs Bot ============
+# Dùng thư viện "chess" để quản lý luật + tính hợp lệ nước đi.
+# Bot chỉ đánh giá nông 1 nước (vật chất + chiếu) thay vì minimax đệ quy sâu,
+# để giữ CPU cực thấp — phù hợp máy chủ 0.1 CPU.
+_chess_games = {}  # {channel_id: {"board": chess.Board, "player_id": int, "player_color": bool}}
+_PIECE_VALUES = {chess.PAWN: 1, chess.KNIGHT: 3, chess.BISHOP: 3, chess.ROOK: 5, chess.QUEEN: 9}
+
+
+def chess_active(cid):
+    return cid in _chess_games
+
+
+def chess_start(cid, player_id):
+    _chess_games[cid] = {"board": chess.Board(), "player_id": player_id, "player_color": chess.WHITE}
+
+
+def chess_end(cid):
+    _chess_games.pop(cid, None)
+
+
+def chess_player_id(cid):
+    return _chess_games[cid]["player_id"]
+
+
+def chess_render(cid):
+    return str(_chess_games[cid]["board"])
+
+
+def chess_player_move(cid, text):
+    """Người chơi đi 1 nước (SAN vd 'e4', 'Nf3' hoặc UCI vd 'e2e4').
+    Trả về (hợp lệ: bool, outcome: chess.Outcome hoặc None nếu ván tiếp tục)"""
+    game = _chess_games[cid]
+    board = game["board"]
+    if board.turn != game["player_color"]:
+        return False, None
+
+    text = text.strip()
+    move = None
+    try:
+        move = board.parse_san(text)
+    except ValueError:
+        try:
+            candidate = chess.Move.from_uci(text.lower())
+            if candidate in board.legal_moves:
+                move = candidate
+        except Exception:
+            move = None
+
+    if move is None:
+        return False, None
+
+    board.push(move)
+    return True, board.outcome()
+
+
+def _material_score(board, color):
+    score = 0
+    for piece_type, value in _PIECE_VALUES.items():
+        score += len(board.pieces(piece_type, color)) * value
+        score -= len(board.pieces(piece_type, not color)) * value
+    return score
+
+
+def chess_bot_move(cid):
+    """Bot đi 1 nước — đánh giá nông (1 ply), rất nhẹ CPU. Trả về outcome hoặc None."""
+    game = _chess_games[cid]
+    board = game["board"]
+    bot_color = not game["player_color"]
+
+    best_score = None
+    best_moves = []
+    for move in board.legal_moves:
+        board.push(move)
+        if board.is_checkmate():
+            score = 1000
+        else:
+            score = _material_score(board, bot_color) + (0.5 if board.is_check() else 0)
+        board.pop()
+        if best_score is None or score > best_score:
+            best_score = score
+            best_moves = [move]
+        elif score == best_score:
+            best_moves.append(move)
+
+    board.push(random.choice(best_moves))
+    return board.outcome()
+
+
+def chess_outcome_text(cid, outcome):
+    player_color = _chess_games[cid]["player_color"]
+    if outcome.winner is None:
+        return "🤝 Hòa!"
+    won = outcome.winner == player_color
+    return "🎉 Bạn thắng! Bot chịu thua." if won else "🤖 Bot chiếu bí! Bạn thua rồi."
