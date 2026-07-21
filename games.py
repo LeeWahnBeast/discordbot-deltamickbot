@@ -201,6 +201,12 @@ def fruit_answer(cid):
     return _fruit_games[cid]["fruit"]
 
 
+def fruit_hint(cid):
+    """Gợi ý nhẹ: chữ cái đầu + số chữ cái, không lộ đáp án"""
+    fruit = _fruit_games[cid]["fruit"]
+    return f"Bắt đầu bằng **\"{fruit[0].upper()}\"**, có **{len(fruit)}** chữ cái"
+
+
 def fruit_progress(cid):
     g = _fruit_games[cid]
     return g["round"], ROUNDS_PER_GAME, g["score"]
@@ -208,3 +214,23 @@ def fruit_progress(cid):
 
 def fruit_end(cid):
     _fruit_games.pop(cid, None)
+
+
+# ============ /whatuinto — bói vui ngẫu nhiên ============
+WHATUINTO_LABELS = [
+    ("Femboy", "Mềm mại bên ngoài, hỗn loạn bên trong. Bạn là hiện thân của \"tưởng vậy mà không phải vậy\"."),
+    ("Tomboy", "Năng lượng xắn tay áo, không ngại dơ. Bạn chọn hành động thay vì drama."),
+    ("Tsundere", "\"Không phải tôi thích đâu nhé!\" — trong khi tay đã làm sẵn hết rồi."),
+    ("Mommy ASMR", "Giọng nói của bạn có thể ru cả server ngủ. Năng lượng chăm sóc tối thượng."),
+    ("Yandere ASMR", "Ngọt ngào đến đáng ngờ. Ai chọc bạn giận thì... thôi khỏi nói."),
+    ("Vợ hàng xóm", "Huyền thoại khu phố, ai cũng biết tên nhưng chẳng ai dám hỏi thẳng."),
+    ("Folk Valley", "Bạn thuộc về nơi cỏ cây biết nói và gà biết deploy code."),
+    ("Scambodia", "Chuyên gia lừa đảo... tình cảm. Cẩn thận, coi chừng mất ví lẫn mất tim."),
+]
+
+
+def whatuinto_roll():
+    """Trả về (label, caption, percent)"""
+    label, caption = random.choice(WHATUINTO_LABELS)
+    percent = random.randint(60, 99)
+    return label, caption, percent
