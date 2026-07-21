@@ -339,12 +339,36 @@ def ttt_bot_move(cid):
 # Dùng thư viện "chess" để quản lý luật + tính hợp lệ nước đi.
 # Bot chỉ đánh giá nông 1 nước (vật chất + chiếu) thay vì minimax đệ quy sâu,
 # để giữ CPU cực thấp — phù hợp máy chủ 0.1 CPU.
-_chess_games = {}  # {channel_id: {"board", "is_pvp", "player_id"/"white_id"+"black_id", "player_color"}}
+import time
+
+_chess_games = {}  # {channel_id: {"board", "is_pvp", "player_id"/"white_id"+"black_id", "player_color", "last_move_at"}}
 _PIECE_VALUES = {chess.PAWN: 1, chess.KNIGHT: 3, chess.BISHOP: 3, chess.ROOK: 5, chess.QUEEN: 9}
+CHESS_STALE_SECONDS = 30 * 60  # ván không hoạt động >30 phút coi như "ma", tự dọn
+
+
+def _touch(cid):
+    if cid in _chess_games:
+        _chess_games[cid]["last_move_at"] = time.time()
 
 
 def chess_active(cid):
-    return cid in _chess_games
+    """Kiểm tra có ván đang chạy không. Nếu ván tồn tại nhưng đã quá cũ
+    (bot từng restart/crash giữa chừng làm state bị kẹt) thì tự động dọn và coi như không có ván."""
+    game = _chess_games.get(cid)
+    if game is None:
+        return False
+    if time.time() - game.get("last_move_at", 0) > CHESS_STALE_SECONDS:
+        _chess_games.pop(cid, None)
+        return False
+    return True
+
+
+def chess_force_reset(cid):
+    """Xóa cưỡng bức trạng thái ván cờ trong kênh này, dùng khi bot báo 'có ván' nhưng thực ra không có."""
+    existed = cid in _chess_games
+    _chess_games.pop(cid, None)
+    _chess_invites.pop(cid, None)
+    return existed
 
 
 def chess_start(cid, player_id):
@@ -352,6 +376,7 @@ def chess_start(cid, player_id):
     _chess_games[cid] = {
         "board": chess.Board(), "is_pvp": False,
         "player_id": player_id, "player_color": chess.WHITE,
+        "last_move_at": time.time(),
     }
 
 
@@ -360,6 +385,7 @@ def chess_start_pvp(cid, white_id, black_id):
     _chess_games[cid] = {
         "board": chess.Board(), "is_pvp": True,
         "white_id": white_id, "black_id": black_id,
+        "last_move_at": time.time(),
     }
 
 
@@ -489,6 +515,7 @@ def chess_make_move(cid, from_square_name, to_square_name):
     if move is None:
         return None
     board.push(move)
+    _touch(cid)
     return board.outcome()
 
 
