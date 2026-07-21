@@ -3,6 +3,7 @@ import os
 import web_server
 import games
 from discord.ext import commands
+from discord import app_commands
 
 intents = discord.Intents.default()
 intents.message_content = True
@@ -365,6 +366,7 @@ async def about_slash(interaction: discord.Interaction):
             "`/caro` — cờ caro vs bot\n"
             "`/chess` — cờ vua vs bot\n"
             "`/whatuinto` — bói vui\n"
+            "`/wiki <từ khóa>` — tra bách khoa toàn thư\n"
             "`/ping` — kiểm tra độ trễ"
         ),
         inline=False,
@@ -473,6 +475,29 @@ async def chess_slash(interaction: discord.Interaction):
     )
     embed.set_image(url="attachment://board.png")
     await interaction.response.send_message(embed=embed, file=file, view=ChessFromView(cid, interaction.user.id))
+
+
+@bot.tree.command(name="wiki", description="Tra cứu bách khoa toàn thư (Wikipedia tiếng Việt)")
+@app_commands.describe(tu_khoa="Từ khóa cần tra cứu")
+async def wiki_slash(interaction: discord.Interaction, tu_khoa: str):
+    await interaction.response.defer()  # tra cứu mạng có thể mất vài giây
+
+    result = games.wiki_lookup(tu_khoa)
+    if result is None:
+        await interaction.followup.send(f"❌ Không tìm thấy thông tin cho **\"{tu_khoa}\"**.")
+        return
+
+    title, summary, thumbnail, url = result
+    embed = discord.Embed(
+        title=f"📖 {title}",
+        description=summary,
+        url=url,
+        color=0x36C5F0,
+    )
+    if thumbnail:
+        embed.set_thumbnail(url=thumbnail)
+    embed.set_footer(text="Nguồn: Wikipedia tiếng Việt")
+    await interaction.followup.send(embed=embed)
 
 
 # Khởi chạy web server để tránh bị Render tắt
