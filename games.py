@@ -371,12 +371,12 @@ def chess_force_reset(cid):
     return existed
 
 
-def chess_start(cid, player_id):
-    """Bắt đầu ván vs Bot — người chơi luôn cầm Trắng"""
+def chess_start(cid, player_id, bot_elo=1200):
+    """Bắt đầu ván vs Bot — người chơi luôn cầm Trắng. bot_elo chọn độ khó (800/1200/1600)."""
     _chess_games[cid] = {
         "board": chess.Board(), "is_pvp": False,
         "player_id": player_id, "player_color": chess.WHITE,
-        "last_move_at": time.time(),
+        "last_move_at": time.time(), "bot_elo": bot_elo,
     }
 
 
@@ -411,9 +411,16 @@ def chess_player_id(cid):
 
 # ============ HỆ THỐNG ELO (giống chess.com) ============
 DEFAULT_ELO = 800
-BOT_ELO = 1200  # Elo cố định của bot AI (đánh giá nông 1 nước, ngang trình độ mới chơi)
 K_FACTOR = 32
 HINT_ELO_PENALTY = 100
+
+# 3 mức độ khó bot — điều chỉnh xác suất bot chọn nước NGẪU NHIÊN thay vì nước tốt nhất.
+# Elo càng cao thì bot càng ít đi ngẫu nhiên (chơi "chuẩn" hơn).
+BOT_LEVELS = {
+    800: {"label": "🟢 Dễ", "random_chance": 0.5},
+    1200: {"label": "🟡 Vừa", "random_chance": 0.15},
+    1600: {"label": "🔴 Khó", "random_chance": 0.0},
+}
 
 _user_elo = {}  # {user_id: elo}
 
@@ -546,9 +553,9 @@ _piece_image_cache = {}  # {(piece_type, color): PIL.Image} — tải 1 lần, d
 
 
 def _get_piece_image(piece_type, color):
-    """Tải & cache ảnh quân cờ PNG qua Wikimedia Special:FilePath (luôn ra đúng ảnh,
-    không phụ thuộc việc đoán đúng hash thư mục thumbnail). Chỉ tải mạng lần đầu
-    tiên cho mỗi loại quân; các lần sau lấy từ RAM cache."""
+    """Tải & cache ảnh quân cờ PNG qua Wikimedia Special:FilePath. Thử lại tối đa 3 lần
+    nếu lỗi mạng thoáng qua. Chỉ cache khi THÀNH CÔNG — nếu thất bại, không lưu None
+    vĩnh viễn, để lần vẽ bàn cờ sau vẫn có cơ hội tải lại (tránh kẹt icon chữ mãi mãi)."""
     key = (piece_type, color)
     if key in _piece_image_cache:
         return _piece_image_cache[key]
@@ -556,17 +563,19 @@ def _get_piece_image(piece_type, color):
     filename = _PIECE_FILENAMES[key]
     png_url = f"https://commons.wikimedia.org/wiki/Special:FilePath/{filename}?width={_SQUARE_PX * 2}"
 
-    try:
-        req = urllib.request.Request(png_url, headers={"User-Agent": "DiscordChessBot/1.0"})
-        with urllib.request.urlopen(req, timeout=8) as resp:
-            img = Image.open(io.BytesIO(resp.read())).convert("RGBA")
-        img = img.resize((_SQUARE_PX, _SQUARE_PX), Image.LANCZOS)
-        _piece_image_cache[key] = img
-        return img
-    except Exception as e:
-        print(f"[chess] Không tải được ảnh quân cờ {key}: {e}")
-        _piece_image_cache[key] = None
-        return None
+    for attempt in range(3):
+        try:
+            req = urllib.request.Request(png_url, headers={"User-Agent": "DiscordChessBot/1.0"})
+            with urllib.request.urlopen(req, timeout=6) as resp:
+                img = Image.open(io.BytesIO(resp.read())).convert("RGBA")
+            img = img.resize((_SQUARE_PX, _SQUARE_PX), Image.LANCZOS)
+            _piece_image_cache[key] = img
+            return img
+        except Exception as e:
+            print(f"[chess] Lần {attempt + 1}/3 tải ảnh {key} lỗi: {e}")
+            time.sleep(0.3)
+
+    return None  # thất bại cả 3 lần — không cache, thử lại ở lần vẽ tiếp theo
 
 
 def _chess_font(size):
@@ -637,14 +646,22 @@ def _material_score(board, color):
 
 
 def chess_bot_move(cid):
-    """Bot đi 1 nước — đánh giá nông (1 ply), rất nhẹ CPU. Trả về outcome hoặc None."""
+    """Bot đi 1 nước — đánh giá nông (1 ply), rất nhẹ CPU. Độ khó điều chỉnh xác suất
+    bot đi bừa thay vì đi nước tốt nhất (Dễ = hay đi bừa, Khó = luôn đi tốt nhất).
+    Trả về outcome hoặc None."""
     game = _chess_games[cid]
     board = game["board"]
     bot_color = not game["player_color"]
+    random_chance = BOT_LEVELS[game["bot_elo"]]["random_chance"]
+
+    legal_moves = list(board.legal_moves)
+    if random_chance > 0 and random.random() < random_chance:
+        board.push(random.choice(legal_moves))
+        return board.outcome()
 
     best_score = None
     best_moves = []
-    for move in board.legal_moves:
+    for move in legal_moves:
         board.push(move)
         if board.is_checkmate():
             score = 1000
@@ -708,7 +725,7 @@ def chess_outcome_text(cid, outcome, display_names=None):
     else:
         score_player = 1 if outcome.winner == player_color else 0
 
-    new_player_elo, _, d_player, _ = update_elo(player_id, player_elo, None, BOT_ELO, score_player)
+    new_player_elo, _, d_player, _ = update_elo(player_id, player_elo, None, game["bot_elo"], score_player)
     sign = f"+{d_player}" if d_player >= 0 else str(d_player)
 
     if outcome.winner is None:
@@ -746,7 +763,7 @@ def chess_resign_text(cid, resigner_id, display_names=None):
 
     player_id = game["player_id"]
     player_elo = get_elo(player_id)
-    new_player_elo, _, d_player, _ = update_elo(player_id, player_elo, None, BOT_ELO, 0)
+    new_player_elo, _, d_player, _ = update_elo(player_id, player_elo, None, game["bot_elo"], 0)
     sign = f"+{d_player}" if d_player >= 0 else str(d_player)
     return f"🏳️ Bạn đã đầu hàng! Bot thắng.\n\nElo của bạn: {new_player_elo} ({sign})"
 
@@ -795,7 +812,9 @@ def chess_header_text(cid, display_names=None):
 
     player_id = game["player_id"]
     player_name = display_names[True] if display_names else f"<@{player_id}>"
-    return f"⚪ **{player_name}** — {get_elo(player_id)} Elo\n⚫ **Bot** — {BOT_ELO} Elo"
+    bot_elo = game["bot_elo"]
+    bot_label = BOT_LEVELS[bot_elo]["label"]
+    return f"⚪ **{player_name}** — {get_elo(player_id)} Elo\n⚫ **Bot ({bot_label})** — {bot_elo} Elo"
 
 
 # ============ MỜI ĐẤU CỜ VUA PvP ============
