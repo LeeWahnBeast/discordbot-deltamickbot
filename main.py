@@ -277,12 +277,64 @@ def _chess_current_player_id(cid):
     return games.chess_player_id(cid)
 
 
-def _chess_mentions(cid, bot_user):
-    """Trả về dict {màu: mention} để hiển thị tên đúng người — PvP dùng tên thật, vs-bot dùng tên bot"""
-    if not games.chess_is_pvp(cid):
-        return None
+def _chess_display_names(cid):
+    """Trả về dict {True: mention_trắng, False: mention_đen}, dùng chung cho vs-bot & PvP"""
+    if games.chess_is_pvp(cid):
+        game = games._chess_games[cid]
+        return {True: f"<@{game['white_id']}>", False: f"<@{game['black_id']}>"}
     game = games._chess_games[cid]
-    return {True: f"<@{game['white_id']}>", False: f"<@{game['black_id']}>"}
+    return {True: f"<@{game['player_id']}>", False: "Bot"}
+
+
+def _add_chess_action_buttons(view, cid):
+    """Thêm 2 nút Đầu hàng + Gợi ý (dùng chung cho ChessFromView và ChessToView)"""
+    resign_btn = discord.ui.Button(label="🏳️ Đầu hàng", style=discord.ButtonStyle.danger, row=4)
+
+    async def on_resign(interaction: discord.Interaction):
+        if games.chess_is_pvp(cid):
+            game = games._chess_games[cid]
+            if interaction.user.id not in (game["white_id"], game["black_id"]):
+                await interaction.response.send_message("❌ Đây không phải ván của bạn!", ephemeral=True)
+                return
+        else:
+            if interaction.user.id != games.chess_player_id(cid):
+                await interaction.response.send_message("❌ Đây không phải ván của bạn!", ephemeral=True)
+                return
+
+        names = _chess_display_names(cid)
+        text = games.chess_resign_text(cid, interaction.user.id, names)
+        games.chess_end(cid)
+        embed = discord.Embed(description=text, color=0x2C3E50)
+        await interaction.response.edit_message(embed=embed, attachments=[], view=None)
+
+    resign_btn.callback = on_resign
+    view.add_item(resign_btn)
+
+    hint_btn = discord.ui.Button(
+        label=f"💡 Gợi ý (-{games.HINT_ELO_PENALTY} Elo)", style=discord.ButtonStyle.secondary, row=4
+    )
+
+    async def on_hint(interaction: discord.Interaction):
+        if interaction.user.id != _chess_current_player_id(cid):
+            await interaction.response.send_message("❌ Chỉ người đến lượt mới xin gợi ý được!", ephemeral=True)
+            return
+        hint_text, new_elo = games.chess_hint(cid, interaction.user.id)
+        await interaction.response.send_message(
+            f"{hint_text}\n(Elo của bạn giờ còn **{new_elo}**)", ephemeral=True
+        )
+
+    hint_btn.callback = on_hint
+    view.add_item(hint_btn)
+
+
+def _chess_board_embed(cid, extra_line=None):
+    """Dựng embed chuẩn cho bàn cờ: header Elo 2 người chơi + (tuỳ chọn) 1 dòng phụ (VD: đến lượt ai)"""
+    names = _chess_display_names(cid)
+    header = games.chess_header_text(cid, names)
+    description = f"{header}\n\n{extra_line}" if extra_line else header
+    embed = discord.Embed(description=description, color=0x2C3E50)
+    embed.set_image(url="attachment://board.png")
+    return embed
 
 
 class ChessFromView(discord.ui.View):
@@ -298,6 +350,7 @@ class ChessFromView(discord.ui.View):
         select.callback = self.on_select
         self.add_item(select)
         self.add_item(make_end_button(cid, "chess"))
+        _add_chess_action_buttons(self, cid)
 
     async def on_select(self, interaction: discord.Interaction):
         if interaction.user.id != _chess_current_player_id(self.cid):
@@ -325,6 +378,7 @@ class ChessToView(discord.ui.View):
         back.callback = self.on_back
         self.add_item(back)
         self.add_item(make_end_button(cid, "chess"))
+        _add_chess_action_buttons(self, cid)
 
     async def on_back(self, interaction: discord.Interaction):
         if interaction.user.id != self.player_id:
@@ -348,19 +402,15 @@ class ChessToView(discord.ui.View):
         file = discord.File(image, filename="board.png")
 
         if outcome is not None:
-            mentions = _chess_mentions(self.cid, interaction.client.user)
-            text = games.chess_outcome_text(self.cid, outcome, mentions)
+            names = _chess_display_names(self.cid)
+            text = games.chess_outcome_text(self.cid, outcome, names)
             games.chess_end(self.cid)
             embed = discord.Embed(description=text, color=0x2C3E50)
             embed.set_image(url="attachment://board.png")
             await interaction.response.edit_message(embed=embed, attachments=[file], view=None)
         else:
-            if games.chess_is_pvp(self.cid):
-                next_id = games.chess_current_turn_id(self.cid)
-                embed = discord.Embed(description=f"👉 Đến lượt <@{next_id}>!", color=0x2C3E50)
-            else:
-                embed = discord.Embed(color=0x2C3E50)
-            embed.set_image(url="attachment://board.png")
+            extra = f"👉 Đến lượt <@{games.chess_current_turn_id(self.cid)}>!" if games.chess_is_pvp(self.cid) else None
+            embed = _chess_board_embed(self.cid, extra)
             new_view = ChessFromView(self.cid)
             await interaction.response.edit_message(embed=embed, attachments=[file], view=new_view)
 
@@ -492,12 +542,7 @@ async def chess_slash(interaction: discord.Interaction):
     games.chess_start(cid, interaction.user.id)
     image = games.chess_board_image(cid)
     file = discord.File(image, filename="board.png")
-    embed = discord.Embed(
-        title="♟️ Cờ vua — bạn cầm Trắng, đi trước!",
-        description="Chọn **quân** rồi chọn **ô muốn đi tới** bằng menu bên dưới, không cần gõ chữ.",
-        color=0x2C3E50,
-    )
-    embed.set_image(url="attachment://board.png")
+    embed = _chess_board_embed(cid, "Chọn **quân** rồi chọn **ô muốn đi tới** bằng menu bên dưới.")
     await interaction.response.send_message(embed=embed, file=file, view=ChessFromView(cid))
 
 
@@ -524,15 +569,7 @@ class ChessInviteView(discord.ui.View):
         games.chess_start_pvp(self.cid, self.inviter_id, self.invitee_id)
         image = games.chess_board_image(self.cid)
         file = discord.File(image, filename="board.png")
-        embed = discord.Embed(
-            title="♟️ Cờ vua PvP bắt đầu!",
-            description=(
-                f"⚪ Trắng: <@{self.inviter_id}>\n⚫ Đen: <@{self.invitee_id}>\n\n"
-                f"👉 Đến lượt <@{self.inviter_id}>!"
-            ),
-            color=0x2C3E50,
-        )
-        embed.set_image(url="attachment://board.png")
+        embed = _chess_board_embed(self.cid, f"👉 Đến lượt <@{self.inviter_id}>!")
         await interaction.response.edit_message(content=None, embed=embed, attachments=[file], view=ChessFromView(self.cid))
 
     @discord.ui.button(label="❌ Từ chối", style=discord.ButtonStyle.danger)
