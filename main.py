@@ -138,12 +138,17 @@ def make_end_button(cid, kind, row=None):
     button = discord.ui.Button(label="🛑 Kết thúc", style=discord.ButtonStyle.danger, row=row)
 
     async def callback(interaction: discord.Interaction):
-        if not cfg["active"](cid):
-            await interaction.response.send_message(f"❌ Ván {cfg['label']} đã kết thúc rồi.", ephemeral=True)
-            return
-        text = f"🛑 Đã kết thúc ván {cfg['label']}. {cfg['reveal'](cid)}"
-        cfg["end"](cid)
-        await interaction.response.edit_message(content=text, embed=None, view=None)
+        try:
+            if not cfg["active"](cid):
+                await interaction.response.send_message(f"❌ Ván {cfg['label']} đã kết thúc rồi.", ephemeral=True)
+                return
+            text = f"🛑 Đã kết thúc ván {cfg['label']}. {cfg['reveal'](cid)}"
+            cfg["end"](cid)
+            await interaction.response.edit_message(content=text, embed=None, view=None)
+        except Exception as e:
+            print(f"[chess] Lỗi nút Kết thúc ({kind}): {e!r}")
+            if not interaction.response.is_done():
+                await interaction.response.send_message("⚠️ Có lỗi khi kết thúc ván, thử lại nhé.", ephemeral=True)
 
     button.callback = callback
     return button
@@ -292,19 +297,27 @@ def _add_chess_action_buttons(view, cid):
     resign_btn = discord.ui.Button(label="🏳️ Đầu hàng", style=discord.ButtonStyle.danger, row=4)
 
     async def on_resign(interaction: discord.Interaction):
-        if games.chess_is_pvp(cid):
-            game = games._chess_games[cid]
-            is_participant = interaction.user.id in (game["white_id"], game["black_id"])
-        else:
-            is_participant = interaction.user.id == games.chess_player_id(cid)
-        if await _deny_unless(interaction, is_participant):
-            return
+        try:
+            if not games.chess_active(cid):
+                await interaction.response.send_message("❌ Ván cờ đã kết thúc rồi.", ephemeral=True)
+                return
+            if games.chess_is_pvp(cid):
+                game = games._chess_games[cid]
+                is_participant = interaction.user.id in (game["white_id"], game["black_id"])
+            else:
+                is_participant = interaction.user.id == games.chess_player_id(cid)
+            if await _deny_unless(interaction, is_participant):
+                return
 
-        names = _chess_display_names(cid)
-        text = games.chess_resign_text(cid, interaction.user.id, names)
-        games.chess_end(cid)
-        embed = discord.Embed(description=text, color=0x2C3E50)
-        await interaction.response.edit_message(embed=embed, attachments=[], view=None)
+            names = _chess_display_names(cid)
+            text = games.chess_resign_text(cid, interaction.user.id, names)
+            games.chess_end(cid)
+            embed = discord.Embed(description=text, color=0x2C3E50)
+            await interaction.response.edit_message(embed=embed, attachments=[], view=None)
+        except Exception as e:
+            print(f"[chess] Lỗi nút Đầu hàng: {e!r}")
+            if not interaction.response.is_done():
+                await interaction.response.send_message("⚠️ Có lỗi khi đầu hàng, thử /chess_reset nếu ván bị kẹt.", ephemeral=True)
 
     resign_btn.callback = on_resign
     view.add_item(resign_btn)
@@ -314,13 +327,21 @@ def _add_chess_action_buttons(view, cid):
     )
 
     async def on_hint(interaction: discord.Interaction):
-        allowed = interaction.user.id == _chess_current_player_id(cid)
-        if await _deny_unless(interaction, allowed, "❌ Chỉ người đến lượt mới xin gợi ý được!"):
-            return
-        hint_text, new_elo = games.chess_hint(cid, interaction.user.id)
-        await interaction.response.send_message(
-            f"{hint_text}\n(Elo của bạn giờ còn **{new_elo}**)", ephemeral=True
-        )
+        try:
+            if not games.chess_active(cid):
+                await interaction.response.send_message("❌ Ván cờ đã kết thúc rồi.", ephemeral=True)
+                return
+            allowed = interaction.user.id == _chess_current_player_id(cid)
+            if await _deny_unless(interaction, allowed, "❌ Chỉ người đến lượt mới xin gợi ý được!"):
+                return
+            hint_text, new_elo = games.chess_hint(cid, interaction.user.id)
+            await interaction.response.send_message(
+                f"{hint_text}\n(Elo của bạn giờ còn **{new_elo}**)", ephemeral=True
+            )
+        except Exception as e:
+            print(f"[chess] Lỗi nút Gợi ý: {e!r}")
+            if not interaction.response.is_done():
+                await interaction.response.send_message("⚠️ Có lỗi khi lấy gợi ý, thử lại nhé.", ephemeral=True)
 
     hint_btn.callback = on_hint
     view.add_item(hint_btn)
@@ -369,12 +390,20 @@ class ChessFromView(ChessTimeoutView):
         _add_chess_action_buttons(self, cid)
 
     async def on_select(self, interaction: discord.Interaction):
-        if await _deny_unless(interaction, interaction.user.id == _chess_current_player_id(self.cid), "❌ Chưa đến lượt bạn!"):
-            return
-        from_sq = interaction.data["values"][0]
-        new_view = ChessToView(self.cid, interaction.user.id, from_sq)
-        await interaction.response.edit_message(view=new_view)
-        new_view.message = await interaction.original_response()
+        try:
+            if not games.chess_active(self.cid):
+                await interaction.response.send_message("❌ Ván cờ đã kết thúc rồi.", ephemeral=True)
+                return
+            if await _deny_unless(interaction, interaction.user.id == _chess_current_player_id(self.cid), "❌ Chưa đến lượt bạn!"):
+                return
+            from_sq = interaction.data["values"][0]
+            new_view = ChessToView(self.cid, interaction.user.id, from_sq)
+            await interaction.response.edit_message(view=new_view)
+            new_view.message = await interaction.original_response()
+        except Exception as e:
+            print(f"[chess] Lỗi chọn quân: {e!r}")
+            if not interaction.response.is_done():
+                await interaction.response.send_message("⚠️ Có lỗi khi chọn quân, thử lại nhé.", ephemeral=True)
 
 
 class ChessToView(ChessTimeoutView):
@@ -397,49 +426,68 @@ class ChessToView(ChessTimeoutView):
         _add_chess_action_buttons(self, cid)
 
     async def on_back(self, interaction: discord.Interaction):
-        if await _deny_unless(interaction, interaction.user.id == self.player_id):
-            return
-        new_view = ChessFromView(self.cid)
-        await interaction.response.edit_message(view=new_view)
-        new_view.message = await interaction.original_response()
+        try:
+            if await _deny_unless(interaction, interaction.user.id == self.player_id):
+                return
+            new_view = ChessFromView(self.cid)
+            await interaction.response.edit_message(view=new_view)
+            new_view.message = await interaction.original_response()
+        except Exception as e:
+            print(f"[chess] Lỗi Chọn lại: {e!r}")
+            if not interaction.response.is_done():
+                await interaction.response.send_message("⚠️ Có lỗi, thử lại nhé.", ephemeral=True)
 
     async def on_select(self, interaction: discord.Interaction):
-        if await _deny_unless(interaction, interaction.user.id == self.player_id):
-            return
+        try:
+            if not games.chess_active(self.cid):
+                await interaction.response.send_message("❌ Ván cờ đã kết thúc rồi.", ephemeral=True)
+                return
+            if await _deny_unless(interaction, interaction.user.id == self.player_id):
+                return
 
-        to_sq = interaction.data["values"][0]
-        ok, outcome, annotation = games.chess_make_move(self.cid, self.from_sq, to_sq)
-        if not ok:
-            await interaction.response.send_message("⚠️ Nước đi này không còn hợp lệ, hãy chọn lại!", ephemeral=True)
-            return
+            to_sq = interaction.data["values"][0]
+            ok, outcome, annotation = games.chess_make_move(self.cid, self.from_sq, to_sq)
+            if not ok:
+                await interaction.response.send_message("⚠️ Nước đi này không còn hợp lệ, hãy chọn lại!", ephemeral=True)
+                return
 
-        # Vs Bot: sau khi người đi xong, đến lượt bot đánh ngay.
-        # Nếu ván tiếp tục, nhãn hiển thị đổi sang nước bot vừa đi (đó mới là nước gần nhất).
-        if outcome is None and not games.chess_is_pvp(self.cid):
-            outcome, bot_annotation = games.chess_bot_move(self.cid)
-            annotation = bot_annotation
+            # Vs Bot: sau khi người đi xong, đến lượt bot đánh ngay.
+            # Giữ lại nhãn nước của NGƯỜI CHƠI, không để nhãn nước bot đè mất —
+            # cả 2 đều đáng xem, nên hiển thị riêng từng dòng.
+            player_annotation = annotation
+            bot_annotation = None
+            if outcome is None and not games.chess_is_pvp(self.cid):
+                outcome, bot_annotation = games.chess_bot_move(self.cid)
 
-        image = games.chess_board_image(self.cid)
-        file = discord.File(image, filename="board.png")
-        annotation_line = MOVE_ANNOTATION_TEXT.get(annotation)
+            image = games.chess_board_image(self.cid)
+            file = discord.File(image, filename="board.png")
+            player_line = MOVE_ANNOTATION_TEXT.get(player_annotation)
+            bot_line = MOVE_ANNOTATION_TEXT.get(bot_annotation)
+            if bot_line:
+                bot_line = f"🤖 {bot_line}"
+            annotation_line = "\n".join(l for l in (player_line, bot_line) if l) or None
 
-        if outcome is not None:
-            names = _chess_display_names(self.cid)
-            text = games.chess_outcome_text(self.cid, outcome, names)
-            if annotation_line:
-                text += f"\n\n{annotation_line}"
-            games.chess_end(self.cid)
-            embed = discord.Embed(description=text, color=0x2C3E50)
-            embed.set_image(url="attachment://board.png")
-            await interaction.response.edit_message(embed=embed, attachments=[file], view=None)
-        else:
-            extra = f"👉 Đến lượt <@{games.chess_current_turn_id(self.cid)}>!" if games.chess_is_pvp(self.cid) else None
-            if annotation_line:
-                extra = f"{extra}\n{annotation_line}" if extra else annotation_line
-            embed = _chess_board_embed(self.cid, extra)
-            new_view = ChessFromView(self.cid)
-            await interaction.response.edit_message(embed=embed, attachments=[file], view=new_view)
-            new_view.message = await interaction.original_response()
+            if outcome is not None:
+                names = _chess_display_names(self.cid)
+                text = games.chess_outcome_text(self.cid, outcome, names)
+                if annotation_line:
+                    text += f"\n\n{annotation_line}"
+                games.chess_end(self.cid)
+                embed = discord.Embed(description=text, color=0x2C3E50)
+                embed.set_image(url="attachment://board.png")
+                await interaction.response.edit_message(embed=embed, attachments=[file], view=None)
+            else:
+                extra = f"👉 Đến lượt <@{games.chess_current_turn_id(self.cid)}>!" if games.chess_is_pvp(self.cid) else None
+                if annotation_line:
+                    extra = f"{extra}\n{annotation_line}" if extra else annotation_line
+                embed = _chess_board_embed(self.cid, extra)
+                new_view = ChessFromView(self.cid)
+                await interaction.response.edit_message(embed=embed, attachments=[file], view=new_view)
+                new_view.message = await interaction.original_response()
+        except Exception as e:
+            print(f"[chess] Lỗi khi đi nước: {e!r}")
+            if not interaction.response.is_done():
+                await interaction.response.send_message("⚠️ Có lỗi khi đi nước, thử /chess_reset nếu ván bị kẹt.", ephemeral=True)
 
 
 
