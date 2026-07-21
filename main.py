@@ -870,10 +870,11 @@ async def dphattu_slash(interaction: discord.Interaction, member: discord.Member
         games.jail_imprison(interaction.guild_id, member.id, lan, ly_do)
 
         text = (
-            "<a:b66:1527986691833593899> **TÙ NHÂN MỚI** <a:b66:1527986691833593899>\n"
+            "🔒 **TÙ NHÂN MỚI** 🔒\n"
             f"{member.mention} vừa bị chuyển vào đây!\n"
             f"> 🧹 **Hình phạt:** `{lan}` lần lau dọn.\n"
-            f"> 📄 **Lý do:** {ly_do}"
+            f"> 📄 **Lý do:** {ly_do}\n\n"
+            "💡 *Cải tạo tốt để sớm được khoan hồng bằng lệnh: `/laudon`*"
         )
         await interaction.response.send_message(text)
     except discord.Forbidden:
@@ -934,7 +935,7 @@ async def dlaudon_slash(interaction: discord.Interaction):
         name = member.display_name
 
         await interaction.response.send_message(
-            f"<a:lunari_r_20:1475793473750700043> __**{name}**__ ┊ đang cặm cụi lau dọn... (Còn lại: **`{remaining}`** lần)",
+            f"🧹 __**{name}**__ ┊ đang cặm cụi lau dọn... (Còn lại: **`{remaining}`** lần)",
             ephemeral=True,
         )
         deleted_total = 0
@@ -950,7 +951,7 @@ async def dlaudon_slash(interaction: discord.Interaction):
             if role and role in member.roles:
                 await member.remove_roles(role, reason="Hoàn thành án phạt lau dọn")
             await interaction.channel.send(
-                "<:lunari_yess:1523023578436603984> **CẢI TẠO TỐT!**\n"
+                "✅ **CẢI TẠO TỐT!**\n"
                 f"__**{name}**__ đã hoàn thành án phạt lau dọn, được khôi phục chức vụ và trả tự do!"
             )
     except discord.Forbidden:
