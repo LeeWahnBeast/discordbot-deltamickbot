@@ -511,3 +511,53 @@ def chess_outcome_text(cid, outcome):
         return "🤝 Hòa!"
     won = outcome.winner == player_color
     return "🎉 Bạn thắng! Bot chịu thua." if won else "🤖 Bot chiếu bí! Bạn thua rồi."
+
+
+# ============ /wiki — bách khoa toàn thư (Wikipedia tiếng Việt) ============
+import urllib.request
+import urllib.parse
+import json
+
+WIKI_API = "https://vi.wikipedia.org/w/api.php"
+WIKI_SUMMARY_MAX = 700  # ký tự, tránh embed quá dài
+
+
+def wiki_lookup(keyword):
+    """Tra cứu tóm tắt bài viết trên Wikipedia tiếng Việt.
+    Trả về (tiêu_đề, tóm_tắt, url_ảnh_hoặc_None, url_bài_viết) hoặc None nếu không tìm thấy."""
+    try:
+        # Bước 1: tìm bài viết khớp nhất với từ khóa
+        search_params = urllib.parse.urlencode({
+            "action": "query", "list": "search", "srsearch": keyword,
+            "format": "json", "srlimit": 1,
+        })
+        with urllib.request.urlopen(f"{WIKI_API}?{search_params}", timeout=6) as resp:
+            search_data = json.loads(resp.read())
+
+        results = search_data.get("query", {}).get("search", [])
+        if not results:
+            return None
+        title = results[0]["title"]
+
+        # Bước 2: lấy tóm tắt + ảnh của bài viết đó
+        extract_params = urllib.parse.urlencode({
+            "action": "query", "prop": "extracts|pageimages",
+            "exintro": 1, "explaintext": 1, "piprop": "thumbnail",
+            "pithumbsize": 400, "titles": title, "format": "json",
+        })
+        with urllib.request.urlopen(f"{WIKI_API}?{extract_params}", timeout=6) as resp:
+            extract_data = json.loads(resp.read())
+
+        pages = extract_data.get("query", {}).get("pages", {})
+        page = next(iter(pages.values()))
+        summary = page.get("extract", "").strip()
+        if not summary:
+            return None
+        if len(summary) > WIKI_SUMMARY_MAX:
+            summary = summary[:WIKI_SUMMARY_MAX].rsplit(" ", 1)[0] + "..."
+
+        thumbnail = page.get("thumbnail", {}).get("source")
+        article_url = f"https://vi.wikipedia.org/wiki/{urllib.parse.quote(title.replace(' ', '_'))}"
+        return title, summary, thumbnail, article_url
+    except Exception:
+        return None
