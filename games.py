@@ -234,3 +234,101 @@ def whatuinto_roll():
     label, caption = random.choice(WHATUINTO_LABELS)
     percent = random.randint(60, 99)
     return label, caption, percent
+
+
+# ============ CỜ CARO (Tic-Tac-Toe) vs Bot ============
+# Bàn cờ: list 9 phần tử, "" = trống, "X" = người chơi, "O" = bot
+_ttt_games = {}  # {channel_id: {"board": list, "player_id": int, "turn": "X"/"O"}}
+
+TTT_LINES = [
+    (0, 1, 2), (3, 4, 5), (6, 7, 8),  # hàng ngang
+    (0, 3, 6), (1, 4, 7), (2, 5, 8),  # hàng dọc
+    (0, 4, 8), (2, 4, 6),             # chéo
+]
+
+
+def ttt_active(cid):
+    return cid in _ttt_games
+
+
+def ttt_start(cid, player_id):
+    _ttt_games[cid] = {"board": [""] * 9, "player_id": player_id, "turn": "X"}
+
+
+def ttt_end(cid):
+    _ttt_games.pop(cid, None)
+
+
+def ttt_board(cid):
+    return _ttt_games[cid]["board"]
+
+
+def _ttt_winner(board):
+    for a, b, c in TTT_LINES:
+        if board[a] and board[a] == board[b] == board[c]:
+            return board[a]
+    if "" not in board:
+        return "draw"
+    return None
+
+
+def _ttt_minimax(board, is_bot_turn):
+    """Trả về (điểm, nước đi tốt nhất). Bot = O (maximize), Người = X (minimize)"""
+    winner = _ttt_winner(board)
+    if winner == "O":
+        return 1, None
+    if winner == "X":
+        return -1, None
+    if winner == "draw":
+        return 0, None
+
+    moves = [i for i in range(9) if board[i] == ""]
+    best_move = moves[0]
+
+    if is_bot_turn:
+        best_score = -2
+        for m in moves:
+            board[m] = "O"
+            score, _ = _ttt_minimax(board, False)
+            board[m] = ""
+            if score > best_score:
+                best_score = score
+                best_move = m
+    else:
+        best_score = 2
+        for m in moves:
+            board[m] = "X"
+            score, _ = _ttt_minimax(board, True)
+            board[m] = ""
+            if score < best_score:
+                best_score = score
+                best_move = m
+
+    return best_score, best_move
+
+
+def ttt_player_move(cid, index):
+    """Người chơi đánh vào ô index. Trả về (hợp lệ: bool, kết quả: None/"X"/"O"/"draw")"""
+    game = _ttt_games[cid]
+    board = game["board"]
+    if board[index] != "" or game["turn"] != "X":
+        return False, None
+
+    board[index] = "X"
+    result = _ttt_winner(board)
+    if result:
+        return True, result
+
+    game["turn"] = "O"
+    return True, None
+
+
+def ttt_bot_move(cid):
+    """Bot đánh nước đi tối ưu. Trả về kết quả: None/"X"/"O"/"draw" """
+    game = _ttt_games[cid]
+    board = game["board"]
+    _, move = _ttt_minimax(board, True)
+    board[move] = "O"
+    result = _ttt_winner(board)
+    game["turn"] = "X"
+    return result
