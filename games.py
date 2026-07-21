@@ -1,5 +1,6 @@
 import random
 import io
+import time
 import urllib.request
 import urllib.parse
 import json
@@ -272,7 +273,6 @@ def ttt_bot_move(cid):
 # Dùng thư viện "chess" để quản lý luật + tính hợp lệ nước đi.
 # Bot chỉ đánh giá nông 1 nước (vật chất + chiếu) thay vì minimax đệ quy sâu,
 # để giữ CPU cực thấp — phù hợp máy chủ 0.1 CPU.
-import time
 
 _chess_games = {}  # {channel_id: {"board", "is_pvp", "player_id"/"white_id"+"black_id", "player_color", "last_move_at"}}
 _PIECE_VALUES = {chess.PAWN: 1, chess.KNIGHT: 3, chess.BISHOP: 3, chess.ROOK: 5, chess.QUEEN: 9}
@@ -490,51 +490,17 @@ _BOARD_PX = _SQUARE_PX * 8
 _LIGHT = (240, 217, 181)
 _DARK = (181, 136, 99)
 
-# Bộ ảnh quân cờ "Cburnett" (chuẩn Lichess/Wikipedia dùng, giấy phép GPL/CC-BY-SA — dùng tự do)
-# Chỉ lưu TÊN FILE — dựng URL qua Special:FilePath để Wikimedia tự tìm đúng ảnh,
-# tránh lỗi đoán sai hash thư mục thumbnail (nguyên nhân quân Trắng trước đây bị lỗi không hiện ảnh).
-_PIECE_FILENAMES = {
-    (chess.PAWN, True): "Chess_plt45.svg",
-    (chess.KNIGHT, True): "Chess_nlt45.svg",
-    (chess.BISHOP, True): "Chess_blt45.svg",
-    (chess.ROOK, True): "Chess_rlt45.svg",
-    (chess.QUEEN, True): "Chess_qlt45.svg",
-    (chess.KING, True): "Chess_klt45.svg",
-    (chess.PAWN, False): "Chess_pdt45.svg",
-    (chess.KNIGHT, False): "Chess_ndt45.svg",
-    (chess.BISHOP, False): "Chess_bdt45.svg",
-    (chess.ROOK, False): "Chess_rdt45.svg",
-    (chess.QUEEN, False): "Chess_qdt45.svg",
-    (chess.KING, False): "Chess_kdt45.svg",
+# Vẽ quân cờ bằng ký tự Unicode có sẵn trong font — KHÔNG tải ảnh qua mạng.
+# Lý do đổi: tải PNG từ Wikimedia là code đồng bộ (blocking), mỗi lần cache miss
+# (bot mới bật / restart mất RAM cache) sẽ treo CẢ BOT tới 18s (timeout 6s x 3 lần
+# retry), làm mọi nút trong server "lâu lâu không phản hồi". Unicode vẽ tức thì,
+# không tốn RAM cache ảnh, phù hợp máy 0.1 CPU / 256MB RAM.
+_PIECE_UNICODE = {
+    (chess.PAWN, True): "♙", (chess.KNIGHT, True): "♘", (chess.BISHOP, True): "♗",
+    (chess.ROOK, True): "♖", (chess.QUEEN, True): "♕", (chess.KING, True): "♔",
+    (chess.PAWN, False): "♟", (chess.KNIGHT, False): "♞", (chess.BISHOP, False): "♝",
+    (chess.ROOK, False): "♜", (chess.QUEEN, False): "♛", (chess.KING, False): "♚",
 }
-
-_piece_image_cache = {}  # {(piece_type, color): PIL.Image} — tải 1 lần, dùng lại mãi
-
-
-def _get_piece_image(piece_type, color):
-    """Tải & cache ảnh quân cờ PNG qua Wikimedia Special:FilePath. Thử lại tối đa 3 lần
-    nếu lỗi mạng thoáng qua. Chỉ cache khi THÀNH CÔNG — nếu thất bại, không lưu None
-    vĩnh viễn, để lần vẽ bàn cờ sau vẫn có cơ hội tải lại (tránh kẹt icon chữ mãi mãi)."""
-    key = (piece_type, color)
-    if key in _piece_image_cache:
-        return _piece_image_cache[key]
-
-    filename = _PIECE_FILENAMES[key]
-    png_url = f"https://commons.wikimedia.org/wiki/Special:FilePath/{filename}?width={_SQUARE_PX * 2}"
-
-    for attempt in range(3):
-        try:
-            req = urllib.request.Request(png_url, headers={"User-Agent": "DiscordChessBot/1.0"})
-            with urllib.request.urlopen(req, timeout=6) as resp:
-                img = Image.open(io.BytesIO(resp.read())).convert("RGBA")
-            img = img.resize((_SQUARE_PX, _SQUARE_PX), Image.LANCZOS)
-            _piece_image_cache[key] = img
-            return img
-        except Exception as e:
-            print(f"[chess] Lần {attempt + 1}/3 tải ảnh {key} lỗi: {e}")
-            time.sleep(0.3)
-
-    return None  # thất bại cả 3 lần — không cache, thử lại ở lần vẽ tiếp theo
 
 
 def _chess_font(size):
@@ -550,31 +516,22 @@ def _chess_font(size):
         return ImageFont.load_default()
 
 
-_PIECE_LETTER_FALLBACK = {chess.PAWN: "P", chess.KNIGHT: "N", chess.BISHOP: "B",
-                          chess.ROOK: "R", chess.QUEEN: "Q", chess.KING: "K"}
-
-
-def _draw_piece(img, draw, cx, cy, piece, font):
-    """Vẽ quân cờ bằng ảnh PNG thật; nếu tải ảnh lỗi thì rơi về icon chữ (không bao giờ crash)."""
-    piece_img = _get_piece_image(piece.piece_type, piece.color)
-    if piece_img is not None:
-        top_left = (int(cx - _SQUARE_PX / 2), int(cy - _SQUARE_PX / 2))
-        img.paste(piece_img, top_left, piece_img)
-    else:
-        radius = _SQUARE_PX * 0.38
-        is_white = piece.color == chess.WHITE
-        fill = "#f5f5f5" if is_white else "#2b2b2b"
-        outline = "#2b2b2b" if is_white else "#f5f5f5"
-        draw.ellipse([cx - radius, cy - radius, cx + radius, cy + radius], fill=fill, outline=outline, width=3)
-        draw.text((cx, cy), _PIECE_LETTER_FALLBACK[piece.piece_type], font=font, fill=outline, anchor="mm")
+def _draw_piece(draw, cx, cy, piece, font):
+    symbol = _PIECE_UNICODE[(piece.piece_type, piece.color)]
+    fill = "white" if piece.color == chess.WHITE else "black"
+    outline = "black" if piece.color == chess.WHITE else "white"
+    # viền mỏng để quân Trắng không bị lẫn vào ô sáng màu
+    for dx, dy in ((-1, 0), (1, 0), (0, -1), (0, 1)):
+        draw.text((cx + dx, cy + dy), symbol, font=font, fill=outline, anchor="mm")
+    draw.text((cx, cy), symbol, font=font, fill=fill, anchor="mm")
 
 
 def chess_board_image(cid):
-    """Vẽ bàn cờ ra ảnh PNG dùng ảnh quân cờ thật (cache sẵn sau lần tải đầu)."""
+    """Vẽ bàn cờ ra ảnh PNG bằng ký tự Unicode — nhẹ CPU/RAM, không gọi mạng."""
     board = _chess_games[cid]["board"]
-    img = Image.new("RGBA", (_BOARD_PX, _BOARD_PX + 24), "white")
+    img = Image.new("RGB", (_BOARD_PX, _BOARD_PX + 24), "white")
     draw = ImageDraw.Draw(img)
-    piece_font = _chess_font(28)
+    piece_font = _chess_font(40)
     coord_font = _chess_font(14)
 
     for row in range(8):
@@ -585,13 +542,13 @@ def chess_board_image(cid):
             sq = chess.square(col, 7 - row)
             piece = board.piece_at(sq)
             if piece:
-                _draw_piece(img, draw, x0 + _SQUARE_PX / 2, y0 + _SQUARE_PX / 2, piece, piece_font)
+                _draw_piece(draw, x0 + _SQUARE_PX / 2, y0 + _SQUARE_PX / 2, piece, piece_font)
 
     for col in range(8):
         draw.text((col * _SQUARE_PX + 4, _BOARD_PX + 4), chr(ord('a') + col), font=coord_font, fill="black")
 
     buf = io.BytesIO()
-    img.convert("RGB").save(buf, format="PNG")
+    img.save(buf, format="PNG")
     buf.seek(0)
     return buf
 
