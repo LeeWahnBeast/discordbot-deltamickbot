@@ -39,7 +39,7 @@ async def on_message(message):
                     await message.channel.send(f"🎉 Chính xác! {message.author.mention} đã đoán đúng!")
                     games.wordle_end(cid)
                 elif done:
-                    await message.channel.send(f"💀 Hết lượt! Từ đúng là: **{games._wordle_games[cid]['word'].upper()}**")
+                    await message.channel.send(f"💀 Hết lượt! Từ đúng là: **{games.wordle_word(cid).upper()}**")
                     games.wordle_end(cid)
             return
 
@@ -49,6 +49,10 @@ async def on_message(message):
 
         if games.fruit_active(cid):
             await _handle_round(message, content, "fruit", 0xE8590C, "🍉")
+            return
+
+        if games.chess_active(cid):
+            await _handle_chess_move(message, content)
             return
 
     await bot.process_commands(message)
@@ -81,8 +85,7 @@ async def _handle_round(message, guess_text, kind, color, icon):
             color=color,
         )
         embed.set_image(url=url)
-        view = EndGameView(cid, kind) if kind == "flag" else None
-        await message.channel.send(embed=embed, view=view)
+        await message.channel.send(embed=embed, view=EndGameView(cid, kind))
     else:
         tier, flavor, rank_color = games.folk_valley_rank(score, total)
         end_fn(cid)
@@ -96,30 +99,87 @@ async def _handle_round(message, guess_text, kind, color, icon):
         await message.channel.send(embed=embed)
 
 
-# ============ NÚT "🛑 Kết thúc" (thay cho /endflag) ============
-class EndGameView(discord.ui.View):
-    def __init__(self, cid, kind):
-        super().__init__(timeout=180)
-        self.cid = cid
-        self.kind = kind
+async def _handle_chess_move(message, content):
+    """Xử lý 1 nước đi cờ vua gõ qua chat (chỉ người chơi ván đó mới được đánh)"""
+    cid = message.channel.id
+    if message.author.id != games.chess_player_id(cid):
+        return
 
-    @discord.ui.button(label="🛑 Kết thúc", style=discord.ButtonStyle.danger)
-    async def end_game(self, interaction: discord.Interaction, button: discord.ui.Button):
-        is_active = games.flag_active(self.cid) if self.kind == "flag" else games.fruit_active(self.cid)
-        if not is_active:
-            await interaction.response.send_message("❌ Ván này đã kết thúc rồi.", ephemeral=True)
+    valid, outcome = games.chess_player_move(cid, content)
+    if not valid:
+        return  # không phải nước đi hợp lệ -> coi như chat thường, bỏ qua
+
+    if outcome is None:
+        outcome = games.chess_bot_move(cid)
+
+    board_text = games.chess_render(cid)
+
+    if outcome is not None:
+        text = games.chess_outcome_text(cid, outcome)
+        games.chess_end(cid)
+        await message.channel.send(f"```\n{board_text}\n```\n{text}")
+    else:
+        embed = discord.Embed(description=f"```\n{board_text}\n```", color=0x2C3E50)
+        await message.channel.send(embed=embed, view=EndGameView(cid, "chess"))
+
+
+# ============ NÚT "🛑 Kết thúc" DÙNG CHUNG CHO MỌI GAME ============
+GAME_CONFIG = {
+    "wordle": {
+        "active": games.wordle_active,
+        "end": games.wordle_end,
+        "label": "Wordle",
+        "reveal": lambda cid: f"Từ đúng là **{games.wordle_word(cid).upper()}**",
+    },
+    "flag": {
+        "active": games.flag_active,
+        "end": games.flag_end,
+        "label": "Đoán cờ",
+        "reveal": lambda cid: f"Đáp án là **{games.flag_answer(cid).title()}**",
+    },
+    "fruit": {
+        "active": games.fruit_active,
+        "end": games.fruit_end,
+        "label": "Đoán trái cây",
+        "reveal": lambda cid: f"Đáp án là **{games.fruit_answer(cid).title()}**",
+    },
+    "ttt": {
+        "active": games.ttt_active,
+        "end": games.ttt_end,
+        "label": "Cờ caro",
+        "reveal": lambda cid: "Ván đấu đã dừng.",
+    },
+    "chess": {
+        "active": games.chess_active,
+        "end": games.chess_end,
+        "label": "Cờ vua",
+        "reveal": lambda cid: "Ván đấu đã dừng.",
+    },
+}
+
+
+def make_end_button(cid, kind, row=None):
+    """Tạo nút Kết thúc dùng chung — gắn được vào bất kỳ View nào"""
+    cfg = GAME_CONFIG[kind]
+    button = discord.ui.Button(label="🛑 Kết thúc", style=discord.ButtonStyle.danger, row=row)
+
+    async def callback(interaction: discord.Interaction):
+        if not cfg["active"](cid):
+            await interaction.response.send_message(f"❌ Ván {cfg['label']} đã kết thúc rồi.", ephemeral=True)
             return
+        text = f"🛑 Đã kết thúc ván {cfg['label']}. {cfg['reveal'](cid)}"
+        cfg["end"](cid)
+        await interaction.response.edit_message(content=text, embed=None, view=None)
 
-        answer_fn = games.flag_answer if self.kind == "flag" else games.fruit_answer
-        end_fn = games.flag_end if self.kind == "flag" else games.fruit_end
-        answer = answer_fn(self.cid)
-        end_fn(self.cid)
+    button.callback = callback
+    return button
 
-        await interaction.response.edit_message(
-            content=f"🛑 Đã kết thúc ván. Đáp án vòng này là: **{answer.title()}**",
-            embed=None,
-            view=None,
-        )
+
+class EndGameView(discord.ui.View):
+    """View chỉ gồm nút Kết thúc — dùng cho wordle/flag/fruit/chess"""
+    def __init__(self, cid, kind, timeout=180):
+        super().__init__(timeout=timeout)
+        self.add_item(make_end_button(cid, kind))
 
 
 # ============ NÚT CHỌN ĐỘ KHÓ CHO /flag ============
@@ -139,8 +199,7 @@ class DifficultyView(discord.ui.View):
             color=0x3F7D20,
         )
         embed.set_image(url=url)
-        view = EndGameView(self.cid, "flag")
-        await interaction.response.edit_message(content=None, embed=embed, view=view)
+        await interaction.response.edit_message(content=None, embed=embed, view=EndGameView(self.cid, "flag"))
 
     @discord.ui.button(label="🌱 Dễ", style=discord.ButtonStyle.success)
     async def easy(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -167,11 +226,14 @@ class TicTacToeView(discord.ui.View):
         self.player_id = player_id
         for i in range(9):
             self.add_item(TicTacToeButton(i))
+        self.add_item(make_end_button(cid, "ttt", row=3))
 
     def render_board(self):
         board = games.ttt_board(self.cid)
-        for i, child in enumerate(self.children):
-            mark = board[i]
+        for child in self.children:
+            if not isinstance(child, TicTacToeButton):
+                continue
+            mark = board[child.index]
             child.label = mark if mark else "\u200b"
             child.style = (
                 discord.ButtonStyle.danger if mark == "X"
@@ -240,6 +302,30 @@ async def ping_slash(interaction: discord.Interaction):
     await interaction.response.send_message(f"🏓 Pong! ({round(bot.latency * 1000)}ms)")
 
 
+@bot.tree.command(name="about", description="Thông tin về bot")
+async def about_slash(interaction: discord.Interaction):
+    embed = discord.Embed(
+        title="🤖 About Bot",
+        description="Bot mini-game vui nhộn cho server: đoán chữ, đoán cờ, đoán trái cây, cờ caro, cờ vua và bói vui.",
+        color=0x5865F2,
+    )
+    embed.add_field(
+        name="🎮 Các lệnh",
+        value=(
+            "`/wordle` — đoán từ 5 chữ\n"
+            "`/flag` — đoán cờ các nước\n"
+            "`/fruit` — đoán tên trái cây qua hình\n"
+            "`/caro` — cờ caro vs bot\n"
+            "`/chess` — cờ vua vs bot\n"
+            "`/whatuinto` — bói vui\n"
+            "`/ping` — kiểm tra độ trễ"
+        ),
+        inline=False,
+    )
+    embed.set_footer(text="Made by TVPixel")
+    await interaction.response.send_message(embed=embed)
+
+
 @bot.tree.command(name="wordle", description="Bắt đầu ván Wordle — chat thẳng 5 chữ để đoán")
 async def wordle_slash(interaction: discord.Interaction):
     cid = interaction.channel_id
@@ -256,7 +342,7 @@ async def wordle_slash(interaction: discord.Interaction):
         ),
         color=0x2ECC71,
     )
-    await interaction.response.send_message(embed=embed)
+    await interaction.response.send_message(embed=embed, view=EndGameView(cid, "wordle"))
 
 
 @bot.tree.command(name="flag", description="Đoán cờ các nước — chọn độ khó trước khi bắt đầu")
@@ -292,61 +378,7 @@ async def fruit_slash(interaction: discord.Interaction):
         color=0xE8590C,
     )
     embed.set_image(url=url)
-    await interaction.response.send_message(embed=embed)
-
-
-class EndAnyGameView(discord.ui.View):
-    def __init__(self, cid):
-        super().__init__(timeout=60)
-        self.cid = cid
-
-        if games.wordle_active(cid):
-            self.add_item(self._make_button("Wordle", "wordle"))
-        if games.flag_active(cid):
-            self.add_item(self._make_button("Đoán cờ", "flag"))
-        if games.fruit_active(cid):
-            self.add_item(self._make_button("Đoán trái cây", "fruit"))
-        if games.ttt_active(cid):
-            self.add_item(self._make_button("Cờ caro", "ttt"))
-
-    def _make_button(self, label, kind):
-        button = discord.ui.Button(label=f"🛑 {label}", style=discord.ButtonStyle.danger)
-
-        async def callback(interaction: discord.Interaction):
-            is_active_fn = {
-                "wordle": games.wordle_active,
-                "flag": games.flag_active,
-                "fruit": games.fruit_active,
-                "ttt": games.ttt_active,
-            }[kind]
-            end_fn = {
-                "wordle": games.wordle_end,
-                "flag": games.flag_end,
-                "fruit": games.fruit_end,
-                "ttt": games.ttt_end,
-            }[kind]
-
-            if not is_active_fn(self.cid):
-                await interaction.response.send_message(f"❌ Ván {label} đã kết thúc rồi.", ephemeral=True)
-                return
-
-            end_fn(self.cid)
-            await interaction.response.send_message(f"🛑 Đã hủy ván {label}.")
-
-        button.callback = callback
-        return button
-
-
-@bot.tree.command(name="endgame", description="Hủy ván chơi đang diễn ra trong kênh này")
-async def endgame_slash(interaction: discord.Interaction):
-    cid = interaction.channel_id
-    view = EndAnyGameView(cid)
-
-    if not view.children:
-        await interaction.response.send_message("❌ Không có ván nào đang diễn ra trong kênh này.")
-        return
-
-    await interaction.response.send_message("Chọn ván muốn hủy:", view=view)
+    await interaction.response.send_message(embed=embed, view=EndGameView(cid, "fruit"))
 
 
 @bot.tree.command(name="whatuinto", description="Bói vui xem bạn 'thích' thể loại gì 👀")
@@ -375,6 +407,26 @@ async def caro_slash(interaction: discord.Interaction):
         content=f"🎮 {interaction.user.mention} vs 🤖 Bot — Bạn là **❌**, đi trước! Bấm ô để đánh.",
         view=view,
     )
+
+
+@bot.tree.command(name="chess", description="Chơi cờ vua với bot (bạn cầm quân Trắng)")
+async def chess_slash(interaction: discord.Interaction):
+    cid = interaction.channel_id
+    if games.chess_active(cid):
+        await interaction.response.send_message("⚠️ Đang có ván cờ vua chưa xong trong kênh này!", ephemeral=True)
+        return
+
+    games.chess_start(cid, interaction.user.id)
+    board_text = games.chess_render(cid)
+    embed = discord.Embed(
+        title="♟️ Cờ vua — bạn cầm Trắng, đi trước!",
+        description=(
+            f"```\n{board_text}\n```\n"
+            "Gõ nước đi bằng SAN (vd: `e4`, `Nf3`) hoặc UCI (vd: `e2e4`) để đánh."
+        ),
+        color=0x2C3E50,
+    )
+    await interaction.response.send_message(embed=embed, view=EndGameView(cid, "chess"))
 
 
 # Khởi chạy web server để tránh bị Render tắt
