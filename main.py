@@ -159,6 +159,81 @@ class DifficultyView(discord.ui.View):
         await self.start_with(interaction, "insane", "💀 Insane")
 
 
+# ============ UI CỜ CARO (bàn 3x3 bằng nút) ============
+class TicTacToeView(discord.ui.View):
+    def __init__(self, cid, player_id):
+        super().__init__(timeout=120)
+        self.cid = cid
+        self.player_id = player_id
+        for i in range(9):
+            self.add_item(TicTacToeButton(i))
+
+    def render_board(self):
+        board = games.ttt_board(self.cid)
+        for i, child in enumerate(self.children):
+            mark = board[i]
+            child.label = mark if mark else "\u200b"
+            child.style = (
+                discord.ButtonStyle.danger if mark == "X"
+                else discord.ButtonStyle.primary if mark == "O"
+                else discord.ButtonStyle.secondary
+            )
+            child.disabled = bool(mark)
+
+
+class TicTacToeButton(discord.ui.Button):
+    def __init__(self, index):
+        super().__init__(style=discord.ButtonStyle.secondary, label="\u200b", row=index // 3)
+        self.index = index
+
+    async def callback(self, interaction: discord.Interaction):
+        view: TicTacToeView = self.view
+
+        if interaction.user.id != view.player_id:
+            await interaction.response.send_message("❌ Đây không phải ván của bạn!", ephemeral=True)
+            return
+
+        if not games.ttt_active(view.cid):
+            await interaction.response.send_message("❌ Ván này đã kết thúc.", ephemeral=True)
+            return
+
+        valid, result = games.ttt_player_move(view.cid, self.index)
+        if not valid:
+            await interaction.response.send_message("⚠️ Ô này không hợp lệ!", ephemeral=True)
+            return
+
+        if result:
+            view.render_board()
+            for child in view.children:
+                child.disabled = True
+            games.ttt_end(view.cid)
+            text = _ttt_result_text(result, interaction.user)
+            await interaction.response.edit_message(content=text, view=view)
+            return
+
+        # Đến lượt bot đánh
+        bot_result = games.ttt_bot_move(view.cid)
+        view.render_board()
+
+        if bot_result:
+            for child in view.children:
+                child.disabled = True
+            games.ttt_end(view.cid)
+            text = _ttt_result_text(bot_result, interaction.user)
+            await interaction.response.edit_message(content=text, view=view)
+        else:
+            await interaction.response.edit_message(content="🎮 Đến lượt bạn (❌)!", view=view)
+
+
+def _ttt_result_text(result, user):
+    if result == "X":
+        return f"🎉 {user.mention} thắng! Bot thua tâm phục khẩu phục."
+    elif result == "O":
+        return "🤖 Bot thắng! Thử lại nhé."
+    else:
+        return "🤝 Hòa! Cả hai đều chơi khá lắm."
+
+
 # ============ SLASH COMMANDS ============
 @bot.tree.command(name="ping", description="Kiểm tra độ trễ của bot")
 async def ping_slash(interaction: discord.Interaction):
@@ -220,16 +295,58 @@ async def fruit_slash(interaction: discord.Interaction):
     await interaction.response.send_message(embed=embed)
 
 
-@bot.tree.command(name="endgame", description="Hủy ván Wordle đang diễn ra trong kênh này")
+class EndAnyGameView(discord.ui.View):
+    def __init__(self, cid):
+        super().__init__(timeout=60)
+        self.cid = cid
+
+        if games.wordle_active(cid):
+            self.add_item(self._make_button("Wordle", "wordle"))
+        if games.flag_active(cid):
+            self.add_item(self._make_button("Đoán cờ", "flag"))
+        if games.fruit_active(cid):
+            self.add_item(self._make_button("Đoán trái cây", "fruit"))
+        if games.ttt_active(cid):
+            self.add_item(self._make_button("Cờ caro", "ttt"))
+
+    def _make_button(self, label, kind):
+        button = discord.ui.Button(label=f"🛑 {label}", style=discord.ButtonStyle.danger)
+
+        async def callback(interaction: discord.Interaction):
+            is_active_fn = {
+                "wordle": games.wordle_active,
+                "flag": games.flag_active,
+                "fruit": games.fruit_active,
+                "ttt": games.ttt_active,
+            }[kind]
+            end_fn = {
+                "wordle": games.wordle_end,
+                "flag": games.flag_end,
+                "fruit": games.fruit_end,
+                "ttt": games.ttt_end,
+            }[kind]
+
+            if not is_active_fn(self.cid):
+                await interaction.response.send_message(f"❌ Ván {label} đã kết thúc rồi.", ephemeral=True)
+                return
+
+            end_fn(self.cid)
+            await interaction.response.send_message(f"🛑 Đã hủy ván {label}.")
+
+        button.callback = callback
+        return button
+
+
+@bot.tree.command(name="endgame", description="Hủy ván chơi đang diễn ra trong kênh này")
 async def endgame_slash(interaction: discord.Interaction):
     cid = interaction.channel_id
-    if games.wordle_active(cid):
-        games.wordle_end(cid)
-        await interaction.response.send_message("🛑 Đã hủy ván Wordle.")
-    else:
-        await interaction.response.send_message(
-            "❌ Không có ván Wordle nào đang diễn ra. (Đoán cờ/trái cây dùng nút 🛑 Kết thúc trong embed nhé.)"
-        )
+    view = EndAnyGameView(cid)
+
+    if not view.children:
+        await interaction.response.send_message("❌ Không có ván nào đang diễn ra trong kênh này.")
+        return
+
+    await interaction.response.send_message("Chọn ván muốn hủy:", view=view)
 
 
 @bot.tree.command(name="whatuinto", description="Bói vui xem bạn 'thích' thể loại gì 👀")
@@ -242,6 +359,22 @@ async def whatuinto_slash(interaction: discord.Interaction):
     )
     embed.set_footer(text="Kết quả 100% chính xác khoa học (không có căn cứ gì cả) 😌")
     await interaction.response.send_message(embed=embed)
+
+
+@bot.tree.command(name="caro", description="Chơi cờ caro (Tic-Tac-Toe) solo với bot")
+async def caro_slash(interaction: discord.Interaction):
+    cid = interaction.channel_id
+    if games.ttt_active(cid):
+        await interaction.response.send_message("⚠️ Đang có ván cờ caro chưa xong trong kênh này!", ephemeral=True)
+        return
+
+    games.ttt_start(cid, interaction.user.id)
+    view = TicTacToeView(cid, interaction.user.id)
+    view.render_board()
+    await interaction.response.send_message(
+        content=f"🎮 {interaction.user.mention} vs 🤖 Bot — Bạn là **❌**, đi trước! Bấm ô để đánh.",
+        view=view,
+    )
 
 
 # Khởi chạy web server để tránh bị Render tắt
