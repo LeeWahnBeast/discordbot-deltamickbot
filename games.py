@@ -744,13 +744,14 @@ def chess_board_image(cid):
     black_id = None if not game["is_pvp"] else game["black_id"]
     owner_id = {chess.WHITE: white_id, chess.BLACK: black_id}
 
-    img = Image.new("RGBA", (_BOARD_PX, _BOARD_PX + 24), "white")
+    MARGIN = 22  # lề cho số hàng bên trái
+    img = Image.new("RGBA", (_BOARD_PX + MARGIN, _BOARD_PX), "white")
     draw = ImageDraw.Draw(img)
-    coord_font = _chess_font(14)
+    coord_font = _chess_font(13)
 
     for row in range(8):
         for col in range(8):
-            x0, y0 = col * _SQUARE_PX, row * _SQUARE_PX
+            x0, y0 = MARGIN + col * _SQUARE_PX, row * _SQUARE_PX
             sq = chess.square(col, 7 - row)
             is_light = (row + col) % 2 == 0
             if sq in lastmove_squares:
@@ -758,6 +759,15 @@ def chess_board_image(cid):
             else:
                 color = _LIGHT if is_light else _DARK
             draw.rectangle([x0, y0, x0 + _SQUARE_PX, y0 + _SQUARE_PX], fill=color)
+
+            # Nhãn góc mỗi ô kiểu lichess/chess.com: số hàng ở cột ngoài cùng bên trái,
+            # chữ cột ở hàng dưới cùng — màu chữ tự đảo theo màu ô để luôn dễ đọc.
+            label_color = _DARK if is_light else _LIGHT
+            if col == 0:
+                draw.text((x0 + 3, y0 + 1), str(8 - row), font=coord_font, fill=label_color)
+            if row == 7:
+                draw.text((x0 + _SQUARE_PX - 11, y0 + _SQUARE_PX - 16), chr(ord('a') + col),
+                           font=coord_font, fill=label_color)
 
             piece = board.piece_at(sq)
             if piece is None:
@@ -768,9 +778,6 @@ def chess_board_image(cid):
             if sprite is None:
                 sprite = default_piece_sprite(piece.piece_type, piece.color)
             img.alpha_composite(sprite, (x0, y0))
-
-    for col in range(8):
-        draw.text((col * _SQUARE_PX + 4, _BOARD_PX + 4), chr(ord('a') + col), font=coord_font, fill="black")
 
     buf = io.BytesIO()
     img.convert("RGB").save(buf, format="PNG")
