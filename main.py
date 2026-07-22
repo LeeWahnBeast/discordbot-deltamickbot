@@ -418,7 +418,10 @@ def _add_chess_action_buttons(view, cid):
             "**Ký hiệu đánh giá nước đi:**\n"
             "✨ **!!** — Nước đi thiên tài (rõ ràng tốt hơn hẳn các lựa chọn khác).\n"
             "🤦 **??** — Nước đi hớ nặng (bỏ lỡ nước tốt hơn nhiều, hoặc để hở quân lớn cho đối phương ăn free).\n\n"
-            "Trong bàn cờ còn hiện dòng **quân đã ăn được** của mỗi bên, để dễ theo dõi ai đang lợi thế."
+            "Trong bàn cờ còn hiện dòng **quân đã ăn được** của mỗi bên, để dễ theo dõi ai đang lợi thế.\n\n"
+            "**🎨 Đổi hình quân cờ:** `/custom_chess` — chọn 1 quân ở menu thả xuống rồi dán link ảnh "
+            "riêng cho quân đó, làm dần từng quân một cũng được. "
+            "Xem lại bằng `/custom_chess_xem`, xóa bằng `/custom_chess_xoa`."
         )
         await interaction.response.send_message(text, ephemeral=True)
 
@@ -797,6 +800,53 @@ async def chess_invite_slash(interaction: discord.Interaction, doi_thu: discord.
         ),
         view=view,
     )
+
+
+_PIECE_CHOICES = [
+    app_commands.Choice(name=label, value=key)
+    for key, label in games.PIECE_KEY_LABELS.items()
+]
+
+
+@bot.tree.command(name="custom_chess", description="Đổi hình ảnh cho 1 quân cờ cụ thể bằng link ảnh")
+@app_commands.describe(quan="Chọn quân cờ muốn đổi ảnh", link="Link ảnh (PNG/JPG) trỏ thẳng tới file, chỉ cho quân này")
+@app_commands.choices(quan=_PIECE_CHOICES)
+async def custom_chess_slash(interaction: discord.Interaction, quan: app_commands.Choice[str], link: str):
+    await interaction.response.defer(ephemeral=True)
+    sprite = games.preview_piece_sprite(link)
+    if sprite is None:
+        await interaction.followup.send(
+            "❌ Không đọc được ảnh từ link này. Kiểm tra lại: link phải trỏ thẳng tới file ảnh (PNG/JPG).",
+        )
+        return
+
+    games.set_piece_theme(interaction.user.id, quan.value, link)
+    preview = games.piece_theme_preview_image(interaction.user.id)
+    file = discord.File(preview, filename="piece_theme.png")
+    await interaction.followup.send(
+        content=f"✅ Đã đổi ảnh cho **{quan.name}**! Đây là toàn bộ bộ quân cờ hiện tại của bạn:",
+        file=file,
+    )
+
+
+@bot.tree.command(name="custom_chess_xoa", description="Xóa ảnh custom của 1 quân cờ (bỏ trống = xóa toàn bộ)")
+@app_commands.describe(quan="Quân muốn xóa ảnh custom — bỏ trống để xóa hết cả bộ")
+@app_commands.choices(quan=_PIECE_CHOICES)
+async def custom_chess_xoa_slash(interaction: discord.Interaction, quan: app_commands.Choice[str] = None):
+    key = quan.value if quan else None
+    existed = games.clear_piece_theme(interaction.user.id, key)
+    if not existed:
+        await interaction.response.send_message("ℹ️ Không có ảnh custom nào để xóa.", ephemeral=True)
+        return
+    label = quan.name if quan else "toàn bộ bộ quân"
+    await interaction.response.send_message(f"🧹 Đã xóa ảnh custom cho **{label}**, quay về mặc định.", ephemeral=True)
+
+
+@bot.tree.command(name="custom_chess_xem", description="Xem bộ quân cờ custom hiện tại của bạn")
+async def custom_chess_xem_slash(interaction: discord.Interaction):
+    preview = games.piece_theme_preview_image(interaction.user.id)
+    file = discord.File(preview, filename="piece_theme.png")
+    await interaction.response.send_message(content="🎨 Bộ quân cờ hiện tại của bạn:", file=file)
 
 
 @bot.tree.command(name="wiki", description="Tra cứu bách khoa toàn thư (Wikipedia tiếng Việt)")
