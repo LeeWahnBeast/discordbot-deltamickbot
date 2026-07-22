@@ -1,4 +1,5 @@
 discord.py>=2.3.0
+flask
 chess
 Pillow
 firebase-admin
