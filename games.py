@@ -357,6 +357,13 @@ def _touch(cid):
         _chess_games[cid]["last_move_at"] = time.time()
 
 
+def chess_touch(cid):
+    """Làm mới thời điểm hoạt động cuối — gọi ở MỌI tương tác trong ván (chọn quân, xin
+    gợi ý, xem hướng dẫn...), không chỉ lúc đi xong nước, để tránh bị coi là 'ván ma'
+    và tự xoá dù người chơi vẫn đang thao tác."""
+    _touch(cid)
+
+
 def chess_active(cid):
     """Kiểm tra có ván đang chạy không. Nếu ván tồn tại nhưng đã quá cũ
     (bot từng restart/crash giữa chừng làm state bị kẹt) thì tự động dọn và coi như không có ván."""
