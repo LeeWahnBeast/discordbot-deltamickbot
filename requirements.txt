@@ -3,3 +3,4 @@ flask
 chess
 Pillow
 firebase-admin
+cairosvg
