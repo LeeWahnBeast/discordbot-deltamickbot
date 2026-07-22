@@ -37,7 +37,11 @@ async def on_message(message):
                 result, correct, done = games.wordle_check(cid, word)
                 await message.channel.send(f"`{word.upper()}`\n{result}")
                 if correct:
-                    await message.channel.send(f"🎉 Chính xác! {message.author.mention} đã đoán đúng!")
+                    new_aura = games.add_aura(message.author.id, 10)
+                    await message.channel.send(
+                        f"🎉 Chính xác! {message.author.mention} đã đoán đúng!\n"
+                        f"{games.AURA_ICON} +10 Aura (số dư: {new_aura})."
+                    )
                     games.wordle_end(cid)
                 elif done:
                     await message.channel.send(f"💀 Hết lượt! Từ đúng là: **{games.wordle_word(cid).upper()}**")
@@ -67,7 +71,11 @@ async def _handle_flag_round(message, guess_text):
     round_num, total, score = games.flag_progress(cid)
 
     if correct:
-        await message.channel.send(f"✅ Chính xác! Đó là **{answer.title()}**! (Điểm: {score}/{round_num})")
+        new_aura = games.add_aura(message.author.id, 10)
+        await message.channel.send(
+            f"✅ Chính xác! Đó là **{answer.title()}**! (Điểm: {score}/{round_num})\n"
+            f"{games.AURA_ICON} +10 Aura (số dư: {new_aura})."
+        )
     else:
         await message.channel.send(f"❌ Sai rồi! Đáp án là **{answer.title()}**! (Điểm: {score}/{round_num})")
 
@@ -265,7 +273,8 @@ class TicTacToeButton(discord.ui.Button):
 
 def _ttt_result_text(result, user):
     if result == "X":
-        return f"🎉 {user.mention} thắng! Bot thua tâm phục khẩu phục."
+        new_aura = games.add_aura(user.id, 10)
+        return f"🎉 {user.mention} thắng! Bot thua tâm phục khẩu phục.\n\n{games.AURA_ICON} +10 Aura (số dư: {new_aura})."
     elif result == "O":
         return "🤖 Bot thắng! Thử lại nhé."
     else:
@@ -513,6 +522,7 @@ async def about_slash(interaction: discord.Interaction):
             "`/chess_reset` — xóa ván cờ bị kẹt (nếu bot báo lỗi)\n"
             "`/whatuinto` — bói vui\n"
             "`/wiki <từ khóa>` — tra bách khoa toàn thư\n"
+            "`/aura` — xem số dư Aura\n"
             "`/ping` — kiểm tra độ trễ"
         ),
         inline=False,
@@ -725,6 +735,15 @@ async def wiki_slash(interaction: discord.Interaction, tu_khoa: str):
         embed.set_thumbnail(url=thumbnail)
     embed.set_footer(text="Nguồn: Wikipedia tiếng Việt")
     await interaction.followup.send(embed=embed)
+
+
+@bot.tree.command(name="aura", description="Xem số dư Aura")
+@app_commands.describe(member="Xem Aura của người khác (bỏ trống để xem của chính bạn)")
+async def aura_slash(interaction: discord.Interaction, member: discord.Member = None):
+    target = member or interaction.user
+    balance = games.get_aura(target.id)
+    who = "Bạn" if target.id == interaction.user.id else target.mention
+    await interaction.response.send_message(f"{games.AURA_ICON} {who} đang có **{balance} Aura**.")
 
 
 # Khởi chạy web server để tránh bị Render tắt
