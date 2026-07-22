@@ -138,7 +138,9 @@ GAME_CONFIG = {
 
 
 def make_end_button(cid, kind, row=None):
-    """Tạo nút Kết thúc dùng chung — gắn được vào bất kỳ View nào"""
+    """Tạo nút Kết thúc dùng chung — gắn được vào bất kỳ View nào.
+    Riêng cờ vua PvP: 1 người bấm chỉ là ĐỀ NGHỊ, phải người còn lại xác nhận mới
+    thực sự kết thúc (tránh 1 bên tự ý huỷ ván khi đang thua)."""
     cfg = GAME_CONFIG[kind]
     button = discord.ui.Button(label="🛑 Kết thúc", style=discord.ButtonStyle.danger, row=row)
 
@@ -147,6 +149,11 @@ def make_end_button(cid, kind, row=None):
             if not cfg["active"](cid):
                 await interaction.response.send_message(f"❌ Ván {cfg['label']} đã kết thúc rồi.", ephemeral=True)
                 return
+
+            if kind == "chess" and games.chess_is_pvp(cid):
+                await _handle_chess_end_request(interaction, cid)
+                return
+
             text = f"🛑 Đã kết thúc ván {cfg['label']}. {cfg['reveal'](cid)}"
             cfg["end"](cid)
             await interaction.response.edit_message(content=text, embed=None, view=None)
@@ -157,6 +164,39 @@ def make_end_button(cid, kind, row=None):
 
     button.callback = callback
     return button
+
+
+async def _handle_chess_end_request(interaction: discord.Interaction, cid):
+    """Xử lý bấm nút Kết thúc trong ván cờ PvP — cần cả 2 bên đồng ý."""
+    game = games._chess_games[cid]
+    white_id, black_id = game["white_id"], game["black_id"]
+    if interaction.user.id not in (white_id, black_id):
+        await interaction.response.send_message("❌ Bạn không phải người chơi trong ván này!", ephemeral=True)
+        return
+
+    existing_offer = games.chess_get_draw_offer(cid)
+
+    if existing_offer is None:
+        # Chưa ai đề nghị -> đây là lời đề nghị đầu tiên, chờ đối thủ xác nhận
+        games.chess_offer_draw(cid, interaction.user.id)
+        opponent_id = black_id if interaction.user.id == white_id else white_id
+        await interaction.response.send_message(
+            f"🛑 <@{interaction.user.id}> đề nghị **kết thúc ván cờ** (hòa, không tính Elo).\n"
+            f"👉 <@{opponent_id}> bấm **🛑 Kết thúc** lần nữa để đồng ý, hoặc cứ tiếp tục đi cờ để từ chối.",
+        )
+        return
+
+    if existing_offer == interaction.user.id:
+        await interaction.response.send_message("⏳ Bạn đã đề nghị rồi, đang chờ đối thủ đồng ý.", ephemeral=True)
+        return
+
+    # Người còn lại xác nhận -> kết thúc thật sự
+    names = _chess_display_names(cid)
+    text = games.chess_accept_draw_text(cid, names)
+    games.chess_clear_draw_offer(cid)
+    games.chess_end(cid)
+    embed = discord.Embed(description=text, color=0x2C3E50)
+    await interaction.response.edit_message(content=None, embed=embed, attachments=[], view=None)
 
 
 class EndGameView(discord.ui.View):
@@ -352,13 +392,48 @@ def _add_chess_action_buttons(view, cid):
     hint_btn.callback = on_hint
     view.add_item(hint_btn)
 
+    guide_btn = discord.ui.Button(label="📖 Hướng dẫn", style=discord.ButtonStyle.secondary, row=4)
+
+    async def on_guide(interaction: discord.Interaction):
+        is_pvp = games.chess_active(cid) and games.chess_is_pvp(cid)
+        end_line = (
+            "**🛑 Kết thúc** — đề nghị kết thúc ván hòa. Cần **cả 2 người** cùng bấm mới thực sự "
+            "kết thúc (bấm lần 1 là đề nghị, đối thủ bấm lần 2 là đồng ý). Elo không đổi.\n"
+            if is_pvp else
+            "**🛑 Kết thúc** — dừng ván ngay lập tức.\n"
+        )
+        text = (
+            "**📖 CÁCH CHƠI CỜ VUA**\n\n"
+            "1️⃣ Chọn **quân** muốn đi ở menu thả xuống đầu tiên.\n"
+            "2️⃣ Chọn **ô đích** muốn đi tới ở menu tiếp theo (phong cấp luôn tự thành Hậu).\n"
+            "3️⃣ **🔙 Chọn lại** — quay lại bước chọn quân nếu bấm nhầm.\n\n"
+            "**Các nút hành động:**\n"
+            "🏳️ **Đầu hàng** — tự nhận thua ngay, không cần đối thủ đồng ý (khác với nút Kết thúc).\n"
+            f"💡 **Gợi ý** — bot mách nước đi tốt nhất, nhưng bị trừ **{games.HINT_ELO_PENALTY} Elo** mỗi lần dùng.\n"
+            f"{end_line}\n"
+            "**Ký hiệu đánh giá nước đi:**\n"
+            "✨ **!!** — Nước đi thiên tài (rõ ràng tốt hơn hẳn các lựa chọn khác).\n"
+            "🤦 **??** — Nước đi hớ nặng (bỏ lỡ nước tốt hơn nhiều, hoặc để hở quân lớn cho đối phương ăn free).\n\n"
+            "Trong bàn cờ còn hiện dòng **quân đã ăn được** của mỗi bên, để dễ theo dõi ai đang lợi thế."
+        )
+        await interaction.response.send_message(text, ephemeral=True)
+
+    guide_btn.callback = on_guide
+    view.add_item(guide_btn)
+
 
 def _chess_board_embed(cid, extra_line=None):
-    """Dựng embed chuẩn cho bàn cờ: header Elo 2 người chơi + (tuỳ chọn) 1 dòng phụ (VD: đến lượt ai)"""
+    """Dựng embed chuẩn cho bàn cờ: header Elo 2 người chơi + quân đã ăn của mỗi bên
+    + (tuỳ chọn) 1 dòng phụ (VD: đến lượt ai)"""
     names = _chess_display_names(cid)
     header = games.chess_header_text(cid, names)
-    description = f"{header}\n\n{extra_line}" if extra_line else header
-    embed = discord.Embed(description=description, color=0x2C3E50)
+    parts = [header]
+    captured = games.chess_captured_text(cid)
+    if captured:
+        parts.append(captured)
+    if extra_line:
+        parts.append(extra_line)
+    embed = discord.Embed(description="\n\n".join(parts), color=0x2C3E50)
     embed.set_image(url="attachment://board.png")
     return embed
 
@@ -456,6 +531,9 @@ class ChessToView(ChessTimeoutView):
             if not ok:
                 await interaction.response.send_message("⚠️ Nước đi này không còn hợp lệ, hãy chọn lại!", ephemeral=True)
                 return
+
+            # Có nước đi mới -> coi như từ chối ngầm lời đề nghị kết thúc đang treo (nếu có)
+            games.chess_clear_draw_offer(self.cid)
 
             # Vs Bot: sau khi người đi xong, đến lượt bot đánh ngay.
             # Giữ lại nhãn nước của NGƯỜI CHƠI, không để nhãn nước bot đè mất —
