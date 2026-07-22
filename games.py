@@ -374,6 +374,7 @@ def chess_force_reset(cid):
     existed = cid in _chess_games
     _chess_games.pop(cid, None)
     _chess_invites.pop(cid, None)
+    _chess_draw_offers.pop(cid, None)
     return existed
 
 
@@ -408,6 +409,7 @@ def chess_current_turn_id(cid):
 
 def chess_end(cid):
     _chess_games.pop(cid, None)
+    _chess_draw_offers.pop(cid, None)
 
 
 def chess_player_id(cid):
@@ -822,6 +824,93 @@ def chess_header_text(cid, display_names=None):
     bot_elo = game["bot_elo"]
     bot_label = BOT_LEVELS[bot_elo]["label"]
     return f"⚪ **{player_name}** — {get_elo(player_id)} Elo\n⚫ **Bot ({bot_label})** — {bot_elo} Elo"
+
+
+# ============ CẦU HÒA (chỉ PvP — cần CẢ 2 BÊN đồng ý mới kết thúc ván) ============
+_chess_draw_offers = {}  # {channel_id: offerer_id}
+
+
+def chess_offer_draw(cid, offerer_id):
+    _chess_draw_offers[cid] = offerer_id
+
+
+def chess_get_draw_offer(cid):
+    return _chess_draw_offers.get(cid)
+
+
+def chess_clear_draw_offer(cid):
+    _chess_draw_offers.pop(cid, None)
+
+
+def chess_accept_draw_text(cid, display_names=None):
+    """Cả 2 bên đồng ý hòa — không đổi Elo, không trừ Aura (khác với hòa do luật cờ:
+    đó là hòa 'thương lượng', không tính là ván đấu thực sự phân định trình độ)."""
+    game = _chess_games[cid]
+    white_id, black_id = game["white_id"], game["black_id"]
+    white_name = display_names[True] if display_names else f"<@{white_id}>"
+    black_name = display_names[False] if display_names else f"<@{black_id}>"
+    return f"🤝 {white_name} và {black_name} đã đồng ý hòa. Ván cờ kết thúc, Elo giữ nguyên."
+
+
+# ============ MỜI ĐẤU CỜ VUA PvP ============
+# ============ KẾT THÚC HÒA THUẬN (chỉ PvP — cần CẢ 2 BÊN đồng ý) ============
+# Đấu Bot thì 1 người bấm "Kết thúc" là xong ngay (không có đối thủ thật để hỏi ý).
+# PvP thì phải qua bước đề nghị + xác nhận, tránh 1 bên tự ý huỷ ván khi đang thua.
+_chess_draw_offers = {}  # {channel_id: offerer_id}
+
+
+def chess_offer_draw(cid, offerer_id):
+    _chess_draw_offers[cid] = offerer_id
+
+
+def chess_get_draw_offer(cid):
+    return _chess_draw_offers.get(cid)
+
+
+def chess_clear_draw_offer(cid):
+    _chess_draw_offers.pop(cid, None)
+
+
+def chess_accept_draw_text(cid, display_names=None):
+    """Cả 2 bên đồng ý kết thúc/hòa — không đổi Elo, không trừ Aura (khác hòa theo luật cờ,
+    vì đây là hòa 'thương lượng', không phân định được ai giỏi hơn)."""
+    game = _chess_games[cid]
+    white_id, black_id = game["white_id"], game["black_id"]
+    white_name = display_names[True] if display_names else f"<@{white_id}>"
+    black_name = display_names[False] if display_names else f"<@{black_id}>"
+    return f"🤝 {white_name} và {black_name} đã đồng ý kết thúc ván. Elo giữ nguyên, không tính thắng thua."
+
+
+def chess_captured_text(cid):
+    """Trả về dòng text liệt kê quân mỗi bên đã ăn được của đối phương, VD:
+    'Trắng đã ăn: ♟♟♞  |  Đen đã ăn: ♙♗'. Trả về None nếu chưa ai ăn quân nào."""
+    board = _chess_games[cid]["board"]
+    remaining = {chess.WHITE: {}, chess.BLACK: {}}
+    for color in (chess.WHITE, chess.BLACK):
+        for piece_type in _PIECE_VALUES:
+            remaining[color][piece_type] = len(board.pieces(piece_type, color))
+
+    start_counts = {chess.PAWN: 8, chess.KNIGHT: 2, chess.BISHOP: 2, chess.ROOK: 2, chess.QUEEN: 1}
+
+    def captured_symbols(by_color):
+        """Quân màu `by_color` đã ăn được — tức quân ĐỐI PHƯƠNG bị mất."""
+        opp = not by_color
+        symbols = []
+        for piece_type, start in start_counts.items():
+            missing = start - remaining[opp][piece_type]
+            symbols.extend([_PIECE_UNICODE[(piece_type, opp)]] * missing)
+        return "".join(symbols)
+
+    white_took = captured_symbols(chess.WHITE)
+    black_took = captured_symbols(chess.BLACK)
+    if not white_took and not black_took:
+        return None
+    parts = []
+    if white_took:
+        parts.append(f"⚪ Trắng đã ăn: {white_took}")
+    if black_took:
+        parts.append(f"⚫ Đen đã ăn: {black_took}")
+    return "  |  ".join(parts)
 
 
 # ============ MỜI ĐẤU CỜ VUA PvP ============
