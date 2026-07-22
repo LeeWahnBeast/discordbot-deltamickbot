@@ -7,6 +7,43 @@ import json
 import chess  # pip install chess
 from PIL import Image, ImageDraw, ImageFont  # đã có sẵn vì bạn dùng PIL cho gen_smoke.py
 
+# ============ TIỀN TỆ AURA ============
+# Lưu ra file JSON để không mất khi bot restart (giống cách lưu Elo cờ vua).
+AURA_FILE = "aura_data.json"
+AURA_ICON = "<:mango:1529287058072408195>"
+
+
+def _load_aura():
+    try:
+        with open(AURA_FILE, "r", encoding="utf-8") as f:
+            raw = json.load(f)
+        return {int(k): v for k, v in raw.items()}
+    except (FileNotFoundError, json.JSONDecodeError):
+        return {}
+
+
+def _save_aura():
+    try:
+        with open(AURA_FILE, "w", encoding="utf-8") as f:
+            json.dump(_user_aura, f)
+    except OSError as e:
+        print(f"[aura] Lỗi lưu aura_data.json: {e!r}")
+
+
+_user_aura = _load_aura()  # {user_id: aura}
+
+
+def get_aura(user_id):
+    return _user_aura.get(user_id, 0)
+
+
+def add_aura(user_id, amount):
+    """Cộng (hoặc trừ nếu amount âm) Aura cho 1 người. Cho phép âm. Trả về số dư mới."""
+    new_balance = get_aura(user_id) + amount
+    _user_aura[user_id] = new_balance
+    _save_aura()
+    return new_balance
+
 # ============ FOLK VALLEY RANKING (dùng chung cho flag) ============
 def folk_valley_rank(score, total=5):
     if score <= 1:
@@ -659,14 +696,21 @@ def chess_outcome_text(cid, outcome, display_names=None):
 
         if outcome.winner is None:
             result_line = "🤝 Hòa!"
+            add_aura(white_id, -150)
+            add_aura(black_id, -150)
+            aura_line = f"\n\n{AURA_ICON} Hòa cờ: cả hai bị trừ **150 Aura**."
         else:
+            winner_id = white_id if outcome.winner == chess.WHITE else black_id
             winner_name = white_name if outcome.winner == chess.WHITE else black_name
             result_line = f"🎉 {winner_name} thắng! Chiếu bí!"
+            new_winner_aura = add_aura(winner_id, 100)
+            aura_line = f"\n\n{AURA_ICON} {winner_name} nhận **+100 Aura** (số dư: {new_winner_aura})."
 
         return (
             f"{result_line}\n\n"
             f"⚪ {white_name}: {new_white} Elo ({sign_w})\n"
             f"⚫ {black_name}: {new_black} Elo ({sign_b})"
+            f"{aura_line}"
         )
 
     # --- vs Bot ---
@@ -707,12 +751,15 @@ def chess_resign_text(cid, resigner_id, display_names=None):
         black_name = display_names[False] if display_names else f"<@{black_id}>"
         resigner_name = white_name if resigner_id == white_id else black_name
         winner_name = black_name if resigner_id == white_id else white_name
+        winner_id = black_id if resigner_id == white_id else white_id
+        new_winner_aura = add_aura(winner_id, 100)
         sign_w = f"+{d_white}" if d_white >= 0 else str(d_white)
         sign_b = f"+{d_black}" if d_black >= 0 else str(d_black)
         return (
             f"🏳️ {resigner_name} đã đầu hàng! {winner_name} thắng!\n\n"
             f"⚪ {white_name}: {new_white} Elo ({sign_w})\n"
-            f"⚫ {black_name}: {new_black} Elo ({sign_b})"
+            f"⚫ {black_name}: {new_black} Elo ({sign_b})\n\n"
+            f"{AURA_ICON} {winner_name} nhận **+100 Aura** (số dư: {new_winner_aura})."
         )
 
     player_id = game["player_id"]
