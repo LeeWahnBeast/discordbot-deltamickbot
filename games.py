@@ -3,11 +3,18 @@ import io
 import time
 import os
 import asyncio
+from concurrent.futures import ThreadPoolExecutor
 import urllib.request
 import urllib.parse
 import json
 import chess  # pip install chess
 from PIL import Image, ImageDraw, ImageFont
+
+# Pool riêng để ghi Firestore chạy nền (fire-and-forget), không chặn bot khi mạng
+# chậm. Ghi lên Firestore luôn được gọi từ hàm sync (add_aura, chess_hint, set_piece_theme...)
+# nên không thể await trực tiếp — thay vào đó đẩy qua thread, RAM cache đã cập nhật
+# ngay trước đó nên user không phải chờ, kể cả khi Firestore rớt mạng vài giây.
+_firestore_executor = ThreadPoolExecutor(max_workers=4, thread_name_prefix="firestore-save")
 
 # ============ FIRESTORE (lưu Aura + Elo bền vĩnh viễn, sống sót qua redeploy) ============
 # File JSON cũ (aura_data.json, chess_elo.json) BAY MẤT mỗi lần Render redeploy vì
@@ -53,14 +60,26 @@ def _firestore_load_collection(collection_name, fallback_file):
         return {}
 
 
-def _firestore_save_doc(collection_name, user_id, data):
-    """Ghi 1 document lên Firestore (không block nếu lỗi — chỉ log cảnh báo)."""
+def _firestore_save_doc_blocking(collection_name, user_id, data):
+    """Phần ghi Firestore thật sự (chạy trong thread riêng, xem _firestore_save_doc)."""
     if _firestore_db is None:
         return
     try:
         _firestore_db.collection(collection_name).document(str(user_id)).set(data)
     except Exception as e:
         print(f"[firestore] Lỗi ghi '{collection_name}/{user_id}': {e!r}")
+
+
+def _firestore_save_doc(collection_name, user_id, data):
+    """Ghi 1 document lên Firestore — KHÔNG chờ kết quả (fire-and-forget qua thread
+    pool riêng). RAM cache đã được cập nhật trước khi hàm này được gọi, nên chỗ gọi
+    không cần chờ Firestore mới coi là 'đã lưu'. Quan trọng: nếu gọi .set() trực tiếp
+    ở đây (đồng bộ) thì mọi callback Discord — kể cả không liên quan gì tới Firestore —
+    sẽ bị đơ chung vì tất cả chạy trên cùng 1 event loop, dẫn tới 'Tương tác không
+    thành công' do quá 3s không phản hồi kịp."""
+    if _firestore_db is None:
+        return
+    _firestore_executor.submit(_firestore_save_doc_blocking, collection_name, user_id, data)
 
 
 # ============ TIỀN TỆ AURA ============
