@@ -662,7 +662,6 @@ def piece_theme_preview_image(user_id):
     img = Image.new("RGBA", (w, h), (30, 30, 30, 255))
     draw = ImageDraw.Draw(img)
     font = _chess_font(11)
-    piece_font = _chess_font(40)
     names = {chess.KING: "Vua", chess.QUEEN: "Hậu", chess.ROOK: "Xe",
              chess.BISHOP: "Tượng", chess.KNIGHT: "Mã", chess.PAWN: "Tốt"}
     cols_order = [chess.KING, chess.QUEEN, chess.ROOK, chess.BISHOP, chess.KNIGHT, chess.PAWN]
@@ -674,10 +673,9 @@ def piece_theme_preview_image(user_id):
             y = pad + row_idx * (cell + pad + label_h)
             url = get_piece_theme_url(user_id, piece_type, color)
             sprite = _load_piece_sprite(url) if url else None
-            if sprite is not None:
-                img.alpha_composite(sprite, (x, y))
-            else:
-                _draw_piece_unicode(draw, x + cell / 2, y + cell / 2, chess.Piece(piece_type, color), piece_font)
+            if sprite is None:
+                sprite = default_piece_sprite(piece_type, color)
+            img.alpha_composite(sprite, (x, y))
             label = f"{names[piece_type]} {'Trắng' if color == chess.WHITE else 'Đen'}"
             draw.text((x + cell / 2, y + cell + 2), label, font=font, fill="white", anchor="ma")
 
@@ -700,14 +698,34 @@ def _chess_font(size):
         return ImageFont.load_default()
 
 
-def _draw_piece_unicode(draw, cx, cy, piece, font):
-    """Fallback khi không có theme: vẽ quân bằng ký tự Unicode có viền, không tải mạng."""
-    symbol = _PIECE_UNICODE[(piece.piece_type, piece.color)]
-    fill = "white" if piece.color == chess.WHITE else "black"
-    outline = "black" if piece.color == chess.WHITE else "white"
-    for dx, dy in ((-1, 0), (1, 0), (0, -1), (0, 1)):
-        draw.text((cx + dx, cy + dy), symbol, font=font, fill=outline, anchor="mm")
-    draw.text((cx, cy), symbol, font=font, fill=fill, anchor="mm")
+def _frac_to_px(points, ss):
+    return [(px * ss, py * ss) for px, py in points]
+
+
+_DEFAULT_PIECE_SPRITE_CACHE = {}  # {(piece_type, color): PIL.Image} — vẽ 1 lần, dùng lại mãi
+
+
+_PIECE_FILE = {
+    chess.PAWN: "P", chess.ROOK: "R", chess.KNIGHT: "N",
+    chess.BISHOP: "B", chess.QUEEN: "Q", chess.KING: "K",
+}
+_PIECES_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "assets", "pieces")
+
+
+def default_piece_sprite(piece_type, color):
+    """Ảnh quân cờ mặc định khi user chưa /custom_chess — load PNG có sẵn trong
+    assets/pieces/ (vd: wP.png, bN.png...) thay vì vẽ vector, resize 1 lần rồi
+    cache theo (piece_type, color) trong RAM — mở file chỉ tốn 1 lần cho cả
+    vòng đời bot, các lượt vẽ bàn cờ sau chỉ paste ảnh cache, gần như free CPU."""
+    key = (piece_type, color)
+    if key in _DEFAULT_PIECE_SPRITE_CACHE:
+        return _DEFAULT_PIECE_SPRITE_CACHE[key]
+
+    fname = f"{'w' if color == chess.WHITE else 'b'}{_PIECE_FILE[piece_type]}.png"
+    path = os.path.join(_PIECES_DIR, fname)
+    sprite = Image.open(path).convert("RGBA").resize((_SQUARE_PX, _SQUARE_PX), Image.LANCZOS)
+    _DEFAULT_PIECE_SPRITE_CACHE[key] = sprite
+    return sprite
 
 
 def chess_board_image(cid):
@@ -727,7 +745,6 @@ def chess_board_image(cid):
 
     img = Image.new("RGBA", (_BOARD_PX, _BOARD_PX + 24), "white")
     draw = ImageDraw.Draw(img)
-    piece_font = _chess_font(40)
     coord_font = _chess_font(14)
 
     for row in range(8):
@@ -747,10 +764,9 @@ def chess_board_image(cid):
             uid = owner_id[piece.color]
             url = get_piece_theme_url(uid, piece.piece_type, piece.color) if uid else None
             sprite = _load_piece_sprite(url) if url else None
-            if sprite is not None:
-                img.alpha_composite(sprite, (x0, y0))
-            else:
-                _draw_piece_unicode(draw, x0 + _SQUARE_PX / 2, y0 + _SQUARE_PX / 2, piece, piece_font)
+            if sprite is None:
+                sprite = default_piece_sprite(piece.piece_type, piece.color)
+            img.alpha_composite(sprite, (x0, y0))
 
     for col in range(8):
         draw.text((col * _SQUARE_PX + 4, _BOARD_PX + 4), chr(ord('a') + col), font=coord_font, fill="black")
