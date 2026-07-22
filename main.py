@@ -1,6 +1,5 @@
 import discord
 import os
-import asyncio
 import web_server
 import games
 from discord.ext import commands
@@ -551,7 +550,9 @@ class ChessToView(ChessTimeoutView):
             # cả 2 đều đáng xem, nên hiển thị riêng từng dòng.
             player_annotation = annotation
             bot_annotation = None
-            await games.chess_preload_sprites(self.cid)
+            if outcome is None and not games.chess_is_pvp(self.cid):
+                outcome, bot_annotation = games.chess_bot_move(self.cid)
+
             image = games.chess_board_image(self.cid)
             file = discord.File(image, filename="board.png")
             player_line = MOVE_ANNOTATION_TEXT.get(player_annotation)
@@ -699,7 +700,6 @@ class ChessDifficultyView(discord.ui.View):
             return
 
         games.chess_start(self.cid, self.player_id, bot_elo)
-        await games.chess_preload_sprites(self.cid)
         image = games.chess_board_image(self.cid)
         file = discord.File(image, filename="board.png")
         embed = _chess_board_embed(self.cid, "Chọn **quân** rồi chọn **ô muốn đi tới** bằng menu bên dưới.")
@@ -761,7 +761,6 @@ class ChessInviteView(discord.ui.View):
 
         games.chess_clear_invite(self.cid)
         games.chess_start_pvp(self.cid, self.inviter_id, self.invitee_id)
-        await games.chess_preload_sprites(self.cid)
         image = games.chess_board_image(self.cid)
         file = discord.File(image, filename="board.png")
         embed = _chess_board_embed(self.cid, f"👉 Đến lượt <@{self.inviter_id}>!")
@@ -814,15 +813,15 @@ _PIECE_CHOICES = [
 @app_commands.choices(quan=_PIECE_CHOICES)
 async def custom_chess_slash(interaction: discord.Interaction, quan: app_commands.Choice[str], link: str):
     await interaction.response.defer(ephemeral=True)
-    sprite = await asyncio.to_thread(games.preview_piece_sprite, link)
+    sprite = games.preview_piece_sprite(link)
     if sprite is None:
         await interaction.followup.send(
             "❌ Không đọc được ảnh từ link này. Kiểm tra lại: link phải trỏ thẳng tới file ảnh (PNG/JPG).",
         )
         return
 
-    await asyncio.to_thread(games.set_piece_theme, interaction.user.id, quan.value, link)
-    preview = await asyncio.to_thread(games.piece_theme_preview_image, interaction.user.id)
+    games.set_piece_theme(interaction.user.id, quan.value, link)
+    preview = games.piece_theme_preview_image(interaction.user.id)
     file = discord.File(preview, filename="piece_theme.png")
     await interaction.followup.send(
         content=f"✅ Đã đổi ảnh cho **{quan.name}**! Đây là toàn bộ bộ quân cờ hiện tại của bạn:",
@@ -834,22 +833,20 @@ async def custom_chess_slash(interaction: discord.Interaction, quan: app_command
 @app_commands.describe(quan="Quân muốn xóa ảnh custom — bỏ trống để xóa hết cả bộ")
 @app_commands.choices(quan=_PIECE_CHOICES)
 async def custom_chess_xoa_slash(interaction: discord.Interaction, quan: app_commands.Choice[str] = None):
-    await interaction.response.defer(ephemeral=True)
     key = quan.value if quan else None
-    existed = await asyncio.to_thread(games.clear_piece_theme, interaction.user.id, key)
+    existed = games.clear_piece_theme(interaction.user.id, key)
     if not existed:
-        await interaction.followup.send("ℹ️ Không có ảnh custom nào để xóa.")
+        await interaction.response.send_message("ℹ️ Không có ảnh custom nào để xóa.", ephemeral=True)
         return
     label = quan.name if quan else "toàn bộ bộ quân"
-    await interaction.followup.send(f"🧹 Đã xóa ảnh custom cho **{label}**, quay về mặc định.")
+    await interaction.response.send_message(f"🧹 Đã xóa ảnh custom cho **{label}**, quay về mặc định.", ephemeral=True)
 
 
 @bot.tree.command(name="custom_chess_xem", description="Xem bộ quân cờ custom hiện tại của bạn")
 async def custom_chess_xem_slash(interaction: discord.Interaction):
-    await interaction.response.defer()
-    preview = await asyncio.to_thread(games.piece_theme_preview_image, interaction.user.id)
+    preview = games.piece_theme_preview_image(interaction.user.id)
     file = discord.File(preview, filename="piece_theme.png")
-    await interaction.followup.send(content="🎨 Bộ quân cờ hiện tại của bạn:", file=file)
+    await interaction.response.send_message(content="🎨 Bộ quân cờ hiện tại của bạn:", file=file)
 
 
 @bot.tree.command(name="wiki", description="Tra cứu bách khoa toàn thư (Wikipedia tiếng Việt)")
