@@ -1,47 +1,83 @@
 import random
 import io
 import time
+import os
 import urllib.request
 import urllib.parse
 import json
 import chess  # pip install chess
 from PIL import Image, ImageDraw, ImageFont  # đã có sẵn vì bạn dùng PIL cho gen_smoke.py
 
-# ============ TIỀN TỆ AURA ============
-# Lưu ra file JSON để không mất khi bot restart (giống cách lưu Elo cờ vua).
-AURA_FILE = "aura_data.json"
-AURA_ICON = "<:mango:1529287058072408195>"
+# ============ FIRESTORE (lưu Aura + Elo bền vĩnh viễn, sống sót qua redeploy) ============
+# File JSON cũ (aura_data.json, chess_elo.json) BAY MẤT mỗi lần Render redeploy vì
+# container bị tạo lại từ đầu — filesystem không persist qua lần update code.
+# Firestore tách hẳn khỏi container nên dữ liệu luôn còn dù deploy bao nhiêu lần.
+#
+# Cách hoạt động: đọc Firestore 1 lần lúc bot khởi động, nạp hết vào RAM (_aura_cache,
+# _elo_cache) để mọi lệnh đọc tức thì không cần chờ mạng. Mỗi lần ghi thì cập nhật RAM
+# ngay + đẩy lên Firestore. Nếu Firestore lỗi kết nối, bot vẫn chạy bình thường bằng
+# RAM cache (không crash), chỉ in log cảnh báo.
+_firestore_db = None
+try:
+    import firebase_admin
+    from firebase_admin import credentials, firestore
+
+    _cred_json = os.environ.get("FIREBASE_CREDENTIALS")
+    if _cred_json:
+        cred = credentials.Certificate(json.loads(_cred_json))
+        firebase_admin.initialize_app(cred)
+        _firestore_db = firestore.client()
+        print("[firestore] Đã kết nối Firestore thành công.")
+    else:
+        print("[firestore] Chưa có biến môi trường FIREBASE_CREDENTIALS — dùng RAM/file JSON tạm thời.")
+except Exception as e:
+    print(f"[firestore] Không kết nối được Firestore, dùng RAM/file JSON tạm thời: {e!r}")
 
 
-def _load_aura():
+def _firestore_load_collection(collection_name, fallback_file):
+    """Đọc toàn bộ 1 collection Firestore vào dict {user_id: data}.
+    Nếu Firestore không sẵn sàng, đọc từ file JSON cũ để không mất dữ liệu đang có."""
+    if _firestore_db is not None:
+        try:
+            docs = _firestore_db.collection(collection_name).stream()
+            return {int(doc.id): doc.to_dict() for doc in docs}
+        except Exception as e:
+            print(f"[firestore] Lỗi đọc collection '{collection_name}': {e!r}")
+
     try:
-        with open(AURA_FILE, "r", encoding="utf-8") as f:
+        with open(fallback_file, "r", encoding="utf-8") as f:
             raw = json.load(f)
         return {int(k): v for k, v in raw.items()}
     except (FileNotFoundError, json.JSONDecodeError):
         return {}
 
 
-def _save_aura():
+def _firestore_save_doc(collection_name, user_id, data):
+    """Ghi 1 document lên Firestore (không block nếu lỗi — chỉ log cảnh báo)."""
+    if _firestore_db is None:
+        return
     try:
-        with open(AURA_FILE, "w", encoding="utf-8") as f:
-            json.dump(_user_aura, f)
-    except OSError as e:
-        print(f"[aura] Lỗi lưu aura_data.json: {e!r}")
+        _firestore_db.collection(collection_name).document(str(user_id)).set(data)
+    except Exception as e:
+        print(f"[firestore] Lỗi ghi '{collection_name}/{user_id}': {e!r}")
 
 
-_user_aura = _load_aura()  # {user_id: aura}
+# ============ TIỀN TỆ AURA ============
+AURA_FILE = "aura_data.json"  # fallback khi chưa cấu hình Firestore
+AURA_ICON = "<:mango:1529287058072408195>"
+
+_aura_cache = {uid: d.get("balance", 0) for uid, d in _firestore_load_collection("aura", AURA_FILE).items()}
 
 
 def get_aura(user_id):
-    return _user_aura.get(user_id, 0)
+    return _aura_cache.get(user_id, 0)
 
 
 def add_aura(user_id, amount):
     """Cộng (hoặc trừ nếu amount âm) Aura cho 1 người. Cho phép âm. Trả về số dư mới."""
     new_balance = get_aura(user_id) + amount
-    _user_aura[user_id] = new_balance
-    _save_aura()
+    _aura_cache[user_id] = new_balance
+    _firestore_save_doc("aura", user_id, {"balance": new_balance})
     return new_balance
 
 # ============ FOLK VALLEY RANKING (dùng chung cho flag) ============
@@ -392,32 +428,13 @@ BOT_LEVELS = {
     1600: {"label": "🔴 Khó", "random_chance": 0.0},
 }
 
-ELO_FILE = "chess_elo.json"
+ELO_FILE = "chess_elo.json"  # fallback khi chưa cấu hình Firestore
 
-
-def _load_elo():
-    """Đọc Elo đã lưu từ file, tránh mất sạch khi bot restart (Render free tier hay bị sleep)."""
-    try:
-        with open(ELO_FILE, "r", encoding="utf-8") as f:
-            raw = json.load(f)
-        return {int(k): v for k, v in raw.items()}
-    except (FileNotFoundError, json.JSONDecodeError):
-        return {}
-
-
-def _save_elo():
-    try:
-        with open(ELO_FILE, "w", encoding="utf-8") as f:
-            json.dump(_user_elo, f)
-    except OSError as e:
-        print(f"[chess] Lỗi lưu Elo ra file: {e!r}")
-
-
-_user_elo = _load_elo()  # {user_id: elo}
+_elo_cache = {uid: d.get("elo", DEFAULT_ELO) for uid, d in _firestore_load_collection("elo", ELO_FILE).items()}
 
 
 def get_elo(user_id):
-    return _user_elo.get(user_id, DEFAULT_ELO)
+    return _elo_cache.get(user_id, DEFAULT_ELO)
 
 
 def _expected_score(elo_a, elo_b):
@@ -437,10 +454,11 @@ def update_elo(id_a, elo_a, id_b, elo_b, score_a):
     new_b = max(100, elo_b + delta_b)
 
     if id_a is not None:
-        _user_elo[id_a] = new_a
+        _elo_cache[id_a] = new_a
+        _firestore_save_doc("elo", id_a, {"elo": new_a})
     if id_b is not None:
-        _user_elo[id_b] = new_b
-    _save_elo()
+        _elo_cache[id_b] = new_b
+        _firestore_save_doc("elo", id_b, {"elo": new_b})
 
     return new_a, new_b, delta_a, delta_b
 
@@ -449,8 +467,8 @@ def apply_hint_penalty(user_id):
     """Trừ Elo khi dùng gợi ý. Trả về Elo mới."""
     current = get_elo(user_id)
     new_elo = max(100, current - HINT_ELO_PENALTY)
-    _user_elo[user_id] = new_elo
-    _save_elo()
+    _elo_cache[user_id] = new_elo
+    _firestore_save_doc("elo", user_id, {"elo": new_elo})
     return new_elo
 
 
