@@ -347,6 +347,7 @@ def _add_chess_action_buttons(view, cid):
             if not games.chess_active(cid):
                 await interaction.response.send_message("❌ Ván cờ đã kết thúc rồi.", ephemeral=True)
                 return
+            games.chess_touch(cid)
             if games.chess_is_pvp(cid):
                 game = games._chess_games[cid]
                 is_participant = interaction.user.id in (game["white_id"], game["black_id"])
@@ -377,6 +378,7 @@ def _add_chess_action_buttons(view, cid):
             if not games.chess_active(cid):
                 await interaction.response.send_message("❌ Ván cờ đã kết thúc rồi.", ephemeral=True)
                 return
+            games.chess_touch(cid)
             allowed = interaction.user.id == _chess_current_player_id(cid)
             if await _deny_unless(interaction, allowed, "❌ Chỉ người đến lượt mới xin gợi ý được!"):
                 return
@@ -396,6 +398,8 @@ def _add_chess_action_buttons(view, cid):
 
     async def on_guide(interaction: discord.Interaction):
         is_pvp = games.chess_active(cid) and games.chess_is_pvp(cid)
+        if games.chess_active(cid):
+            games.chess_touch(cid)
         end_line = (
             "**🛑 Kết thúc** — đề nghị kết thúc ván hòa. Cần **cả 2 người** cùng bấm mới thực sự "
             "kết thúc (bấm lần 1 là đề nghị, đối thủ bấm lần 2 là đồng ý). Elo không đổi.\n"
@@ -475,6 +479,7 @@ class ChessFromView(ChessTimeoutView):
             if not games.chess_active(self.cid):
                 await interaction.response.send_message("❌ Ván cờ đã kết thúc rồi.", ephemeral=True)
                 return
+            games.chess_touch(self.cid)
             if await _deny_unless(interaction, interaction.user.id == _chess_current_player_id(self.cid), "❌ Chưa đến lượt bạn!"):
                 return
             from_sq = interaction.data["values"][0]
@@ -510,6 +515,8 @@ class ChessToView(ChessTimeoutView):
         try:
             if await _deny_unless(interaction, interaction.user.id == self.player_id):
                 return
+            if games.chess_active(self.cid):
+                games.chess_touch(self.cid)
             new_view = ChessFromView(self.cid)
             await interaction.response.edit_message(view=new_view)
             new_view.message = await interaction.original_response()
