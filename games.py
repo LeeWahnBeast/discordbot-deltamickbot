@@ -2,19 +2,11 @@ import random
 import io
 import time
 import os
-import asyncio
-from concurrent.futures import ThreadPoolExecutor
 import urllib.request
 import urllib.parse
 import json
 import chess  # pip install chess
 from PIL import Image, ImageDraw, ImageFont
-
-# Pool riêng để ghi Firestore chạy nền (fire-and-forget), không chặn bot khi mạng
-# chậm. Ghi lên Firestore luôn được gọi từ hàm sync (add_aura, chess_hint, set_piece_theme...)
-# nên không thể await trực tiếp — thay vào đó đẩy qua thread, RAM cache đã cập nhật
-# ngay trước đó nên user không phải chờ, kể cả khi Firestore rớt mạng vài giây.
-_firestore_executor = ThreadPoolExecutor(max_workers=4, thread_name_prefix="firestore-save")
 
 # ============ FIRESTORE (lưu Aura + Elo bền vĩnh viễn, sống sót qua redeploy) ============
 # File JSON cũ (aura_data.json, chess_elo.json) BAY MẤT mỗi lần Render redeploy vì
@@ -60,26 +52,14 @@ def _firestore_load_collection(collection_name, fallback_file):
         return {}
 
 
-def _firestore_save_doc_blocking(collection_name, user_id, data):
-    """Phần ghi Firestore thật sự (chạy trong thread riêng, xem _firestore_save_doc)."""
+def _firestore_save_doc(collection_name, user_id, data):
+    """Ghi 1 document lên Firestore (không block nếu lỗi — chỉ log cảnh báo)."""
     if _firestore_db is None:
         return
     try:
         _firestore_db.collection(collection_name).document(str(user_id)).set(data)
     except Exception as e:
         print(f"[firestore] Lỗi ghi '{collection_name}/{user_id}': {e!r}")
-
-
-def _firestore_save_doc(collection_name, user_id, data):
-    """Ghi 1 document lên Firestore — KHÔNG chờ kết quả (fire-and-forget qua thread
-    pool riêng). RAM cache đã được cập nhật trước khi hàm này được gọi, nên chỗ gọi
-    không cần chờ Firestore mới coi là 'đã lưu'. Quan trọng: nếu gọi .set() trực tiếp
-    ở đây (đồng bộ) thì mọi callback Discord — kể cả không liên quan gì tới Firestore —
-    sẽ bị đơ chung vì tất cả chạy trên cùng 1 event loop, dẫn tới 'Tương tác không
-    thành công' do quá 3s không phản hồi kịp."""
-    if _firestore_db is None:
-        return
-    _firestore_executor.submit(_firestore_save_doc_blocking, collection_name, user_id, data)
 
 
 # ============ TIỀN TỆ AURA ============
@@ -725,57 +705,82 @@ def _frac_to_px(points, ss):
 _DEFAULT_PIECE_SPRITE_CACHE = {}  # {(piece_type, color): PIL.Image} — vẽ 1 lần, dùng lại mãi
 
 
-_PIECE_FILE = {
-    chess.PAWN: "P", chess.ROOK: "R", chess.KNIGHT: "N",
-    chess.BISHOP: "B", chess.QUEEN: "Q", chess.KING: "K",
-}
-_PIECES_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "assets", "pieces")
-
-
 def default_piece_sprite(piece_type, color):
-    """Ảnh quân cờ mặc định khi user chưa /custom_chess — load PNG có sẵn trong
-    assets/pieces/ (vd: wP.png, bN.png...) thay vì vẽ vector, resize 1 lần rồi
-    cache theo (piece_type, color) trong RAM — mở file chỉ tốn 1 lần cho cả
-    vòng đời bot, các lượt vẽ bàn cờ sau chỉ paste ảnh cache, gần như free CPU."""
+    """Ảnh quân cờ mặc định khi user chưa /custom_chess — vẽ bằng vector (PIL polygon/
+    ellipse) kiểu Staunton tối giản, KHÔNG dùng ký tự Unicode nữa (glyph font hệ thống
+    quá xấu/mảnh khi render nhỏ). Vẽ ở độ phân giải cao rồi downsample (supersample)
+    để viền mượt, không răng cưa. Cache theo (piece_type, color) vì hình cố định."""
     key = (piece_type, color)
     if key in _DEFAULT_PIECE_SPRITE_CACHE:
         return _DEFAULT_PIECE_SPRITE_CACHE[key]
 
-    fname = f"{'w' if color == chess.WHITE else 'b'}{_PIECE_FILE[piece_type]}.png"
-    path = os.path.join(_PIECES_DIR, fname)
-    sprite = Image.open(path).convert("RGBA").resize((_SQUARE_PX, _SQUARE_PX), Image.LANCZOS)
+    S = 4  # hệ số supersample
+    ss = _SQUARE_PX * S
+    canvas = Image.new("RGBA", (ss, ss), (0, 0, 0, 0))
+    d = ImageDraw.Draw(canvas)
+
+    if color == chess.WHITE:
+        fill, outline = (248, 246, 238, 255), (35, 33, 28, 255)
+    else:
+        fill, outline = (32, 30, 26, 255), (225, 220, 210, 255)
+    lw = max(2, S // 2)
+
+    def poly(points):
+        d.polygon(_frac_to_px(points, ss), fill=fill, outline=outline, width=lw)
+
+    def rect(x0, y0, x1, y1):
+        d.rectangle([x0 * ss, y0 * ss, x1 * ss, y1 * ss], fill=fill, outline=outline, width=lw)
+
+    def circ(cx, cy, r):
+        d.ellipse([(cx - r) * ss, (cy - r) * ss, (cx + r) * ss, (cy + r) * ss], fill=fill, outline=outline, width=lw)
+
+    if piece_type == chess.PAWN:
+        circ(0.5, 0.30, 0.12)
+        poly([(0.42, 0.44), (0.58, 0.44), (0.64, 0.74), (0.36, 0.74)])
+        rect(0.24, 0.74, 0.76, 0.86)
+
+    elif piece_type == chess.ROOK:
+        rect(0.24, 0.26, 0.34, 0.36)
+        rect(0.44, 0.26, 0.56, 0.36)
+        rect(0.66, 0.26, 0.76, 0.36)
+        rect(0.24, 0.34, 0.76, 0.38)  # nối các răng cưa lại với thân
+        poly([(0.28, 0.38), (0.72, 0.38), (0.68, 0.76), (0.32, 0.76)])
+        rect(0.18, 0.76, 0.82, 0.88)
+
+    elif piece_type == chess.BISHOP:
+        circ(0.5, 0.20, 0.045)
+        circ(0.5, 0.34, 0.115)
+        poly([(0.40, 0.42), (0.60, 0.42), (0.64, 0.76), (0.36, 0.76)])
+        rect(0.26, 0.76, 0.74, 0.88)
+        d.line([(0.40 * ss, 0.42 * ss), (0.56 * ss, 0.28 * ss)], fill=outline, width=lw)
+
+    elif piece_type == chess.KNIGHT:
+        poly([
+            (0.30, 0.80), (0.30, 0.64), (0.22, 0.58), (0.24, 0.49), (0.34, 0.45),
+            (0.30, 0.34), (0.40, 0.22), (0.52, 0.20), (0.58, 0.28), (0.51, 0.32),
+            (0.62, 0.36), (0.72, 0.31), (0.79, 0.39), (0.70, 0.46), (0.74, 0.57),
+            (0.66, 0.63), (0.70, 0.80),
+        ])
+        circ(0.60, 0.34, 0.018)  # mắt ngựa
+        rect(0.20, 0.80, 0.80, 0.88)
+
+    elif piece_type == chess.QUEEN:
+        for cx in (0.28, 0.39, 0.50, 0.61, 0.72):
+            circ(cx, 0.40, 0.035)
+        rect(0.28, 0.42, 0.72, 0.50)
+        poly([(0.38, 0.50), (0.62, 0.50), (0.66, 0.78), (0.34, 0.78)])
+        rect(0.20, 0.78, 0.80, 0.90)
+
+    else:  # chess.KING
+        rect(0.47, 0.18, 0.53, 0.45)
+        rect(0.38, 0.27, 0.62, 0.33)
+        rect(0.32, 0.45, 0.68, 0.53)
+        poly([(0.40, 0.53), (0.60, 0.53), (0.64, 0.78), (0.36, 0.78)])
+        rect(0.20, 0.78, 0.80, 0.90)
+
+    sprite = canvas.resize((_SQUARE_PX, _SQUARE_PX), Image.LANCZOS)
     _DEFAULT_PIECE_SPRITE_CACHE[key] = sprite
     return sprite
-
-
-async def chess_preload_sprites(cid):
-    """Tải trước (async, không chặn event loop) mọi ảnh custom quân cờ cần dùng để vẽ
-    ván này. GỌI HÀM NÀY (await) TRƯỚC chess_board_image() ở mọi nơi vẽ bàn cờ.
-    _load_piece_sprite dùng urllib đồng bộ (network I/O) — nếu gọi thẳng trong
-    chess_board_image() (hàm sync) sẽ đóng băng toàn bộ bot vài giây mỗi lần vẽ,
-    khiến Discord báo 'Tương tác không thành công' do quá 3s không phản hồi được.
-    Chạy qua asyncio.to_thread để network I/O nằm ở thread riêng, loop chính rảnh
-    để trả lời interaction khác. Đã cache theo URL nên các lần vẽ sau gần như free."""
-    game = _chess_games.get(cid)
-    if game is None:
-        return
-    board = game["board"]
-    white_id = game["player_id"] if not game["is_pvp"] else game["white_id"]
-    black_id = None if not game["is_pvp"] else game["black_id"]
-    owner_id = {chess.WHITE: white_id, chess.BLACK: black_id}
-
-    urls = set()
-    for sq in chess.SQUARES:
-        piece = board.piece_at(sq)
-        if piece is None:
-            continue
-        uid = owner_id[piece.color]
-        url = get_piece_theme_url(uid, piece.piece_type, piece.color) if uid else None
-        if url and url not in _piece_sprite_cache:
-            urls.add(url)
-
-    for url in urls:
-        await asyncio.to_thread(_load_piece_sprite, url)
 
 
 def chess_board_image(cid):
