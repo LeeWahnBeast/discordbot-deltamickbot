@@ -744,14 +744,13 @@ def chess_board_image(cid):
     black_id = None if not game["is_pvp"] else game["black_id"]
     owner_id = {chess.WHITE: white_id, chess.BLACK: black_id}
 
-    MARGIN = 22  # lề cho số hàng bên trái
-    img = Image.new("RGBA", (_BOARD_PX + MARGIN, _BOARD_PX), "white")
+    img = Image.new("RGBA", (_BOARD_PX, _BOARD_PX), _DARK)
     draw = ImageDraw.Draw(img)
     coord_font = _chess_font(13)
 
     for row in range(8):
         for col in range(8):
-            x0, y0 = MARGIN + col * _SQUARE_PX, row * _SQUARE_PX
+            x0, y0 = col * _SQUARE_PX, row * _SQUARE_PX
             sq = chess.square(col, 7 - row)
             is_light = (row + col) % 2 == 0
             if sq in lastmove_squares:
