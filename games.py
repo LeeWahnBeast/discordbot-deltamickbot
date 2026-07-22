@@ -6,8 +6,7 @@ import urllib.request
 import urllib.parse
 import json
 import chess  # pip install chess
-import chess.svg
-import cairosvg  # pip install cairosvg — cần libcairo2 hệ thống, xem Dockerfile
+from PIL import Image, ImageDraw, ImageFont
 
 # ============ FIRESTORE (lưu Aura + Elo bền vĩnh viễn, sống sót qua redeploy) ============
 # File JSON cũ (aura_data.json, chess_elo.json) BAY MẤT mỗi lần Render redeploy vì
@@ -553,23 +552,211 @@ def chess_make_move(cid, from_square_name, to_square_name):
     return True, board.outcome(claim_draw=True), annotation
 
 
-# Vẽ bàn cờ bằng chess.svg (thư viện con của python-chess) + cairosvg render ra PNG.
-# Cần chạy trên Docker (xem Dockerfile) vì cairosvg phụ thuộc lib hệ thống libcairo2,
-# không cài được qua pip đơn thuần trên buildpack thường của Render.
-# Ưu điểm so với bản Unicode/PIL cũ: đẹp hơn nhiều (quân cờ vector chuẩn, có thể tô
-# sáng ô vừa đi), code ngắn gọn hơn, không tự vẽ tay từng ô/quân.
-_BOARD_SIZE_PX = 480
+# ============ VẼ BÀN CỜ (PIL) + CUSTOM THEME QUÂN CỜ THEO TỪNG USER ============
+# Quay lại PIL thay vì chess.svg+cairosvg vì chess.svg KHÔNG hỗ trợ ảnh quân custom
+# (chỉ vẽ path SVG built-in cố định) — không có cách nào chèn ảnh riêng vào đó.
+# Dùng PIL cho MỌI trường hợp (có theme hay không) để đồng bộ 1 code path, đồng thời
+# bỏ được phụ thuộc cairosvg/libcairo2/Docker, quay về deploy Python buildpack bình
+# thường trên Render — nhẹ hơn cho máy 0.1 CPU / 256MB RAM.
+_SQUARE_PX = 60
+_BOARD_PX = _SQUARE_PX * 8
+_LIGHT = (240, 217, 181)
+_DARK = (181, 136, 99)
+_LASTMOVE_LIGHT = (205, 210, 106)
+_LASTMOVE_DARK = (170, 162, 58)
+
+_PIECE_UNICODE = {
+    (chess.PAWN, True): "♙", (chess.KNIGHT, True): "♘", (chess.BISHOP, True): "♗",
+    (chess.ROOK, True): "♖", (chess.QUEEN, True): "♕", (chess.KING, True): "♔",
+    (chess.PAWN, False): "♟", (chess.KNIGHT, False): "♞", (chess.BISHOP, False): "♝",
+    (chess.ROOK, False): "♜", (chess.QUEEN, False): "♛", (chess.KING, False): "♚",
+}
+
+# Custom quân cờ theo TỪNG QUÂN riêng lẻ: user dùng /custom_chess chọn 1 trong 12
+# quân (qua dropdown) rồi dán link ảnh CHỈ CHO QUÂN ĐÓ (không cần sprite sheet cả bộ
+# theo layout cố định như trước). Mỗi user build bộ quân của mình dần dần, quân nào
+# chưa đặt thì tự rơi về Unicode mặc định.
+_PIECE_LETTER = {chess.KING: "K", chess.QUEEN: "Q", chess.ROOK: "R",
+                 chess.BISHOP: "B", chess.KNIGHT: "N", chess.PAWN: "P"}
+_PIECE_KEY_INFO = {}  # {"K_w": (chess.KING, True), ...}
+for _pt, _letter in _PIECE_LETTER.items():
+    _PIECE_KEY_INFO[f"{_letter}_w"] = (_pt, chess.WHITE)
+    _PIECE_KEY_INFO[f"{_letter}_b"] = (_pt, chess.BLACK)
+
+PIECE_KEY_LABELS = {
+    "K_w": "Vua Trắng", "Q_w": "Hậu Trắng", "R_w": "Xe Trắng", "B_w": "Tượng Trắng",
+    "N_w": "Mã Trắng", "P_w": "Tốt Trắng",
+    "K_b": "Vua Đen", "Q_b": "Hậu Đen", "R_b": "Xe Đen", "B_b": "Tượng Đen",
+    "N_b": "Mã Đen", "P_b": "Tốt Đen",
+}
+
+PIECE_THEME_FILE = "chess_piece_themes.json"  # fallback khi chưa cấu hình Firestore
+# {user_id: {"K_w": url, "Q_b": url, ...}} — chỉ lưu key của quân đã custom
+_piece_theme_cache = {uid: d for uid, d in _firestore_load_collection("chess_piece_theme", PIECE_THEME_FILE).items()}
+_piece_sprite_cache = {}  # {url: PIL.Image hoặc None} — cache ảnh đã tải, tránh tải lại mỗi lần vẽ bàn cờ
+
+
+def _piece_key(piece_type, color):
+    return f"{_PIECE_LETTER[piece_type]}_{'w' if color == chess.WHITE else 'b'}"
+
+
+def get_piece_theme_url(user_id, piece_type, color):
+    d = _piece_theme_cache.get(user_id)
+    return d.get(_piece_key(piece_type, color)) if d else None
+
+
+def set_piece_theme(user_id, key, url):
+    """key dạng 'K_w', 'Q_b'... (xem PIECE_KEY_LABELS)."""
+    d = _piece_theme_cache.setdefault(user_id, {})
+    d[key] = url
+    _firestore_save_doc("chess_piece_theme", user_id, d)
+
+
+def clear_piece_theme(user_id, key=None):
+    """key=None -> xóa toàn bộ bộ quân custom của user. Trả về True nếu có gì bị xóa."""
+    d = _piece_theme_cache.get(user_id)
+    if not d:
+        return False
+    if key is None:
+        _piece_theme_cache.pop(user_id, None)
+        _firestore_save_doc("chess_piece_theme", user_id, {})
+        return True
+    existed = d.pop(key, None) is not None
+    _firestore_save_doc("chess_piece_theme", user_id, d)
+    return existed
+
+
+def _load_piece_sprite(url):
+    """Tải 1 ảnh quân cờ đơn từ URL, resize về 60x60 RGBA.
+    Trả về PIL.Image hoặc None nếu tải/đọc lỗi. Cache theo URL."""
+    if url in _piece_sprite_cache:
+        return _piece_sprite_cache[url]
+    try:
+        req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+        with urllib.request.urlopen(req, timeout=6) as resp:
+            raw = resp.read()
+        sprite = Image.open(io.BytesIO(raw)).convert("RGBA").resize((_SQUARE_PX, _SQUARE_PX), Image.LANCZOS)
+    except Exception as e:
+        print(f"[custom_chess] Không tải/đọc được ảnh từ {url}: {e!r}")
+        _piece_sprite_cache[url] = None
+        return None
+    _piece_sprite_cache[url] = sprite
+    return sprite
+
+
+def preview_piece_sprite(url):
+    """Dùng khi user vừa /custom_chess 1 link — ép tải mới để kiểm tra link sống không."""
+    _piece_sprite_cache.pop(url, None)
+    return _load_piece_sprite(url)
+
+
+def piece_theme_preview_image(user_id):
+    """Dựng 1 ảnh lưới 2x6 hiện toàn bộ 12 quân: quân đã custom thì hiện ảnh đã lưu,
+    quân chưa custom thì hiện Unicode mặc định — để user xem tổng quan bộ quân của mình."""
+    pad = 4
+    label_h = 16
+    cell = _SQUARE_PX
+    cols, rows = 6, 2
+    w = cols * (cell + pad) + pad
+    h = rows * (cell + pad + label_h) + pad
+    img = Image.new("RGBA", (w, h), (30, 30, 30, 255))
+    draw = ImageDraw.Draw(img)
+    font = _chess_font(11)
+    piece_font = _chess_font(40)
+    names = {chess.KING: "Vua", chess.QUEEN: "Hậu", chess.ROOK: "Xe",
+             chess.BISHOP: "Tượng", chess.KNIGHT: "Mã", chess.PAWN: "Tốt"}
+    cols_order = [chess.KING, chess.QUEEN, chess.ROOK, chess.BISHOP, chess.KNIGHT, chess.PAWN]
+    rows_order = [chess.WHITE, chess.BLACK]
+
+    for row_idx, color in enumerate(rows_order):
+        for col_idx, piece_type in enumerate(cols_order):
+            x = pad + col_idx * (cell + pad)
+            y = pad + row_idx * (cell + pad + label_h)
+            url = get_piece_theme_url(user_id, piece_type, color)
+            sprite = _load_piece_sprite(url) if url else None
+            if sprite is not None:
+                img.alpha_composite(sprite, (x, y))
+            else:
+                _draw_piece_unicode(draw, x + cell / 2, y + cell / 2, chess.Piece(piece_type, color), piece_font)
+            label = f"{names[piece_type]} {'Trắng' if color == chess.WHITE else 'Đen'}"
+            draw.text((x + cell / 2, y + cell + 2), label, font=font, fill="white", anchor="ma")
+
+    buf = io.BytesIO()
+    img.convert("RGB").save(buf, format="PNG")
+    buf.seek(0)
+    return buf
+
+
+def _chess_font(size):
+    for path in ("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
+                 "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"):
+        try:
+            return ImageFont.truetype(path, size)
+        except Exception:
+            continue
+    try:
+        return ImageFont.load_default(size=size)
+    except TypeError:
+        return ImageFont.load_default()
+
+
+def _draw_piece_unicode(draw, cx, cy, piece, font):
+    """Fallback khi không có theme: vẽ quân bằng ký tự Unicode có viền, không tải mạng."""
+    symbol = _PIECE_UNICODE[(piece.piece_type, piece.color)]
+    fill = "white" if piece.color == chess.WHITE else "black"
+    outline = "black" if piece.color == chess.WHITE else "white"
+    for dx, dy in ((-1, 0), (1, 0), (0, -1), (0, 1)):
+        draw.text((cx + dx, cy + dy), symbol, font=font, fill=outline, anchor="mm")
+    draw.text((cx, cy), symbol, font=font, fill=fill, anchor="mm")
 
 
 def chess_board_image(cid):
-    """Vẽ bàn cờ ra ảnh PNG bằng chess.svg + cairosvg. Tô sáng ô của nước đi gần nhất
-    (nếu có) để dễ theo dõi ai vừa đi gì."""
+    """Vẽ bàn cờ ra ảnh PNG bằng PIL. Ô của nước đi gần nhất được tô sáng hơn.
+    Mỗi quân dùng ảnh custom riêng (nếu người cầm màu đó đã set qua /custom_chess),
+    quân nào chưa custom thì tự rơi về Unicode mặc định — không phải toàn-hoặc-không,
+    2 người trong ván PvP có thể có bộ quân custom khác nhau, thậm chí lẫn quân
+    custom và quân mặc định trong cùng 1 bộ."""
     game = _chess_games[cid]
     board = game["board"]
     last_move = game.get("last_move")
-    svg_data = chess.svg.board(board=board, size=_BOARD_SIZE_PX, lastmove=last_move)
-    png_bytes = cairosvg.svg2png(bytestring=svg_data.encode("utf-8"))
-    buf = io.BytesIO(png_bytes)
+    lastmove_squares = {last_move.from_square, last_move.to_square} if last_move else set()
+
+    white_id = game["player_id"] if not game["is_pvp"] else game["white_id"]
+    black_id = None if not game["is_pvp"] else game["black_id"]
+    owner_id = {chess.WHITE: white_id, chess.BLACK: black_id}
+
+    img = Image.new("RGBA", (_BOARD_PX, _BOARD_PX + 24), "white")
+    draw = ImageDraw.Draw(img)
+    piece_font = _chess_font(40)
+    coord_font = _chess_font(14)
+
+    for row in range(8):
+        for col in range(8):
+            x0, y0 = col * _SQUARE_PX, row * _SQUARE_PX
+            sq = chess.square(col, 7 - row)
+            is_light = (row + col) % 2 == 0
+            if sq in lastmove_squares:
+                color = _LASTMOVE_LIGHT if is_light else _LASTMOVE_DARK
+            else:
+                color = _LIGHT if is_light else _DARK
+            draw.rectangle([x0, y0, x0 + _SQUARE_PX, y0 + _SQUARE_PX], fill=color)
+
+            piece = board.piece_at(sq)
+            if piece is None:
+                continue
+            uid = owner_id[piece.color]
+            url = get_piece_theme_url(uid, piece.piece_type, piece.color) if uid else None
+            sprite = _load_piece_sprite(url) if url else None
+            if sprite is not None:
+                img.alpha_composite(sprite, (x0, y0))
+            else:
+                _draw_piece_unicode(draw, x0 + _SQUARE_PX / 2, y0 + _SQUARE_PX / 2, piece, piece_font)
+
+    for col in range(8):
+        draw.text((col * _SQUARE_PX + 4, _BOARD_PX + 4), chr(ord('a') + col), font=coord_font, fill="black")
+
+    buf = io.BytesIO()
+    img.convert("RGB").save(buf, format="PNG")
     buf.seek(0)
     return buf
 
@@ -846,14 +1033,8 @@ def chess_accept_draw_text(cid, display_names=None):
     return f"🤝 {white_name} và {black_name} đã đồng ý kết thúc ván. Elo giữ nguyên, không tính thắng thua."
 
 
-# Ký hiệu Unicode CHỈ dùng để hiển thị TEXT (VD: dòng "quân đã ăn" trong embed) —
-# không liên quan đến ảnh bàn cờ, ảnh giờ do chess.svg + cairosvg vẽ.
-_PIECE_UNICODE = {
-    (chess.PAWN, True): "♙", (chess.KNIGHT, True): "♘", (chess.BISHOP, True): "♗",
-    (chess.ROOK, True): "♖", (chess.QUEEN, True): "♕", (chess.KING, True): "♔",
-    (chess.PAWN, False): "♟", (chess.KNIGHT, False): "♞", (chess.BISHOP, False): "♝",
-    (chess.ROOK, False): "♜", (chess.QUEEN, False): "♛", (chess.KING, False): "♚",
-}
+# _PIECE_UNICODE đã định nghĩa ở phần vẽ bàn cờ phía trên — dùng chung cho cả
+# vẽ ảnh (fallback khi không có theme) và hiển thị text (dòng "quân đã ăn").
 
 
 def chess_captured_text(cid):
