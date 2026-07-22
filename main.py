@@ -1,5 +1,6 @@
 import discord
 import os
+import asyncio
 import web_server
 import games
 from discord.ext import commands
@@ -550,9 +551,7 @@ class ChessToView(ChessTimeoutView):
             # cả 2 đều đáng xem, nên hiển thị riêng từng dòng.
             player_annotation = annotation
             bot_annotation = None
-            if outcome is None and not games.chess_is_pvp(self.cid):
-                outcome, bot_annotation = games.chess_bot_move(self.cid)
-
+            await games.chess_preload_sprites(self.cid)
             image = games.chess_board_image(self.cid)
             file = discord.File(image, filename="board.png")
             player_line = MOVE_ANNOTATION_TEXT.get(player_annotation)
@@ -700,6 +699,7 @@ class ChessDifficultyView(discord.ui.View):
             return
 
         games.chess_start(self.cid, self.player_id, bot_elo)
+        await games.chess_preload_sprites(self.cid)
         image = games.chess_board_image(self.cid)
         file = discord.File(image, filename="board.png")
         embed = _chess_board_embed(self.cid, "Chọn **quân** rồi chọn **ô muốn đi tới** bằng menu bên dưới.")
@@ -761,6 +761,7 @@ class ChessInviteView(discord.ui.View):
 
         games.chess_clear_invite(self.cid)
         games.chess_start_pvp(self.cid, self.inviter_id, self.invitee_id)
+        await games.chess_preload_sprites(self.cid)
         image = games.chess_board_image(self.cid)
         file = discord.File(image, filename="board.png")
         embed = _chess_board_embed(self.cid, f"👉 Đến lượt <@{self.inviter_id}>!")
@@ -813,7 +814,7 @@ _PIECE_CHOICES = [
 @app_commands.choices(quan=_PIECE_CHOICES)
 async def custom_chess_slash(interaction: discord.Interaction, quan: app_commands.Choice[str], link: str):
     await interaction.response.defer(ephemeral=True)
-    sprite = games.preview_piece_sprite(link)
+    sprite = await asyncio.to_thread(games.preview_piece_sprite, link)
     if sprite is None:
         await interaction.followup.send(
             "❌ Không đọc được ảnh từ link này. Kiểm tra lại: link phải trỏ thẳng tới file ảnh (PNG/JPG).",
