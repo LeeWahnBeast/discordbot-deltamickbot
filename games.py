@@ -2,6 +2,7 @@ import random
 import io
 import time
 import os
+import asyncio
 import urllib.request
 import urllib.parse
 import json
@@ -726,6 +727,36 @@ def default_piece_sprite(piece_type, color):
     sprite = Image.open(path).convert("RGBA").resize((_SQUARE_PX, _SQUARE_PX), Image.LANCZOS)
     _DEFAULT_PIECE_SPRITE_CACHE[key] = sprite
     return sprite
+
+
+async def chess_preload_sprites(cid):
+    """Tải trước (async, không chặn event loop) mọi ảnh custom quân cờ cần dùng để vẽ
+    ván này. GỌI HÀM NÀY (await) TRƯỚC chess_board_image() ở mọi nơi vẽ bàn cờ.
+    _load_piece_sprite dùng urllib đồng bộ (network I/O) — nếu gọi thẳng trong
+    chess_board_image() (hàm sync) sẽ đóng băng toàn bộ bot vài giây mỗi lần vẽ,
+    khiến Discord báo 'Tương tác không thành công' do quá 3s không phản hồi được.
+    Chạy qua asyncio.to_thread để network I/O nằm ở thread riêng, loop chính rảnh
+    để trả lời interaction khác. Đã cache theo URL nên các lần vẽ sau gần như free."""
+    game = _chess_games.get(cid)
+    if game is None:
+        return
+    board = game["board"]
+    white_id = game["player_id"] if not game["is_pvp"] else game["white_id"]
+    black_id = None if not game["is_pvp"] else game["black_id"]
+    owner_id = {chess.WHITE: white_id, chess.BLACK: black_id}
+
+    urls = set()
+    for sq in chess.SQUARES:
+        piece = board.piece_at(sq)
+        if piece is None:
+            continue
+        uid = owner_id[piece.color]
+        url = get_piece_theme_url(uid, piece.piece_type, piece.color) if uid else None
+        if url and url not in _piece_sprite_cache:
+            urls.add(url)
+
+    for url in urls:
+        await asyncio.to_thread(_load_piece_sprite, url)
 
 
 def chess_board_image(cid):
