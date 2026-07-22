@@ -6,7 +6,8 @@ import urllib.request
 import urllib.parse
 import json
 import chess  # pip install chess
-from PIL import Image, ImageDraw, ImageFont  # đã có sẵn vì bạn dùng PIL cho gen_smoke.py
+import chess.svg
+import cairosvg  # pip install cairosvg — cần libcairo2 hệ thống, xem Dockerfile
 
 # ============ FIRESTORE (lưu Aura + Elo bền vĩnh viễn, sống sót qua redeploy) ============
 # File JSON cũ (aura_data.json, chess_elo.json) BAY MẤT mỗi lần Render redeploy vì
@@ -391,6 +392,7 @@ def chess_start(cid, player_id, bot_elo=1200):
         "board": chess.Board(), "is_pvp": False,
         "player_id": player_id, "player_color": chess.WHITE,
         "last_move_at": time.time(), "bot_elo": bot_elo,
+        "last_move": None,
     }
 
 
@@ -400,6 +402,7 @@ def chess_start_pvp(cid, white_id, black_id):
         "board": chess.Board(), "is_pvp": True,
         "white_id": white_id, "black_id": black_id,
         "last_move_at": time.time(),
+        "last_move": None,
     }
 
 
@@ -545,74 +548,28 @@ def chess_make_move(cid, from_square_name, to_square_name):
     annotation = _annotate_move(board, move, mover_color, scored)
 
     board.push(move)
+    game["last_move"] = move
     _touch(cid)
     return True, board.outcome(claim_draw=True), annotation
 
 
-_SQUARE_PX = 60
-_BOARD_PX = _SQUARE_PX * 8
-_LIGHT = (240, 217, 181)
-_DARK = (181, 136, 99)
-
-# Vẽ quân cờ bằng ký tự Unicode có sẵn trong font — KHÔNG tải ảnh qua mạng.
-# Lý do đổi: tải PNG từ Wikimedia là code đồng bộ (blocking), mỗi lần cache miss
-# (bot mới bật / restart mất RAM cache) sẽ treo CẢ BOT tới 18s (timeout 6s x 3 lần
-# retry), làm mọi nút trong server "lâu lâu không phản hồi". Unicode vẽ tức thì,
-# không tốn RAM cache ảnh, phù hợp máy 0.1 CPU / 256MB RAM.
-_PIECE_UNICODE = {
-    (chess.PAWN, True): "♙", (chess.KNIGHT, True): "♘", (chess.BISHOP, True): "♗",
-    (chess.ROOK, True): "♖", (chess.QUEEN, True): "♕", (chess.KING, True): "♔",
-    (chess.PAWN, False): "♟", (chess.KNIGHT, False): "♞", (chess.BISHOP, False): "♝",
-    (chess.ROOK, False): "♜", (chess.QUEEN, False): "♛", (chess.KING, False): "♚",
-}
-
-
-def _chess_font(size):
-    for path in ("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
-                 "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"):
-        try:
-            return ImageFont.truetype(path, size)
-        except Exception:
-            continue
-    try:
-        return ImageFont.load_default(size=size)
-    except TypeError:
-        return ImageFont.load_default()
-
-
-def _draw_piece(draw, cx, cy, piece, font):
-    symbol = _PIECE_UNICODE[(piece.piece_type, piece.color)]
-    fill = "white" if piece.color == chess.WHITE else "black"
-    outline = "black" if piece.color == chess.WHITE else "white"
-    # viền mỏng để quân Trắng không bị lẫn vào ô sáng màu
-    for dx, dy in ((-1, 0), (1, 0), (0, -1), (0, 1)):
-        draw.text((cx + dx, cy + dy), symbol, font=font, fill=outline, anchor="mm")
-    draw.text((cx, cy), symbol, font=font, fill=fill, anchor="mm")
+# Vẽ bàn cờ bằng chess.svg (thư viện con của python-chess) + cairosvg render ra PNG.
+# Cần chạy trên Docker (xem Dockerfile) vì cairosvg phụ thuộc lib hệ thống libcairo2,
+# không cài được qua pip đơn thuần trên buildpack thường của Render.
+# Ưu điểm so với bản Unicode/PIL cũ: đẹp hơn nhiều (quân cờ vector chuẩn, có thể tô
+# sáng ô vừa đi), code ngắn gọn hơn, không tự vẽ tay từng ô/quân.
+_BOARD_SIZE_PX = 480
 
 
 def chess_board_image(cid):
-    """Vẽ bàn cờ ra ảnh PNG bằng ký tự Unicode — nhẹ CPU/RAM, không gọi mạng."""
-    board = _chess_games[cid]["board"]
-    img = Image.new("RGB", (_BOARD_PX, _BOARD_PX + 24), "white")
-    draw = ImageDraw.Draw(img)
-    piece_font = _chess_font(40)
-    coord_font = _chess_font(14)
-
-    for row in range(8):
-        for col in range(8):
-            x0, y0 = col * _SQUARE_PX, row * _SQUARE_PX
-            color = _LIGHT if (row + col) % 2 == 0 else _DARK
-            draw.rectangle([x0, y0, x0 + _SQUARE_PX, y0 + _SQUARE_PX], fill=color)
-            sq = chess.square(col, 7 - row)
-            piece = board.piece_at(sq)
-            if piece:
-                _draw_piece(draw, x0 + _SQUARE_PX / 2, y0 + _SQUARE_PX / 2, piece, piece_font)
-
-    for col in range(8):
-        draw.text((col * _SQUARE_PX + 4, _BOARD_PX + 4), chr(ord('a') + col), font=coord_font, fill="black")
-
-    buf = io.BytesIO()
-    img.save(buf, format="PNG")
+    """Vẽ bàn cờ ra ảnh PNG bằng chess.svg + cairosvg. Tô sáng ô của nước đi gần nhất
+    (nếu có) để dễ theo dõi ai vừa đi gì."""
+    game = _chess_games[cid]
+    board = game["board"]
+    last_move = game.get("last_move")
+    svg_data = chess.svg.board(board=board, size=_BOARD_SIZE_PX, lastmove=last_move)
+    png_bytes = cairosvg.svg2png(bytestring=svg_data.encode("utf-8"))
+    buf = io.BytesIO(png_bytes)
     buf.seek(0)
     return buf
 
@@ -693,6 +650,7 @@ def chess_bot_move(cid):
 
     annotation = _annotate_move(board, move, bot_color, scored)
     board.push(move)
+    game["last_move"] = move
     return board.outcome(claim_draw=True), annotation
 
 
@@ -886,6 +844,16 @@ def chess_accept_draw_text(cid, display_names=None):
     white_name = display_names[True] if display_names else f"<@{white_id}>"
     black_name = display_names[False] if display_names else f"<@{black_id}>"
     return f"🤝 {white_name} và {black_name} đã đồng ý kết thúc ván. Elo giữ nguyên, không tính thắng thua."
+
+
+# Ký hiệu Unicode CHỈ dùng để hiển thị TEXT (VD: dòng "quân đã ăn" trong embed) —
+# không liên quan đến ảnh bàn cờ, ảnh giờ do chess.svg + cairosvg vẽ.
+_PIECE_UNICODE = {
+    (chess.PAWN, True): "♙", (chess.KNIGHT, True): "♘", (chess.BISHOP, True): "♗",
+    (chess.ROOK, True): "♖", (chess.QUEEN, True): "♕", (chess.KING, True): "♔",
+    (chess.PAWN, False): "♟", (chess.KNIGHT, False): "♞", (chess.BISHOP, False): "♝",
+    (chess.ROOK, False): "♜", (chess.QUEEN, False): "♛", (chess.KING, False): "♚",
+}
 
 
 def chess_captured_text(cid):
