@@ -1,5 +1,6 @@
 import discord
 import os
+import time
 import web_server
 import games
 from discord.ext import commands
@@ -951,6 +952,62 @@ async def aura_slash(interaction: discord.Interaction, member: discord.Member = 
     balance = games.get_aura(target.id)
     who = "Bạn" if target.id == interaction.user.id else target.mention
     await interaction.response.send_message(f"{games.AURA_ICON} {who} đang có **{balance} Aura**.")
+
+
+@bot.tree.command(name="mua_tai", description=f"🥶 Mua tài: đổi {games.BUY_ELO_AURA_COST} Aura lấy {games.BUY_ELO_AMOUNT} Elo")
+async def mua_tai_slash(interaction: discord.Interaction):
+    ok, new_elo, aura_or_balance = games.chess_buy_elo(interaction.user.id)
+    if not ok:
+        await interaction.response.send_message(
+            f"❌ Không đủ Aura! Cần **{games.BUY_ELO_AURA_COST}** {games.AURA_ICON}, "
+            f"bạn chỉ có **{aura_or_balance}**. Farm thêm Aura rồi quay lại mua tài nhé 🥶",
+            ephemeral=True,
+        )
+        return
+    await interaction.response.send_message(
+        f"🥶🥶🥶 **MUA TÀI THÀNH CÔNG** 🥶🥶🥶\n"
+        f"{interaction.user.mention} vừa đổi **{games.BUY_ELO_AURA_COST}** {games.AURA_ICON} "
+        f"lấy **+{games.BUY_ELO_AMOUNT} Elo**!\n\n"
+        f"📈 Elo mới: **{new_elo}**\n"
+        f"{games.AURA_ICON} Aura còn lại: **{aura_or_balance}**\n\n"
+        f"-# Dùng `/hoadon` để xem lại biên lai mua tài."
+    )
+
+
+@bot.tree.command(name="hoadon", description="🧾 Xem hóa đơn các lần mua tài của bạn")
+@app_commands.describe(member="Xem hóa đơn của người khác (bỏ trống để xem của chính bạn)")
+async def hoadon_slash(interaction: discord.Interaction, member: discord.Member = None):
+    target = member or interaction.user
+    receipts = games.get_buy_elo_receipts(target.id)
+    who = "Bạn" if target.id == interaction.user.id else target.mention
+
+    if not receipts:
+        await interaction.response.send_message(f"🧾 {who} chưa từng mua tài lần nào. Sạch sẽ, minh bạch 😇", ephemeral=(member is None))
+        return
+
+    lines = [
+        "```",
+        "===== HÓA ĐƠN MUA TÀI 🥶 =====",
+        f"Khách hàng: {target.display_name}",
+        "-------------------------------",
+    ]
+    total_cost = 0
+    total_amount = 0
+    for i, r in enumerate(receipts[:15], start=1):
+        ts = time.strftime("%d/%m/%Y %H:%M", time.localtime(r["time"]))
+        lines.append(f"#{i:02d} [{ts}]")
+        lines.append(f"     -{r['cost']} Aura  ->  +{r['amount']} Elo")
+        total_cost += r["cost"]
+        total_amount += r["amount"]
+    lines.append("-------------------------------")
+    lines.append(f"Tổng đã chi : {total_cost} Aura")
+    lines.append(f"Tổng Elo mua: +{total_amount}")
+    if len(receipts) > 15:
+        lines.append(f"(...còn {len(receipts) - 15} hóa đơn cũ hơn không hiện)")
+    lines.append("=== Cảm ơn quý khách đã ủng hộ ===")
+    lines.append("```")
+
+    await interaction.response.send_message(f"🧾 Hóa đơn mua tài của {who}:\n" + "\n".join(lines))
 
 
 # Khởi chạy web server để tránh bị Render tắt
