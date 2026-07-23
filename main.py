@@ -338,6 +338,30 @@ def _chess_display_names(cid):
     return {True: f"<@{game['player_id']}>", False: "Bot"}
 
 
+async def _check_and_handle_chess_timeout(interaction: discord.Interaction, cid) -> bool:
+    """Kiểm tra bên đang tới lượt đã hết giờ trên đồng hồ chưa (chỉ PvP có đặt time_mode).
+    Nếu hết giờ: kết thúc ván luôn (thua theo đồng hồ), gửi kết quả, trả về True để nơi gọi
+    dừng lại (không xử lý nước đi/chọn quân nữa). Trả về False nếu ván vẫn bình thường."""
+    timed_out_color = games.chess_check_timeout(cid)
+    if timed_out_color is None:
+        return False
+    names = _chess_display_names(cid)
+    text = games.chess_timeout_text(cid, timed_out_color, names)
+    games.chess_end(cid)
+    embed = discord.Embed(description=text, color=0x2C3E50)
+    try:
+        image = games.chess_board_image(cid)
+    except Exception:
+        image = None
+    if image:
+        file = discord.File(image, filename="board.png")
+        embed.set_image(url="attachment://board.png")
+        await interaction.response.edit_message(embed=embed, attachments=[file], view=None)
+    else:
+        await interaction.response.edit_message(embed=embed, view=None)
+    return True
+
+
 def _add_chess_action_buttons(view, cid):
     """Thêm 2 nút Đầu hàng + Gợi ý (dùng chung cho ChessFromView và ChessToView)"""
     resign_btn = discord.ui.Button(label="🏳️ Đầu hàng", style=discord.ButtonStyle.danger, row=4)
@@ -447,13 +471,43 @@ def _chess_board_embed(cid, extra_line=None):
 
 class ChessTimeoutView(discord.ui.View):
     """View cơ sở cho các bước đi cờ vua — tự dọn ván nếu quá lâu không ai thao tác,
-    tránh việc ván bị 'kẹt' và phải dùng /chess_reset thủ công."""
-    def __init__(self, cid, timeout=180):
+    tránh việc ván bị 'kẹt' và phải dùng /chess_reset thủ công.
+    Khi ván PvP đã có đồng hồ cờ riêng (bullet/blitz/rapid/classical), đồng hồ đó mới là
+    thứ quyết định thua-vì-hết-giờ — nút Discord chỉ cần đủ dài để không tự hủy giữa chừng
+    (lấy theo thời gian tối đa còn lại của bên đang cầm quân, cộng thêm biên độ an toàn).
+    Ván không có đồng hồ (đấu Bot) giữ nguyên 3 phút như cũ."""
+    BOT_TIMEOUT = 180   # 3 phút cho ván người-với-bot
+    SAFETY_MARGIN = 120  # cộng thêm để tránh sát nút đúng lúc đồng hồ vừa hết
+
+    def __init__(self, cid, timeout=None):
+        if timeout is None:
+            if games.chess_is_pvp(cid):
+                remaining = games.chess_remaining_seconds(cid, games._chess_games[cid]["board"].turn)
+                timeout = (remaining or self.BOT_TIMEOUT) + self.SAFETY_MARGIN
+            else:
+                timeout = self.BOT_TIMEOUT
         super().__init__(timeout=timeout)
         self.cid = cid
 
     async def on_timeout(self):
         if not games.chess_active(self.cid):
+            return
+        timed_out_color = games.chess_check_timeout(self.cid)
+        if timed_out_color is not None:
+            # Không ai bấm gì nữa, nhưng đồng hồ cờ đã hết -> vẫn tính thắng thua đàng hoàng
+            # thay vì hủy ván trắng tay, để Elo/Aura được cập nhật đúng.
+            from_pvp = games.chess_is_pvp(self.cid)
+            names = None
+            if from_pvp:
+                game = games._chess_games[self.cid]
+                names = {True: f"<@{game['white_id']}>", False: f"<@{game['black_id']}>"}
+            text = games.chess_timeout_text(self.cid, timed_out_color, names)
+            games.chess_end(self.cid)
+            if self.message:
+                try:
+                    await self.message.edit(content=text, embed=None, view=None)
+                except discord.HTTPException:
+                    pass
             return
         games.chess_end(self.cid)
         if self.message:
@@ -466,7 +520,7 @@ class ChessTimeoutView(discord.ui.View):
 class ChessFromView(ChessTimeoutView):
     """Bước 1: chọn quân muốn đi"""
     def __init__(self, cid):
-        super().__init__(cid, timeout=180)
+        super().__init__(cid)
         options = games.chess_from_options(cid)[:25]
         select = discord.ui.Select(
             placeholder="♟️ Chọn quân muốn đi...",
@@ -481,6 +535,8 @@ class ChessFromView(ChessTimeoutView):
         try:
             if not games.chess_active(self.cid):
                 await interaction.response.send_message("❌ Ván cờ đã kết thúc rồi.", ephemeral=True)
+                return
+            if await _check_and_handle_chess_timeout(interaction, self.cid):
                 return
             games.chess_touch(self.cid)
             if await _deny_unless(interaction, interaction.user.id == _chess_current_player_id(self.cid), "❌ Chưa đến lượt bạn!"):
@@ -498,7 +554,7 @@ class ChessFromView(ChessTimeoutView):
 class ChessToView(ChessTimeoutView):
     """Bước 2: chọn ô muốn đi tới"""
     def __init__(self, cid, player_id, from_sq):
-        super().__init__(cid, timeout=180)
+        super().__init__(cid)
         self.player_id = player_id
         self.from_sq = from_sq
         options = games.chess_to_options(cid, from_sq)[:25]
@@ -532,6 +588,8 @@ class ChessToView(ChessTimeoutView):
         try:
             if not games.chess_active(self.cid):
                 await interaction.response.send_message("❌ Ván cờ đã kết thúc rồi.", ephemeral=True)
+                return
+            if await _check_and_handle_chess_timeout(interaction, self.cid):
                 return
             if await _deny_unless(interaction, interaction.user.id == self.player_id):
                 return
@@ -742,11 +800,12 @@ async def chess_reset_slash(interaction: discord.Interaction):
 
 
 class ChessInviteView(discord.ui.View):
-    def __init__(self, cid, inviter_id, invitee_id):
+    def __init__(self, cid, inviter_id, invitee_id, time_mode):
         super().__init__(timeout=120)
         self.cid = cid
         self.inviter_id = inviter_id
         self.invitee_id = invitee_id
+        self.time_mode = time_mode
 
     @discord.ui.button(label="✅ Chấp nhận", style=discord.ButtonStyle.success)
     async def accept(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -760,7 +819,7 @@ class ChessInviteView(discord.ui.View):
             return
 
         games.chess_clear_invite(self.cid)
-        games.chess_start_pvp(self.cid, self.inviter_id, self.invitee_id)
+        games.chess_start_pvp(self.cid, self.inviter_id, self.invitee_id, self.time_mode)
         image = games.chess_board_image(self.cid)
         file = discord.File(image, filename="board.png")
         embed = _chess_board_embed(self.cid, f"👉 Đến lượt <@{self.inviter_id}>!")
@@ -776,10 +835,22 @@ class ChessInviteView(discord.ui.View):
         await interaction.response.edit_message(content="❌ Đã từ chối lời mời chơi cờ vua.", embed=None, view=None)
 
 
+_CHESS_TIME_MODE_CHOICES = [
+    app_commands.Choice(name=cfg["label"], value=key)
+    for key, cfg in games.CHESS_TIME_MODES.items()
+]
+
+
 @bot.tree.command(name="chess_invite", description="Mời người khác chơi cờ vua PvP (bạn cầm Trắng)")
-@app_commands.describe(doi_thu="Người bạn muốn mời chơi")
-async def chess_invite_slash(interaction: discord.Interaction, doi_thu: discord.Member):
+@app_commands.describe(doi_thu="Người bạn muốn mời chơi", che_do="Chế độ thời gian (mặc định: Cờ nhanh)")
+@app_commands.choices(che_do=_CHESS_TIME_MODE_CHOICES)
+async def chess_invite_slash(
+    interaction: discord.Interaction,
+    doi_thu: discord.Member,
+    che_do: app_commands.Choice[str] = None,
+):
     cid = interaction.channel_id
+    time_mode = che_do.value if che_do else games.CHESS_DEFAULT_TIME_MODE
 
     if games.chess_active(cid):
         await interaction.response.send_message("⚠️ Đang có ván cờ vua chưa xong trong kênh này!", ephemeral=True)
@@ -792,11 +863,12 @@ async def chess_invite_slash(interaction: discord.Interaction, doi_thu: discord.
         return
 
     games.chess_create_invite(cid, interaction.user.id, doi_thu.id)
-    view = ChessInviteView(cid, interaction.user.id, doi_thu.id)
+    view = ChessInviteView(cid, interaction.user.id, doi_thu.id, time_mode)
+    mode_label = games.CHESS_TIME_MODES[time_mode]["label"]
     await interaction.response.send_message(
         content=(
             f"♟️ {doi_thu.mention}, {interaction.user.mention} mời bạn chơi cờ vua "
-            f"({interaction.user.mention} cầm ⚪ Trắng)! Chấp nhận không?"
+            f"({interaction.user.mention} cầm ⚪ Trắng) — chế độ **{mode_label}**! Chấp nhận không?"
         ),
         view=view,
     )
