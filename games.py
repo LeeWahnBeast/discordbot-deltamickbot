@@ -159,69 +159,6 @@ def whatuinto_roll():
     label, caption = random.choice(WHATUINTO_LABELS)
     percent = random.randint(60, 99)
     return (label, caption, percent)
-_ttt_games = {}
-TTT_LINES = [(0, 1, 2), (3, 4, 5), (6, 7, 8), (0, 3, 6), (1, 4, 7), (2, 5, 8), (0, 4, 8), (2, 4, 6)]
-
-def ttt_active(cid):
-    return cid in _ttt_games
-
-def ttt_start(cid, player_id):
-    _ttt_games[cid] = {'board': [''] * 9, 'player_id': player_id, 'turn': 'X'}
-
-def ttt_end(cid):
-    _ttt_games.pop(cid, None)
-
-def ttt_board(cid):
-    return _ttt_games[cid]['board']
-
-def _ttt_winner(board):
-    for a, b, c in TTT_LINES:
-        if board[a] and board[a] == board[b] == board[c]:
-            return board[a]
-    if '' not in board:
-        return 'draw'
-    return None
-
-def _ttt_minimax(board, is_bot_turn, depth=0):
-    winner = _ttt_winner(board)
-    if winner == 'O':
-        return (10 - depth, None)
-    if winner == 'X':
-        return (depth - 10, None)
-    if winner == 'draw':
-        return (0, None)
-    moves = [i for i in range(9) if board[i] == '']
-    mark = 'O' if is_bot_turn else 'X'
-    scored = []
-    for m in moves:
-        board[m] = mark
-        score, _ = _ttt_minimax(board, not is_bot_turn, depth + 1)
-        board[m] = ''
-        scored.append((score, m))
-    best = max(scored)[0] if is_bot_turn else min(scored)[0]
-    best_moves = [m for s, m in scored if s == best]
-    return (best, random.choice(best_moves))
-
-def ttt_player_move(cid, index):
-    game = _ttt_games[cid]
-    board = game['board']
-    if board[index] != '' or game['turn'] != 'X':
-        return (False, None)
-    board[index] = 'X'
-    result = _ttt_winner(board)
-    if result:
-        return (True, result)
-    game['turn'] = 'O'
-    return (True, None)
-
-def ttt_bot_move(cid):
-    game = _ttt_games[cid]
-    board = game['board']
-    _, move = _ttt_minimax(board, True)
-    board[move] = 'O'
-    result = _ttt_winner(board)
-    game['turn'] = 'X'
-    return result
 _chess_games = {}
 _PIECE_VALUES = {chess.PAWN: 1, chess.KNIGHT: 3, chess.BISHOP: 3, chess.ROOK: 5, chess.QUEEN: 9}
 CHESS_STALE_SECONDS = 30 * 60
@@ -285,8 +222,10 @@ def chess_start_pvp(cid, white_id, black_id, time_mode=CHESS_DEFAULT_TIME_MODE):
     cfg = CHESS_TIME_MODES[time_mode]
     ref_white = shop_consume_trong_tai(white_id)
     ref_black = shop_consume_trong_tai(black_id)
-    _chess_games[cid] = {'board': chess.Board(), 'is_pvp': True, 'white_id': white_id, 'black_id': black_id, 'last_move_at': time.time(), 'last_move': None, 'time_mode': time_mode, 'clocks': {chess.WHITE: cfg['base'], chess.BLACK: cfg['base']}, 'increment': cfg['increment'], 'clock_running_since': time.time(), 'referee_favors': chess.WHITE if ref_white else chess.BLACK if ref_black else None}
-    return (ref_white, ref_black)
+    shield_white = shop_consume_shield_timeout(white_id)
+    clocks = {chess.WHITE: cfg['base'] + (60 if shield_white else 0), chess.BLACK: cfg['base']}
+    _chess_games[cid] = {'board': chess.Board(), 'is_pvp': True, 'white_id': white_id, 'black_id': black_id, 'last_move_at': time.time(), 'last_move': None, 'time_mode': time_mode, 'clocks': clocks, 'increment': cfg['increment'], 'clock_running_since': time.time(), 'referee_favors': chess.WHITE if ref_white else chess.BLACK if ref_black else None}
+    return (ref_white, ref_black, shield_white)
 
 def chess_is_pvp(cid):
     return _chess_games[cid]['is_pvp']
@@ -316,24 +255,38 @@ def _set_elo(user_id, new_elo):
     _elo_cache[user_id] = new_elo
     _firestore_save_doc('elo', user_id, {'elo': new_elo})
     return new_elo
-BUY_ELO_AURA_COST = 50
-BUY_ELO_AMOUNT = 100
-_buy_elo_receipts = {}
-
-def chess_buy_elo(user_id):
-    balance = get_aura(user_id)
-    if balance < BUY_ELO_AURA_COST:
-        return (False, get_elo(user_id), balance)
-    new_aura = add_aura(user_id, -BUY_ELO_AURA_COST)
-    new_elo = _set_elo(user_id, get_elo(user_id) + BUY_ELO_AMOUNT)
-    _buy_elo_receipts.setdefault(user_id, []).append({'time': time.time(), 'cost': BUY_ELO_AURA_COST, 'amount': BUY_ELO_AMOUNT, 'elo_after': new_elo, 'aura_after': new_aura})
-    return (True, new_elo, new_aura)
 SHOP_RESTOCK_SECONDS = 5 * 60
-SHOP_ITEMS = {'elo10': {'emoji': '💠', 'name': '10 Elo', 'currency': 'aura', 'price': 5, 'desc': '📈 Tăng ngay +10 Elo.'}, 'cu_cai': {'emoji': '🥕', 'name': 'Củ Cải', 'currency': 'aura', 'price': 500, 'desc': '🎯 Dùng 1 lần — khi chơi cờ với Chess Bot:\n🤯 Bot bị giảm 100% trí tuệ, đi mù hoàn toàn ngẫu nhiên.\n♟️ Tha hồ chiếu bí... nếu vẫn thua thì chịu. 🥶'}, 'double_aura': {'emoji': '✨', 'name': 'Nhân Đôi Aura (24 giờ)', 'currency': 'elo', 'price': 300, 'desc': '⏳ Tăng x2 Aura nhận được trong 24 giờ.'}, 'role_gubby': {'emoji': '🐹', 'name': 'Role Gubby', 'currency': 'aura', 'price': 1900, 'desc': '🎖️ Nhận role Gubby vĩnh viễn.'}, 'trong_tai': {'emoji': '⚖️', 'name': 'Trọng Tài Chess (PvP)', 'currency': 'aura', 'price': 450, 'desc': '🎯 Dùng 1 lần — trong trận PvP tiếp theo:\n🛡️ "Trọng tài" thiên vị bạn một chút...\n🤫 (hiệu ứng vui, không đổi luật cờ thật)'}}
+SHOP_ITEMS = {
+    'elo_100': {'emoji': '🥶', 'name': 'Mua Tài (100 Elo)', 'currency': 'aura', 'price': 50, 'stock': 8, 'desc': '📈 Đổi ngay +100 Elo, kiểu "mua tài" huyền thoại.'},
+    'elo10': {'emoji': '💠', 'name': '10 Elo', 'currency': 'aura', 'price': 5, 'stock': 20, 'desc': '📈 Tăng ngay +10 Elo.'},
+    'cu_cai': {'emoji': '🥕', 'name': 'Củ Cải', 'currency': 'aura', 'price': 500, 'stock': 3, 'desc': '🎯 Dùng 1 lần — khi chơi cờ với Chess Bot:\n🤯 Bot bị giảm 100% trí tuệ, đi mù hoàn toàn ngẫu nhiên.\n♟️ Tha hồ chiếu bí... nếu vẫn thua thì chịu. 🥶'},
+    'double_aura': {'emoji': '✨', 'name': 'Nhân Đôi Aura (24 giờ)', 'currency': 'elo', 'price': 300, 'stock': 4, 'desc': '⏳ Tăng x2 Aura nhận được trong 24 giờ.'},
+    'role_gubby': {'emoji': '🐹', 'name': 'Role Gubby', 'currency': 'aura', 'price': 1900, 'stock': 2, 'desc': '🎖️ Nhận role Gubby vĩnh viễn.'},
+    'trong_tai': {'emoji': '⚖️', 'name': 'Trọng Tài Chess (PvP)', 'currency': 'aura', 'price': 450, 'stock': 3, 'desc': '🎯 Dùng 1 lần — trong trận PvP tiếp theo:\n🛡️ "Trọng tài" thiên vị bạn một chút...\n🤫 (hiệu ứng vui, không đổi luật cờ thật)'},
+    'hint_free': {'emoji': '💡', 'name': 'Gợi Ý Miễn Phí', 'currency': 'aura', 'price': 120, 'stock': 5, 'desc': '🎯 Dùng 1 lần — xin gợi ý nước đi mà KHÔNG bị trừ Elo.'},
+    'aura_500': {'emoji': '💰', 'name': 'Túi Aura (500)', 'currency': 'elo', 'price': 250, 'stock': 5, 'desc': '💸 Đổi 250 Elo lấy ngay 500 Aura — cứu đói khi hết Aura.'},
+    'shield_timeout': {'emoji': '🛡️', 'name': 'Khiên Hết Giờ', 'currency': 'aura', 'price': 350, 'stock': 3, 'desc': '🎯 Dùng 1 lần — trận PvP tiếp theo được cộng thêm 60 giây vào đồng hồ ngay lúc bắt đầu.'},
+}
 _user_buffs = {}
+_shop_stock = {}
+_shop_stock_cycle = None
+_receipts = {}
+
+def _ensure_stock_cycle():
+    global _shop_stock_cycle
+    cycle = shop_current_cycle()
+    if _shop_stock_cycle != cycle:
+        _shop_stock_cycle = cycle
+        _shop_stock.clear()
+        for key, item in SHOP_ITEMS.items():
+            _shop_stock[key] = item['stock']
+
+def shop_stock_left(item_key):
+    _ensure_stock_cycle()
+    return _shop_stock.get(item_key, 0)
 
 def _get_buffs(user_id):
-    return _user_buffs.setdefault(user_id, {'cu_cai': 0, 'trong_tai': 0, 'double_aura_until': 0, 'gubby_role': False})
+    return _user_buffs.setdefault(user_id, {'cu_cai': 0, 'trong_tai': 0, 'double_aura_until': 0, 'gubby_role': False, 'hint_free': 0, 'shield_timeout': 0})
 
 def _has_double_aura_buff(user_id):
     buffs = _user_buffs.get(user_id)
@@ -347,12 +300,28 @@ def shop_seconds_until_restock():
     return int(SHOP_RESTOCK_SECONDS - elapsed)
 
 def shop_list():
+    _ensure_stock_cycle()
     return SHOP_ITEMS
 
+def _add_receipt(user_id, item_key, item, cost_currency, cost, balance_after):
+    entry = {
+        'time': time.time(), 'item_key': item_key, 'item_name': item['name'],
+        'emoji': item['emoji'], 'currency': cost_currency, 'cost': cost,
+        'balance_after': balance_after,
+    }
+    _receipts.setdefault(user_id, []).append(entry)
+    return entry
+
+def get_receipts(user_id):
+    return list(reversed(_receipts.get(user_id, [])))
+
 def shop_buy(user_id, item_key):
+    _ensure_stock_cycle()
     item = SHOP_ITEMS.get(item_key)
     if item is None:
         return {'ok': False, 'reason': '❌ Vật phẩm không tồn tại.', 'item': None, 'balance_after': None}
+    if _shop_stock.get(item_key, 0) <= 0:
+        return {'ok': False, 'reason': f"❌ **{item['name']}** đã hết hàng đợt này! Chờ restock sau **{shop_seconds_until_restock() // 60} phút** nhé.", 'item': item, 'balance_after': None}
     currency = item['currency']
     price = item['price']
     current = get_aura(user_id) if currency == 'aura' else get_elo(user_id)
@@ -364,7 +333,9 @@ def shop_buy(user_id, item_key):
     else:
         balance_after = _set_elo(user_id, get_elo(user_id) - price)
     buffs = _get_buffs(user_id)
-    if item_key == 'elo10':
+    if item_key == 'elo_100':
+        _set_elo(user_id, get_elo(user_id) + 100)
+    elif item_key == 'elo10':
         _set_elo(user_id, get_elo(user_id) + 10)
     elif item_key == 'cu_cai':
         buffs['cu_cai'] += 1
@@ -375,7 +346,15 @@ def shop_buy(user_id, item_key):
         buffs['gubby_role'] = True
     elif item_key == 'trong_tai':
         buffs['trong_tai'] += 1
-    return {'ok': True, 'reason': None, 'item': item, 'balance_after': balance_after}
+    elif item_key == 'hint_free':
+        buffs['hint_free'] += 1
+    elif item_key == 'aura_500':
+        add_aura(user_id, 500)
+    elif item_key == 'shield_timeout':
+        buffs['shield_timeout'] += 1
+    _shop_stock[item_key] -= 1
+    receipt = _add_receipt(user_id, item_key, item, currency, price, balance_after)
+    return {'ok': True, 'reason': None, 'item': item, 'balance_after': balance_after, 'receipt': receipt}
 
 def shop_consume_cu_cai(user_id):
     buffs = _user_buffs.get(user_id)
@@ -391,13 +370,31 @@ def shop_consume_trong_tai(user_id):
     buffs['trong_tai'] -= 1
     return True
 
+def shop_consume_hint_free(user_id):
+    buffs = _user_buffs.get(user_id)
+    if not buffs or buffs.get('hint_free', 0) <= 0:
+        return False
+    buffs['hint_free'] -= 1
+    return True
+
+def shop_consume_shield_timeout(user_id):
+    buffs = _user_buffs.get(user_id)
+    if not buffs or buffs.get('shield_timeout', 0) <= 0:
+        return False
+    buffs['shield_timeout'] -= 1
+    return True
+
 def shop_inventory_text(user_id):
     buffs = _get_buffs(user_id)
     lines = []
     if buffs['cu_cai'] > 0:
-        lines.append(f'🥕 Củ Cải: còn **{buffs['cu_cai']}**')
+        lines.append(f"🥕 Củ Cải: còn **{buffs['cu_cai']}**")
     if buffs['trong_tai'] > 0:
-        lines.append(f'⚖️ Trọng Tài: còn **{buffs['trong_tai']}**')
+        lines.append(f"⚖️ Trọng Tài: còn **{buffs['trong_tai']}**")
+    if buffs['hint_free'] > 0:
+        lines.append(f"💡 Gợi Ý Miễn Phí: còn **{buffs['hint_free']}**")
+    if buffs['shield_timeout'] > 0:
+        lines.append(f"🛡️ Khiên Hết Giờ: còn **{buffs['shield_timeout']}**")
     if _has_double_aura_buff(user_id):
         remain = buffs['double_aura_until'] - time.time()
         h, rem = divmod(int(remain), 3600)
@@ -406,9 +403,6 @@ def shop_inventory_text(user_id):
     if buffs['gubby_role']:
         lines.append('🐹 Role Gubby: đã sở hữu vĩnh viễn')
     return '\n'.join(lines) if lines else '_Chưa có vật phẩm/buff nào đang hoạt động._'
-
-def get_buy_elo_receipts(user_id):
-    return list(reversed(_buy_elo_receipts.get(user_id, [])))
 
 def _expected_score(elo_a, elo_b):
     return 1 / (1 + 10 ** ((elo_b - elo_a) / 400))
@@ -793,8 +787,12 @@ def chess_hint(cid, hinter_id):
     piece_name = PIECE_NAME_VN[piece.piece_type]
     from_sq = chess.square_name(move.from_square)
     to_sq = chess.square_name(move.to_square)
-    new_elo = apply_hint_penalty(hinter_id)
-    hint_text = f'💡 Gợi ý: đi **{piece_name} {from_sq} → {to_sq}**'
+    if shop_consume_hint_free(hinter_id):
+        new_elo = get_elo(hinter_id)
+        hint_text = f'💡 Gợi ý (miễn phí 🎟️): đi **{piece_name} {from_sq} → {to_sq}**'
+    else:
+        new_elo = apply_hint_penalty(hinter_id)
+        hint_text = f'💡 Gợi ý: đi **{piece_name} {from_sq} → {to_sq}**'
     return (hint_text, new_elo)
 
 def chess_header_text(cid, display_names=None):
