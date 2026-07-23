@@ -51,17 +51,21 @@ async def _deny_unless(interaction: discord.Interaction, allowed: bool, msg='❌
 
 async def _handle_flag_round(message, guess_text):
     cid = message.channel.id
-    correct, has_next = games.flag_check(cid, guess_text)
+    result, has_next = games.flag_check(cid, message.author.id, guess_text)
+    if result == 'not_owner':
+        return
+    correct = result
     answer = games.flag_answer(cid)
     round_num, total, score = games.flag_progress(cid)
     if correct:
-        new_aura = games.add_aura(message.author.id, 10)
-        await message.channel.send(f'✅ Chính xác! Đó là **{answer.title()}**! (Điểm: {score}/{round_num})\n{games.AURA_ICON} +10 Aura (số dư: {new_aura}).')
+        reward = games.flag_aura_reward(cid)
+        new_aura = games.add_aura(message.author.id, reward)
+        await message.channel.send(f'✅ Chính xác! Đó là **{answer.title()}**! (Điểm: {score}/{round_num})\n{games.AURA_ICON} +{reward} Aura (số dư: {new_aura}).')
     else:
         await message.channel.send(f'❌ Sai rồi! Đáp án là **{answer.title()}**! (Điểm: {score}/{round_num})')
     if has_next:
         url = games.flag_next(cid)
-        embed = discord.Embed(title=f'🏳️ Vòng tiếp theo ({round_num + 1}/{total})', description='Chat thẳng tên quốc gia (tiếng Anh) để đoán!', color=4160800)
+        embed = discord.Embed(title=f'🏳️ Vòng tiếp theo ({round_num + 1}/{total})', description='Chat thẳng tên quốc gia (tiếng Anh) để đoán! (chỉ người mở ván mới được tính điểm)', color=4160800)
         embed.set_image(url=url)
         await message.channel.send(embed=embed, view=EndGameView(cid, 'flag'))
     else:
@@ -126,16 +130,37 @@ class EndGameView(discord.ui.View):
 
 class DifficultyView(discord.ui.View):
 
-    def __init__(self, cid):
+    def __init__(self, cid, owner_id):
         super().__init__(timeout=30)
         self.cid = cid
+        self.owner_id = owner_id
+        if games.flag_mythic_unlocked(owner_id):
+            self.add_item(self._make_mythic_button())
+
+    def _make_mythic_button(self):
+        button = discord.ui.Button(label='🌌 Mythic', style=discord.ButtonStyle.secondary, row=1)
+
+        async def callback(interaction):
+            await self.start_with(interaction, 'mythic', '🌌 Mythic')
+        button.callback = callback
+        return button
 
     async def start_with(self, interaction, difficulty, label):
+        if await _deny_unless(interaction, interaction.user.id == self.owner_id, '❌ Đây không phải lệnh /flag của bạn!'):
+            return
         if games.flag_active(self.cid):
             await interaction.response.send_message('⚠️ Đang có ván đoán cờ chưa xong!', ephemeral=True)
             return
-        url = games.flag_start(self.cid, difficulty)
-        embed = discord.Embed(title=f'🏳️ Đoán cờ — {label} (1/{games.ROUNDS_PER_GAME})', description='Chat thẳng tên quốc gia (tiếng Anh) để đoán!', color=4160800)
+        url, ok = games.flag_start(self.cid, self.owner_id, difficulty)
+        if not ok:
+            if difficulty == 'mythic':
+                await interaction.response.send_message(f'❌ Chưa mở khóa Mythic! Cần tích lũy **{games.FLAG_UNLOCK_SCORE_MYTHIC}** điểm đoán đúng (hiện có: {games.flag_lifetime_score(self.owner_id)}).', ephemeral=True)
+            else:
+                await interaction.response.send_message('❌ Bạn đã hết lượt chơi `/flag` hôm nay! Mua thêm 🎟️ Slot Đoán Cờ ở `/shop` hoặc chờ mai nhé.', ephemeral=True)
+            return
+        left = games.flag_games_left_today(self.owner_id)
+        reward = games.FLAG_AURA_PER_DIFFICULTY[difficulty]
+        embed = discord.Embed(title=f'🏳️ Đoán cờ — {label} (1/{games.ROUNDS_PER_GAME})', description=f'Chat thẳng tên quốc gia (tiếng Anh) để đoán! Mỗi câu đúng: **+{reward} Aura**.\n🎟️ Lượt chơi còn lại hôm nay: **{left}**', color=4160800)
         embed.set_image(url=url)
         await interaction.response.edit_message(content=None, embed=embed, view=EndGameView(self.cid, 'flag'))
 
@@ -432,8 +457,18 @@ async def flag_slash(interaction: discord.Interaction):
     if games.flag_active(cid):
         await interaction.response.send_message('⚠️ Đang có ván đoán cờ chưa xong!', ephemeral=True)
         return
-    view = DifficultyView(cid)
-    embed = discord.Embed(title='🏳️ Chọn độ khó', description='🌱 **Dễ** — các nước nổi tiếng\n🌾 **Trung bình** — các nước quen thuộc vừa phải\n🔥 **Khó** — các nước ít gặp hơn\n💀 **Insane** — các nước siêu hiếm!', color=4160800)
+    left = games.flag_games_left_today(interaction.user.id)
+    if left <= 0:
+        await interaction.response.send_message('❌ Bạn đã hết lượt chơi `/flag` hôm nay! Mua thêm 🎟️ Slot Đoán Cờ ở `/shop` hoặc chờ mai nhé.', ephemeral=True)
+        return
+    view = DifficultyView(cid, interaction.user.id)
+    desc = f'🌱 **Dễ** (+{games.FLAG_AURA_PER_DIFFICULTY["easy"]} Aura/câu) — các nước nổi tiếng\n🌾 **Trung bình** (+{games.FLAG_AURA_PER_DIFFICULTY["medium"]} Aura/câu) — các nước quen thuộc vừa phải\n🔥 **Khó** (+{games.FLAG_AURA_PER_DIFFICULTY["hard"]} Aura/câu) — các nước ít gặp hơn\n💀 **Insane** (+{games.FLAG_AURA_PER_DIFFICULTY["insane"]} Aura/câu) — các nước siêu hiếm!'
+    if games.flag_mythic_unlocked(interaction.user.id):
+        desc += f'\n🌌 **Mythic** (+{games.FLAG_AURA_PER_DIFFICULTY["mythic"]} Aura/câu) — đã mở khóa, chỉ dành cho huyền thoại!'
+    else:
+        desc += f'\n🔒 Mythic mở khóa ở **{games.FLAG_UNLOCK_SCORE_MYTHIC}** điểm tích lũy (hiện có: {games.flag_lifetime_score(interaction.user.id)})'
+    desc += f'\n\n🎟️ Lượt chơi còn lại hôm nay: **{left}**'
+    embed = discord.Embed(title='🏳️ Chọn độ khó', description=desc, color=4160800)
     await interaction.response.send_message(embed=embed, view=view)
 
 @bot.tree.command(name='whatuinto', description="Bói vui xem bạn 'thích' thể loại gì 👀")
@@ -649,19 +684,19 @@ GUBBY_ROLE_ID = 1528977786490978454
 def _shop_embed():
     remain = games.shop_seconds_until_restock()
     m, s = divmod(remain, 60)
-    lines = ['> 🕒 Cửa hàng sẽ tự động Restock sau mỗi 5 phút, giống cơ chế của Grow a Garden.', '', '╭────────────────────────────╮', '🛍️ Danh sách vật phẩm', '╰────────────────────────────╯', '']
+    lines = ['> 🕒 Restock mỗi 5 phút, học hỏi tinh hoa từ Grow a Garden — nhanh tay kẻo hết, chậm tay ăn cám.', '', '╭────────────────────────────╮', '🛍️ Gian Hàng Bán Danh Dự', '╰────────────────────────────╯', '']
     for key, item in games.shop_list().items():
         currency_label = 'Aura' if item['currency'] == 'aura' else 'Elo'
         stock = games.shop_stock_left(key)
-        stock_line = f'📦 Còn lại: **{stock}**' if stock > 0 else '📦 **HẾT HÀNG** (chờ restock)'
+        stock_line = f'📦 Còn lại: **{stock}**' if stock > 0 else '📦 **CHÁY HÀNG** (dân tình gom sạch rồi)'
         lines.append(f"{item['emoji']} **{item['name']}**")
         lines.append(f"> 💰 Giá: {item['price']} {currency_label}  |  {stock_line}")
         for l in item['desc'].split('\n'):
             lines.append(f'> {l}')
         lines.append('')
-    lines.append(f'⏰ Restock tiếp theo sau: **{m}:{s:02d}**')
+    lines.append(f'⏰ Restock tiếp theo sau: **{m}:{s:02d}** — ráng chờ hoặc ráng nghèo.')
     lines.append('')
-    lines.append('*"Tiền không mua được hạnh phúc... nhưng mua được Củ Cải thì thắng bot."* 🥕🥶')
+    lines.append('*"Tiền không mua được hạnh phúc... nhưng mua được Elo, mà Elo còn đáng giá hơn hạnh phúc."* 🥕🥶')
     embed = discord.Embed(title='🛒 Delta Shop', description='\n'.join(lines), color=3066993)
     return embed
 
