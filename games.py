@@ -117,16 +117,68 @@ FLAG_EASY = {'vietnam': 'vn', 'japan': 'jp', 'china': 'cn', 'usa': 'us', 'united
 FLAG_MEDIUM = {'portugal': 'pt', 'netherlands': 'nl', 'belgium': 'be', 'switzerland': 'ch', 'sweden': 'se', 'norway': 'no', 'poland': 'pl', 'greece': 'gr', 'turkey': 'tr', 'indonesia': 'id', 'malaysia': 'my', 'philippines': 'ph', 'singapore': 'sg', 'argentina': 'ar', 'chile': 'cl', 'colombia': 'co', 'saudi arabia': 'sa', 'south africa': 'za', 'new zealand': 'nz', 'ukraine': 'ua'}
 FLAG_HARD = {'finland': 'fi', 'denmark': 'dk', 'austria': 'at', 'czech republic': 'cz', 'hungary': 'hu', 'romania': 'ro', 'iceland': 'is', 'peru': 'pe', 'cuba': 'cu', 'nigeria': 'ng', 'pakistan': 'pk', 'bangladesh': 'bd', 'iran': 'ir', 'iraq': 'iq', 'israel': 'il', 'uae': 'ae', 'morocco': 'ma', 'kenya': 'ke', 'ethiopia': 'et', 'myanmar': 'mm'}
 FLAG_INSANE = {'bhutan': 'bt', 'brunei': 'bn', 'eswatini': 'sz', 'lesotho': 'ls', 'tuvalu': 'tv', 'nauru': 'nr', 'kiribati': 'ki', 'palau': 'pw', 'andorra': 'ad', 'liechtenstein': 'li', 'san marino': 'sm', 'monaco': 'mc', 'moldova': 'md', 'tajikistan': 'tj', 'kyrgyzstan': 'kg', 'turkmenistan': 'tm', 'djibouti': 'dj', 'comoros': 'km', 'suriname': 'sr', 'guyana': 'gy'}
-FLAG_POOLS = {'easy': FLAG_EASY, 'medium': FLAG_MEDIUM, 'hard': FLAG_HARD, 'insane': FLAG_INSANE}
+FLAG_MYTHIC = {'tonga': 'to', 'micronesia': 'fm', 'marshall islands': 'mh', 'sao tome and principe': 'st', 'vanuatu': 'vu', 'solomon islands': 'sb', 'niue': 'nu', 'cook islands': 'ck', 'transnistria': 'md', 'abkhazia': 'ge', 'somaliland': 'so', 'western sahara': 'eh'}
+FLAG_POOLS = {'easy': FLAG_EASY, 'medium': FLAG_MEDIUM, 'hard': FLAG_HARD, 'insane': FLAG_INSANE, 'mythic': FLAG_MYTHIC}
+FLAG_AURA_PER_DIFFICULTY = {'easy': 6, 'medium': 10, 'hard': 14, 'insane': 20, 'mythic': 28}
+FLAG_UNLOCK_SCORE_MYTHIC = 500
 ROUNDS_PER_GAME = 5
+FLAG_DAILY_FREE_GAMES = 5
 _flag_games = {}
+_flag_daily_usage = {}
+_flag_lifetime_score = {}
+
+def _today_key():
+    return time.strftime('%Y-%m-%d', time.gmtime())
+
+def flag_lifetime_score(user_id):
+    return _flag_lifetime_score.get(user_id, 0)
+
+def flag_mythic_unlocked(user_id):
+    return flag_lifetime_score(user_id) >= FLAG_UNLOCK_SCORE_MYTHIC
+
+def flag_games_played_today(user_id):
+    day = _today_key()
+    usage = _flag_daily_usage.get(user_id)
+    if not usage or usage['day'] != day:
+        return 0
+    return usage['count']
+
+def flag_games_left_today(user_id):
+    day = _today_key()
+    usage = _flag_daily_usage.get(user_id)
+    extra_slots = usage['extra_slots'] if usage and usage['day'] == day else 0
+    limit = FLAG_DAILY_FREE_GAMES + extra_slots
+    return max(0, limit - flag_games_played_today(user_id))
+
+def flag_add_daily_slot(user_id):
+    day = _today_key()
+    usage = _flag_daily_usage.setdefault(user_id, {'day': day, 'count': 0, 'extra_slots': 0})
+    if usage['day'] != day:
+        usage['day'] = day
+        usage['count'] = 0
+        usage['extra_slots'] = 0
+    usage['extra_slots'] += 1
+
+def _consume_daily_flag_slot(user_id):
+    day = _today_key()
+    usage = _flag_daily_usage.setdefault(user_id, {'day': day, 'count': 0, 'extra_slots': 0})
+    if usage['day'] != day:
+        usage['day'] = day
+        usage['count'] = 0
+        usage['extra_slots'] = 0
+    usage['count'] += 1
 
 def flag_active(cid):
     return cid in _flag_games
 
-def flag_start(cid, difficulty):
-    _flag_games[cid] = {'pool': FLAG_POOLS[difficulty], 'round': 0, 'score': 0, 'country': None}
-    return flag_next(cid)
+def flag_start(cid, owner_id, difficulty):
+    if difficulty == 'mythic' and (not flag_mythic_unlocked(owner_id)):
+        return (None, False)
+    if flag_games_left_today(owner_id) <= 0:
+        return (None, False)
+    _consume_daily_flag_slot(owner_id)
+    _flag_games[cid] = {'pool': FLAG_POOLS[difficulty], 'round': 0, 'score': 0, 'country': None, 'owner_id': owner_id, 'difficulty': difficulty}
+    return (flag_next(cid), True)
 
 def flag_next(cid):
     game = _flag_games[cid]
@@ -137,12 +189,18 @@ def flag_next(cid):
     game['round'] += 1
     return f'https://flagcdn.com/w320/{game['pool'][country]}.png'
 
-def flag_check(cid, guess):
+def flag_check(cid, guesser_id, guess):
     game = _flag_games[cid]
+    if guesser_id != game['owner_id']:
+        return ('not_owner', game['round'] < ROUNDS_PER_GAME)
     correct = guess.strip().lower() == game['country']
     if correct:
         game['score'] += 1
+        _flag_lifetime_score[guesser_id] = _flag_lifetime_score.get(guesser_id, 0) + 1
     return (correct, game['round'] < ROUNDS_PER_GAME)
+
+def flag_aura_reward(cid):
+    return FLAG_AURA_PER_DIFFICULTY[_flag_games[cid]['difficulty']]
 
 def flag_answer(cid):
     return _flag_games[cid]['country']
@@ -151,8 +209,12 @@ def flag_progress(cid):
     g = _flag_games[cid]
     return (g['round'], ROUNDS_PER_GAME, g['score'])
 
+def flag_owner(cid):
+    return _flag_games[cid]['owner_id']
+
 def flag_end(cid):
     _flag_games.pop(cid, None)
+
 WHATUINTO_LABELS = [('Femboy', 'Mềm mại bên ngoài, hỗn loạn bên trong. Bạn là hiện thân của "tưởng vậy mà không phải vậy".'), ('Tomboy', 'Năng lượng xắn tay áo, không ngại dơ. Bạn chọn hành động thay vì drama.'), ('Tsundere', '"Không phải tôi thích đâu nhé!" — trong khi tay đã làm sẵn hết rồi.'), ('Mommy ASMR', 'Giọng nói của bạn có thể ru cả server ngủ. Năng lượng chăm sóc tối thượng.'), ('Yandere ASMR', 'Ngọt ngào đến đáng ngờ. Ai chọc bạn giận thì... thôi khỏi nói.'), ('Vợ hàng xóm', 'Huyền thoại khu phố, ai cũng biết tên nhưng chẳng ai dám hỏi thẳng.'), ('Folk Valley', 'Bạn thuộc về nơi cỏ cây biết nói và gà biết deploy code.'), ('Scambodia', 'Chuyên gia lừa đảo... tình cảm. Cẩn thận, coi chừng mất ví lẫn mất tim.')]
 
 def whatuinto_roll():
@@ -257,15 +319,16 @@ def _set_elo(user_id, new_elo):
     return new_elo
 SHOP_RESTOCK_SECONDS = 5 * 60
 SHOP_ITEMS = {
-    'elo_100': {'emoji': '🥶', 'name': 'Mua Tài (100 Elo)', 'currency': 'aura', 'price': 50, 'stock': 8, 'desc': '📈 Đổi ngay +100 Elo, kiểu "mua tài" huyền thoại.'},
-    'elo10': {'emoji': '💠', 'name': '10 Elo', 'currency': 'aura', 'price': 5, 'stock': 20, 'desc': '📈 Tăng ngay +10 Elo.'},
-    'cu_cai': {'emoji': '🥕', 'name': 'Củ Cải', 'currency': 'aura', 'price': 500, 'stock': 3, 'desc': '🎯 Dùng 1 lần — khi chơi cờ với Chess Bot:\n🤯 Bot bị giảm 100% trí tuệ, đi mù hoàn toàn ngẫu nhiên.\n♟️ Tha hồ chiếu bí... nếu vẫn thua thì chịu. 🥶'},
-    'double_aura': {'emoji': '✨', 'name': 'Nhân Đôi Aura (24 giờ)', 'currency': 'elo', 'price': 300, 'stock': 4, 'desc': '⏳ Tăng x2 Aura nhận được trong 24 giờ.'},
-    'role_gubby': {'emoji': '🐹', 'name': 'Role Gubby', 'currency': 'aura', 'price': 1900, 'stock': 2, 'desc': '🎖️ Nhận role Gubby vĩnh viễn.'},
-    'trong_tai': {'emoji': '⚖️', 'name': 'Trọng Tài Chess (PvP)', 'currency': 'aura', 'price': 450, 'stock': 3, 'desc': '🎯 Dùng 1 lần — trong trận PvP tiếp theo:\n🛡️ "Trọng tài" thiên vị bạn một chút...\n🤫 (hiệu ứng vui, không đổi luật cờ thật)'},
-    'hint_free': {'emoji': '💡', 'name': 'Gợi Ý Miễn Phí', 'currency': 'aura', 'price': 120, 'stock': 5, 'desc': '🎯 Dùng 1 lần — xin gợi ý nước đi mà KHÔNG bị trừ Elo.'},
-    'aura_500': {'emoji': '💰', 'name': 'Túi Aura (500)', 'currency': 'elo', 'price': 250, 'stock': 5, 'desc': '💸 Đổi 250 Elo lấy ngay 500 Aura — cứu đói khi hết Aura.'},
-    'shield_timeout': {'emoji': '🛡️', 'name': 'Khiên Hết Giờ', 'currency': 'aura', 'price': 350, 'stock': 3, 'desc': '🎯 Dùng 1 lần — trận PvP tiếp theo được cộng thêm 60 giây vào đồng hồ ngay lúc bắt đầu.'},
+    'elo_100': {'emoji': '🥶', 'name': 'Mua Tài (100 Elo)', 'currency': 'aura', 'price': 50, 'stock': 8, 'desc': '📈 +100 Elo ngay lập tức, không cần thắng, không cần chơi, không cần liêm sỉ.\n🐐 Messi mà thấy giá này chắc cũng phải khóc vì rẻ.'},
+    'elo10': {'emoji': '💠', 'name': '10 Elo', 'currency': 'aura', 'price': 5, 'stock': 20, 'desc': '📈 +10 Elo bé xíu, dành cho người mua tài mà vẫn muốn giữ chút liêm sỉ.\n🐜 Chưa đủ để flex nhưng đủ để tự lừa bản thân là đang tiến bộ.'},
+    'cu_cai': {'emoji': '🥕', 'name': 'Củ Cải', 'currency': 'aura', 'price': 500, 'stock': 3, 'desc': '🎯 Dùng 1 lần — nhét củ cải vào não Chess Bot:\n🤯 IQ bot rớt về âm, đi cờ như đang say rượu ngoài quán nhậu.\n♟️ Thua ván này thì thôi khỏi chơi cờ luôn đi bạn ơi. 💀🥶'},
+    'double_aura': {'emoji': '✨', 'name': 'Nhân Đôi Aura (24 giờ)', 'currency': 'elo', 'price': 300, 'stock': 4, 'desc': '⏳ x2 Aura trong 24 giờ — bán Elo lấy Aura như bán nhà lấy vàng mã.\n🤑 Tư bản đích thực, không màng liêm sỉ chỉ màng lợi nhuận.'},
+    'role_gubby': {'emoji': '🐹', 'name': 'Role Gubby', 'currency': 'aura', 'price': 1900, 'stock': 2, 'desc': '🎖️ Vĩnh viễn thành Gubby chính hiệu, không hoàn không đổi trả.\n🐹 Một khi đã Gubby thì Gubby cả đời, hối hận cũng muộn rồi.'},
+    'trong_tai': {'emoji': '⚖️', 'name': 'Trọng Tài Chess (PvP)', 'currency': 'aura', 'price': 450, 'stock': 3, 'desc': '🎯 Dùng 1 lần — mua đứt ông trọng tài trận PvP tiếp theo.\n🛡️ Thổi còi thiên vị bạn công khai giữa thanh thiên bạch nhật.\n🤫 "Đây là quyết định cuối cùng, không khiếu nại" — trọng tài, vừa nhận phong bì.'},
+    'hint_free': {'emoji': '💡', 'name': 'Gợi Ý Miễn Phí', 'currency': 'aura', 'price': 120, 'stock': 5, 'desc': '🎯 Dùng 1 lần — hỏi bài mà không bị trừ điểm, sung sướng như quay cóp trót lọt.\n🧠 Não bạn nghỉ hưu sớm, bot lo hết.'},
+    'aura_500': {'emoji': '💰', 'name': 'Túi Aura (500)', 'currency': 'elo', 'price': 250, 'stock': 5, 'desc': '💸 Bán 250 Elo lấy 500 Aura — vay nóng lãi cắt cổ nhưng tự nguyện.\n🏦 Tín dụng đen phiên bản cờ vua, không ai ép bạn cả.'},
+    'shield_timeout': {'emoji': '🛡️', 'name': 'Khiên Hết Giờ', 'currency': 'aura', 'price': 350, 'stock': 3, 'desc': '🎯 Dùng 1 lần — cộng free 60 giây để nghĩ nước đi cho thiên tài chậm tiêu.\n🐢 Rùa cũng có ngày về đích, miễn là mua đủ khiên.'},
+    'flag_slot': {'emoji': '🎟️', 'name': 'Slot Đoán Cờ', 'currency': 'aura', 'price': 80, 'stock': 6, 'desc': '📈 +1 lượt chơi /flag hôm nay, vượt giới hạn 5 ván/ngày.\n🌾 Nghiện đoán cờ thì Folk Valley không cản, chỉ cần trả tiền vé.'},
 }
 _user_buffs = {}
 _shop_stock = {}
@@ -352,6 +415,8 @@ def shop_buy(user_id, item_key):
         add_aura(user_id, 500)
     elif item_key == 'shield_timeout':
         buffs['shield_timeout'] += 1
+    elif item_key == 'flag_slot':
+        flag_add_daily_slot(user_id)
     _shop_stock[item_key] -= 1
     receipt = _add_receipt(user_id, item_key, item, currency, price, balance_after)
     return {'ok': True, 'reason': None, 'item': item, 'balance_after': balance_after, 'receipt': receipt}
