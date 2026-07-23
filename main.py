@@ -72,7 +72,7 @@ async def _handle_flag_round(message, guess_text):
         embed.set_footer(text='Folk Valley thì thầm: hẹn gặp lại ở vòng đoán sau...')
         await message.channel.send(embed=embed)
 MOVE_ANNOTATION_TEXT = {'!!': '✨ **!!** Nước đi thiên tài!', '??': '🤦 **??** Nước đi ngớ ngẩn!'}
-GAME_CONFIG = {'wordle': {'active': games.wordle_active, 'end': games.wordle_end, 'label': 'Wordle', 'reveal': lambda cid: f'Từ đúng là **{games.wordle_word(cid).upper()}**'}, 'flag': {'active': games.flag_active, 'end': games.flag_end, 'label': 'Đoán cờ', 'reveal': lambda cid: f'Đáp án là **{games.flag_answer(cid).title()}**'}, 'ttt': {'active': games.ttt_active, 'end': games.ttt_end, 'label': 'Cờ caro', 'reveal': lambda cid: 'Ván đấu đã dừng.'}, 'chess': {'active': games.chess_active, 'end': games.chess_end, 'label': 'Cờ vua', 'reveal': lambda cid: 'Ván đấu đã dừng.'}}
+GAME_CONFIG = {'wordle': {'active': games.wordle_active, 'end': games.wordle_end, 'label': 'Wordle', 'reveal': lambda cid: f'Từ đúng là **{games.wordle_word(cid).upper()}**'}, 'flag': {'active': games.flag_active, 'end': games.flag_end, 'label': 'Đoán cờ', 'reveal': lambda cid: f'Đáp án là **{games.flag_answer(cid).title()}**'}, 'chess': {'active': games.chess_active, 'end': games.chess_end, 'label': 'Cờ vua', 'reveal': lambda cid: 'Ván đấu đã dừng.'}}
 
 def make_end_button(cid, kind, row=None):
     cfg = GAME_CONFIG[kind]
@@ -154,72 +154,6 @@ class DifficultyView(discord.ui.View):
     @discord.ui.button(label='💀 Insane', style=discord.ButtonStyle.secondary)
     async def insane(self, interaction: discord.Interaction, button: discord.ui.Button):
         await self.start_with(interaction, 'insane', '💀 Insane')
-
-class TicTacToeView(discord.ui.View):
-
-    def __init__(self, cid, player_id):
-        super().__init__(timeout=120)
-        self.cid = cid
-        self.player_id = player_id
-        for i in range(9):
-            self.add_item(TicTacToeButton(i))
-        self.add_item(make_end_button(cid, 'ttt', row=3))
-
-    def render_board(self):
-        board = games.ttt_board(self.cid)
-        for child in self.children:
-            if not isinstance(child, TicTacToeButton):
-                continue
-            mark = board[child.index]
-            child.label = mark if mark else '\u200b'
-            child.style = discord.ButtonStyle.danger if mark == 'X' else discord.ButtonStyle.primary if mark == 'O' else discord.ButtonStyle.secondary
-            child.disabled = bool(mark)
-
-class TicTacToeButton(discord.ui.Button):
-
-    def __init__(self, index):
-        super().__init__(style=discord.ButtonStyle.secondary, label='\u200b', row=index // 3)
-        self.index = index
-
-    async def callback(self, interaction: discord.Interaction):
-        view: TicTacToeView = self.view
-        if interaction.user.id != view.player_id:
-            await interaction.response.send_message('❌ Đây không phải ván của bạn!', ephemeral=True)
-            return
-        if not games.ttt_active(view.cid):
-            await interaction.response.send_message('❌ Ván này đã kết thúc.', ephemeral=True)
-            return
-        valid, result = games.ttt_player_move(view.cid, self.index)
-        if not valid:
-            await interaction.response.send_message('⚠️ Ô này không hợp lệ!', ephemeral=True)
-            return
-        if result:
-            view.render_board()
-            for child in view.children:
-                child.disabled = True
-            games.ttt_end(view.cid)
-            text = _ttt_result_text(result, interaction.user)
-            await interaction.response.edit_message(content=text, view=view)
-            return
-        bot_result = games.ttt_bot_move(view.cid)
-        view.render_board()
-        if bot_result:
-            for child in view.children:
-                child.disabled = True
-            games.ttt_end(view.cid)
-            text = _ttt_result_text(bot_result, interaction.user)
-            await interaction.response.edit_message(content=text, view=view)
-        else:
-            await interaction.response.edit_message(content='🎮 Đến lượt bạn (❌)!', view=view)
-
-def _ttt_result_text(result, user):
-    if result == 'X':
-        new_aura = games.add_aura(user.id, 10)
-        return f'🎉 {user.mention} thắng! Bot thua tâm phục khẩu phục.\n\n{games.AURA_ICON} +10 Aura (số dư: {new_aura}).'
-    elif result == 'O':
-        return '🤖 Bot thắng! Thử lại nhé.'
-    else:
-        return '🤝 Hòa! Cả hai đều chơi khá lắm.'
 
 def _chess_current_player_id(cid):
     if games.chess_is_pvp(cid):
@@ -477,8 +411,8 @@ async def ping_slash(interaction: discord.Interaction):
 
 @bot.tree.command(name='about', description='Thông tin về bot')
 async def about_slash(interaction: discord.Interaction):
-    embed = discord.Embed(title='🤖 About Bot', description='Bot mini-game vui nhộn cho server: đoán chữ, đoán cờ, cờ caro, cờ vua và bói vui.', color=5793266)
-    embed.add_field(name='🎮 Các lệnh', value='`/wordle` — đoán từ 5 chữ\n`/flag` — đoán cờ các nước\n`/caro` — cờ caro vs bot\n`/chess` — cờ vua vs bot\n`/chess_invite @ai_đó` — mời PvP cờ vua\n`/chess_reset` — xóa ván cờ bị kẹt (nếu bot báo lỗi)\n`/whatuinto` — bói vui\n`/wiki <từ khóa>` — tra bách khoa toàn thư\n`/aura` — xem số dư Aura\n`/ping` — kiểm tra độ trễ', inline=False)
+    embed = discord.Embed(title='🤖 About Bot', description='Bot mini-game vui nhộn cho server: đoán chữ, đoán cờ, cờ vua, Delta Shop và bói vui.', color=5793266)
+    embed.add_field(name='🎮 Các lệnh', value='`/wordle` — đoán từ 5 chữ\n`/flag` — đoán cờ các nước\n`/chess` — cờ vua vs bot\n`/chess_invite @ai_đó` — mời PvP cờ vua\n`/chess_reset` — xóa ván cờ bị kẹt (nếu bot báo lỗi)\n`/whatuinto` — bói vui\n`/wiki <từ khóa>` — tra bách khoa toàn thư\n`/aura` — xem số dư Aura\n`/shop` — mở Delta Shop 🛒\n`/kho` — xem vật phẩm/buff đang có\n`/hoadon` — xem hóa đơn Delta Shop\n`/ping` — kiểm tra độ trễ', inline=False)
     embed.set_footer(text='Made by TVPixel')
     await interaction.response.send_message(embed=embed)
 
@@ -508,17 +442,6 @@ async def whatuinto_slash(interaction: discord.Interaction):
     embed = discord.Embed(title=f'🔮 Kết quả bói cho {interaction.user.display_name}', description=f'## {percent}% **{label}**\n\n{caption}', color=14702333)
     embed.set_footer(text='Kết quả 100% chính xác khoa học (không có căn cứ gì cả) 😌')
     await interaction.response.send_message(embed=embed)
-
-@bot.tree.command(name='caro', description='Chơi cờ caro (Tic-Tac-Toe) solo với bot')
-async def caro_slash(interaction: discord.Interaction):
-    cid = interaction.channel_id
-    if games.ttt_active(cid):
-        await interaction.response.send_message('⚠️ Đang có ván cờ caro chưa xong trong kênh này!', ephemeral=True)
-        return
-    games.ttt_start(cid, interaction.user.id)
-    view = TicTacToeView(cid, interaction.user.id)
-    view.render_board()
-    await interaction.response.send_message(content=f'🎮 {interaction.user.mention} vs 🤖 Bot — Bạn là **❌**, đi trước! Bấm ô để đánh.', view=view)
 
 class ChessDifficultyView(discord.ui.View):
 
@@ -683,50 +606,56 @@ async def aura_slash(interaction: discord.Interaction, member: discord.Member=No
     who = 'Bạn' if target.id == interaction.user.id else target.mention
     await interaction.response.send_message(f'{games.AURA_ICON} {who} đang có **{balance} Aura**.')
 
-@bot.tree.command(name='mua_tai', description=f'🥶 Mua tài: đổi {games.BUY_ELO_AURA_COST} Aura lấy {games.BUY_ELO_AMOUNT} Elo')
-async def mua_tai_slash(interaction: discord.Interaction):
-    ok, new_elo, aura_or_balance = games.chess_buy_elo(interaction.user.id)
-    if not ok:
-        await interaction.response.send_message(f'❌ Không đủ Aura! Cần **{games.BUY_ELO_AURA_COST}** {games.AURA_ICON}, bạn chỉ có **{aura_or_balance}**. Farm thêm Aura rồi quay lại mua tài nhé 🥶', ephemeral=True)
-        return
-    await interaction.response.send_message(f'🥶🥶🥶 **MUA TÀI THÀNH CÔNG** 🥶🥶🥶\n{interaction.user.mention} vừa đổi **{games.BUY_ELO_AURA_COST}** {games.AURA_ICON} lấy **+{games.BUY_ELO_AMOUNT} Elo**!\n\n📈 Elo mới: **{new_elo}**\n{games.AURA_ICON} Aura còn lại: **{aura_or_balance}**\n\n-# Dùng `/hoadon` để xem lại biên lai mua tài.')
+def _format_receipt(target_name, r):
+    ts = time.strftime('%d/%m/%Y %H:%M', time.localtime(r['time']))
+    currency_label = 'Aura' if r['currency'] == 'aura' else 'Elo'
+    lines = [
+        '```',
+        '======= HÓA ĐƠN DELTA SHOP 🧾 =======',
+        f'Khách hàng : {target_name}',
+        f'Thời gian  : {ts}',
+        '--------------------------------------',
+        f"{r['emoji']} {r['item_name']}",
+        f"  -{r['cost']} {currency_label}",
+        '--------------------------------------',
+        f'Số dư sau  : {r["balance_after"]} {currency_label}',
+        '======= Cảm ơn đã ủng hộ Delta =======',
+        '```',
+    ]
+    return '\n'.join(lines)
 
-@bot.tree.command(name='hoadon', description='🧾 Xem hóa đơn các lần mua tài của bạn')
+@bot.tree.command(name='hoadon', description='🧾 Xem hóa đơn các lần mua ở Delta Shop')
 @app_commands.describe(member='Xem hóa đơn của người khác (bỏ trống để xem của chính bạn)')
 async def hoadon_slash(interaction: discord.Interaction, member: discord.Member=None):
     target = member or interaction.user
-    receipts = games.get_buy_elo_receipts(target.id)
+    receipts = games.get_receipts(target.id)
     who = 'Bạn' if target.id == interaction.user.id else target.mention
     if not receipts:
-        await interaction.response.send_message(f'🧾 {who} chưa từng mua tài lần nào. Sạch sẽ, minh bạch 😇', ephemeral=member is None)
+        await interaction.response.send_message(f'🧾 {who} chưa mua gì ở Delta Shop cả. Sạch sẽ, minh bạch 😇', ephemeral=member is None)
         return
-    lines = ['```', '===== HÓA ĐƠN MUA TÀI 🥶 =====', f'Khách hàng: {target.display_name}', '-------------------------------']
-    total_cost = 0
-    total_amount = 0
+    lines = ['```', '===== LỊCH SỬ MUA HÀNG DELTA SHOP =====', f'Khách hàng: {target.display_name}', '-----------------------------------------']
     for i, r in enumerate(receipts[:15], start=1):
         ts = time.strftime('%d/%m/%Y %H:%M', time.localtime(r['time']))
-        lines.append(f'#{i:02d} [{ts}]')
-        lines.append(f'     -{r['cost']} Aura  ->  +{r['amount']} Elo')
-        total_cost += r['cost']
-        total_amount += r['amount']
-    lines.append('-------------------------------')
-    lines.append(f'Tổng đã chi : {total_cost} Aura')
-    lines.append(f'Tổng Elo mua: +{total_amount}')
+        currency_label = 'Aura' if r['currency'] == 'aura' else 'Elo'
+        lines.append(f"#{i:02d} [{ts}] {r['emoji']} {r['item_name']}  -{r['cost']} {currency_label}")
+    lines.append('-----------------------------------------')
     if len(receipts) > 15:
         lines.append(f'(...còn {len(receipts) - 15} hóa đơn cũ hơn không hiện)')
-    lines.append('=== Cảm ơn quý khách đã ủng hộ ===')
+    lines.append('=========================================')
     lines.append('```')
-    await interaction.response.send_message(f'🧾 Hóa đơn mua tài của {who}:\n' + '\n'.join(lines))
+    await interaction.response.send_message(f'🧾 Hóa đơn Delta Shop của {who}:\n' + '\n'.join(lines))
 GUBBY_ROLE_ID = 1528977786490978454
 
 def _shop_embed():
     remain = games.shop_seconds_until_restock()
     m, s = divmod(remain, 60)
     lines = ['> 🕒 Cửa hàng sẽ tự động Restock sau mỗi 5 phút, giống cơ chế của Grow a Garden.', '', '╭────────────────────────────╮', '🛍️ Danh sách vật phẩm', '╰────────────────────────────╯', '']
-    for item in games.shop_list().values():
+    for key, item in games.shop_list().items():
         currency_label = 'Aura' if item['currency'] == 'aura' else 'Elo'
-        lines.append(f'{item['emoji']} **{item['name']}**')
-        lines.append(f'> 💰 Giá: {item['price']} {currency_label}')
+        stock = games.shop_stock_left(key)
+        stock_line = f'📦 Còn lại: **{stock}**' if stock > 0 else '📦 **HẾT HÀNG** (chờ restock)'
+        lines.append(f"{item['emoji']} **{item['name']}**")
+        lines.append(f"> 💰 Giá: {item['price']} {currency_label}  |  {stock_line}")
         for l in item['desc'].split('\n'):
             lines.append(f'> {l}')
         lines.append('')
@@ -741,7 +670,14 @@ class ShopView(discord.ui.View):
     def __init__(self, buyer_id):
         super().__init__(timeout=120)
         self.buyer_id = buyer_id
-        select = discord.ui.Select(placeholder='🛒 Chọn vật phẩm muốn mua...', options=[discord.SelectOption(label=f'{item['name']} — {item['price']} {('Aura' if item['currency'] == 'aura' else 'Elo')}', value=key, emoji=item['emoji']) for key, item in games.shop_list().items()])
+        options = []
+        for key, item in games.shop_list().items():
+            stock = games.shop_stock_left(key)
+            label = f"{item['name']} — {item['price']} {('Aura' if item['currency'] == 'aura' else 'Elo')}"
+            if stock <= 0:
+                label += ' (Hết hàng)'
+            options.append(discord.SelectOption(label=label, value=key, emoji=item['emoji']))
+        select = discord.ui.Select(placeholder='🛒 Chọn vật phẩm muốn mua...', options=options)
         select.callback = self.on_select
         self.add_item(select)
 
@@ -754,7 +690,7 @@ class ShopView(discord.ui.View):
             await interaction.response.send_message(result['reason'], ephemeral=True)
             return
         item = result['item']
-        msg = f'{item['emoji']} Đã mua **{item['name']}**! Số dư mới: **{result['balance_after']}**.'
+        msg = f"{item['emoji']} Đã mua **{item['name']}**! Số dư mới: **{result['balance_after']}**."
         if item_key == 'role_gubby':
             role = interaction.guild.get_role(GUBBY_ROLE_ID) if interaction.guild else None
             if role and isinstance(interaction.user, discord.Member):
@@ -765,7 +701,8 @@ class ShopView(discord.ui.View):
                     msg += '\n⚠️ Bot không đủ quyền để trao role, nhờ admin cấp `Manage Roles` cho bot nhé.'
             else:
                 msg += '\n⚠️ Không tìm thấy role Gubby trong server này.'
-        await interaction.response.send_message(msg, ephemeral=True)
+        receipt_text = _format_receipt(interaction.user.display_name, result['receipt'])
+        await interaction.response.send_message(f'{msg}\n{receipt_text}', ephemeral=True)
 
 @bot.tree.command(name='shop', description='🛒 Mở Delta Shop — đổi Aura/Elo lấy vật phẩm & buff')
 async def shop_slash(interaction: discord.Interaction):
