@@ -1010,6 +1010,97 @@ async def hoadon_slash(interaction: discord.Interaction, member: discord.Member 
     await interaction.response.send_message(f"🧾 Hóa đơn mua tài của {who}:\n" + "\n".join(lines))
 
 
+# ============ 🛒 DELTA SHOP ============
+GUBBY_ROLE_ID = 1528977786490978454
+
+
+def _shop_embed():
+    remain = games.shop_seconds_until_restock()
+    m, s = divmod(remain, 60)
+    lines = [
+        "> 🕒 Cửa hàng sẽ tự động Restock sau mỗi 5 phút, giống cơ chế của Grow a Garden.",
+        "",
+        "╭────────────────────────────╮",
+        "🛍️ Danh sách vật phẩm",
+        "╰────────────────────────────╯",
+        "",
+    ]
+    for item in games.shop_list().values():
+        currency_label = "Aura" if item["currency"] == "aura" else "Elo"
+        lines.append(f"{item['emoji']} **{item['name']}**")
+        lines.append(f"> 💰 Giá: {item['price']} {currency_label}")
+        for l in item["desc"].split("\n"):
+            lines.append(f"> {l}")
+        lines.append("")
+    lines.append(f"⏰ Restock tiếp theo sau: **{m}:{s:02d}**")
+    lines.append("")
+    lines.append('*"Tiền không mua được hạnh phúc... nhưng mua được Củ Cải thì thắng bot."* 🥕🥶')
+
+    embed = discord.Embed(title="🛒 Delta Shop", description="\n".join(lines), color=0x2ECC71)
+    return embed
+
+
+class ShopView(discord.ui.View):
+    def __init__(self, buyer_id):
+        super().__init__(timeout=120)
+        self.buyer_id = buyer_id
+        select = discord.ui.Select(
+            placeholder="🛒 Chọn vật phẩm muốn mua...",
+            options=[
+                discord.SelectOption(
+                    label=f"{item['name']} — {item['price']} {'Aura' if item['currency'] == 'aura' else 'Elo'}",
+                    value=key,
+                    emoji=item["emoji"],
+                )
+                for key, item in games.shop_list().items()
+            ],
+        )
+        select.callback = self.on_select
+        self.add_item(select)
+
+    async def on_select(self, interaction: discord.Interaction):
+        if await _deny_unless(interaction, interaction.user.id == self.buyer_id, "❌ Đây không phải shop của bạn, dùng `/shop` để mở cái riêng!"):
+            return
+        item_key = interaction.data["values"][0]
+        result = games.shop_buy(interaction.user.id, item_key)
+
+        if not result["ok"]:
+            await interaction.response.send_message(result["reason"], ephemeral=True)
+            return
+
+        item = result["item"]
+        msg = f"{item['emoji']} Đã mua **{item['name']}**! Số dư mới: **{result['balance_after']}**."
+
+        if item_key == "role_gubby":
+            role = interaction.guild.get_role(GUBBY_ROLE_ID) if interaction.guild else None
+            if role and isinstance(interaction.user, discord.Member):
+                try:
+                    await interaction.user.add_roles(role, reason="Mua Role Gubby ở Delta Shop")
+                    msg += f"\n🐹 Đã trao role {role.mention} cho bạn!"
+                except discord.Forbidden:
+                    msg += "\n⚠️ Bot không đủ quyền để trao role, nhờ admin cấp `Manage Roles` cho bot nhé."
+            else:
+                msg += "\n⚠️ Không tìm thấy role Gubby trong server này."
+
+        await interaction.response.send_message(msg, ephemeral=True)
+
+
+@bot.tree.command(name="shop", description="🛒 Mở Delta Shop — đổi Aura/Elo lấy vật phẩm & buff")
+async def shop_slash(interaction: discord.Interaction):
+    embed = _shop_embed()
+    view = ShopView(interaction.user.id)
+    await interaction.response.send_message(embed=embed, view=view)
+
+
+@bot.tree.command(name="kho", description="🎒 Xem vật phẩm/buff bạn đang sở hữu từ Delta Shop")
+@app_commands.describe(member="Xem kho của người khác (bỏ trống để xem của chính bạn)")
+async def kho_slash(interaction: discord.Interaction, member: discord.Member = None):
+    target = member or interaction.user
+    who = "Bạn" if target.id == interaction.user.id else target.mention
+    text = games.shop_inventory_text(target.id)
+    await interaction.response.send_message(f"🎒 Kho đồ của {who}:\n{text}")
+
+
 # Khởi chạy web server để tránh bị Render tắt
 web_server.keep_alive()
 
