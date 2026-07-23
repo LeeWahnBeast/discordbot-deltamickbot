@@ -353,6 +353,50 @@ _chess_games = {}  # {channel_id: {"board", "is_pvp", "player_id"/"white_id"+"bl
 _PIECE_VALUES = {chess.PAWN: 1, chess.KNIGHT: 3, chess.BISHOP: 3, chess.ROOK: 5, chess.QUEEN: 9}
 CHESS_STALE_SECONDS = 30 * 60  # ván không hoạt động >30 phút coi như "ma", tự dọn
 
+# ============ CHẾ ĐỘ THỜI GIAN (đồng hồ cờ, chỉ áp dụng cho PvP) ============
+# base = số giây khởi điểm mỗi bên, increment = số giây cộng thêm SAU MỖI NƯỚC ĐI
+# (kiểu Fischer, chuẩn cờ online). Không áp dụng cho ván đấu Bot vì bot trả lời tức thì.
+CHESS_TIME_MODES = {
+    "bullet":    {"label": "⚡ Cờ đạn (Bullet)",      "base": 2 * 60,  "increment": 1},
+    "blitz":     {"label": "🔥 Cờ chớp (Blitz)",       "base": 5 * 60,  "increment": 2},
+    "rapid":     {"label": "🚀 Cờ nhanh (Rapid)",      "base": 15 * 60, "increment": 5},
+    "classical": {"label": "🏛️ Cờ tiêu chuẩn (Classical)", "base": 60 * 60, "increment": 10},
+}
+CHESS_DEFAULT_TIME_MODE = "rapid"
+
+
+def _fmt_clock(seconds):
+    """Format giây -> mm:ss để hiển thị đồng hồ, kiểu chess.com."""
+    seconds = max(0, int(seconds))
+    m, s = divmod(seconds, 60)
+    return f"{m}:{s:02d}"
+
+
+def chess_remaining_seconds(cid, color):
+    """Số giây còn lại của 1 bên tại THỜI ĐIỂM HIỆN TẠI (trừ hao thời gian thực nếu
+    đến lượt bên đó và đồng hồ đang chạy). Không sửa state — chỉ tính để hiển thị/kiểm tra."""
+    game = _chess_games[cid]
+    if not game.get("is_pvp") or "clocks" not in game:
+        return None
+    base = game["clocks"][color]
+    if game["board"].turn == color and game.get("clock_running_since"):
+        elapsed = time.time() - game["clock_running_since"]
+        return base - elapsed
+    return base
+
+
+def chess_check_timeout(cid):
+    """Kiểm tra bên ĐẾN LƯỢT hiện tại đã hết giờ chưa. Gọi trước khi cho phép thao tác
+    tiếp — không cần vòng lặp nền, chỉ tính bằng đồng hồ thực mỗi lần có tương tác."""
+    game = _chess_games.get(cid)
+    if game is None or not game.get("is_pvp") or "clocks" not in game:
+        return None
+    turn_color = game["board"].turn
+    remaining = chess_remaining_seconds(cid, turn_color)
+    if remaining is not None and remaining <= 0:
+        return turn_color
+    return None
+
 
 def _touch(cid):
     if cid in _chess_games:
@@ -397,13 +441,19 @@ def chess_start(cid, player_id, bot_elo=1200):
     }
 
 
-def chess_start_pvp(cid, white_id, black_id):
-    """Bắt đầu ván PvP giữa 2 người thật"""
+def chess_start_pvp(cid, white_id, black_id, time_mode=CHESS_DEFAULT_TIME_MODE):
+    """Bắt đầu ván PvP giữa 2 người thật. time_mode: bullet/blitz/rapid/classical
+    (xem CHESS_TIME_MODES) — quyết định thời gian khởi điểm + increment mỗi nước."""
+    cfg = CHESS_TIME_MODES[time_mode]
     _chess_games[cid] = {
         "board": chess.Board(), "is_pvp": True,
         "white_id": white_id, "black_id": black_id,
         "last_move_at": time.time(),
         "last_move": None,
+        "time_mode": time_mode,
+        "clocks": {chess.WHITE: cfg["base"], chess.BLACK: cfg["base"]},
+        "increment": cfg["increment"],
+        "clock_running_since": time.time(),  # đồng hồ Trắng bắt đầu chạy ngay từ nước đầu
     }
 
 
@@ -551,6 +601,15 @@ def chess_make_move(cid, from_square_name, to_square_name):
     board.push(move)
     game["last_move"] = move
     _touch(cid)
+
+    if game.get("is_pvp") and "clocks" in game:
+        # Trừ thời gian thực đã trôi qua của bên vừa đi, cộng increment (Fischer),
+        # rồi chuyển mốc "clock_running_since" sang cho bên sắp đi (board.turn đã đổi).
+        now = time.time()
+        elapsed = now - game["clock_running_since"]
+        game["clocks"][mover_color] = max(0, game["clocks"][mover_color] - elapsed) + game["increment"]
+        game["clock_running_since"] = now
+
     return True, board.outcome(claim_draw=True), annotation
 
 
@@ -964,6 +1023,32 @@ def chess_resign_text(cid, resigner_id, display_names=None):
     return f"🏳️ Bạn đã đầu hàng! Bot thắng.\n\nElo của bạn: {new_player_elo} ({sign})"
 
 
+def chess_timeout_text(cid, timed_out_color, display_names=None):
+    """Xử lý thua do HẾT GIỜ trên đồng hồ (chỉ PvP) — cập nhật Elo/Aura giống đầu hàng,
+    nhưng ghi rõ lý do là hết giờ chứ không phải bỏ cuộc."""
+    game = _chess_games[cid]
+    white_id, black_id = game["white_id"], game["black_id"]
+    white_elo, black_elo = get_elo(white_id), get_elo(black_id)
+    score_white = 0 if timed_out_color == chess.WHITE else 1
+    new_white, new_black, d_white, d_black = update_elo(
+        white_id, white_elo, black_id, black_elo, score_white
+    )
+    white_name = display_names[True] if display_names else f"<@{white_id}>"
+    black_name = display_names[False] if display_names else f"<@{black_id}>"
+    loser_name = white_name if timed_out_color == chess.WHITE else black_name
+    winner_name = black_name if timed_out_color == chess.WHITE else white_name
+    winner_id = black_id if timed_out_color == chess.WHITE else white_id
+    new_winner_aura = add_aura(winner_id, 100)
+    sign_w = f"+{d_white}" if d_white >= 0 else str(d_white)
+    sign_b = f"+{d_black}" if d_black >= 0 else str(d_black)
+    return (
+        f"⏰ {loser_name} đã hết giờ! {winner_name} thắng!\n\n"
+        f"⚪ {white_name}: {new_white} Elo ({sign_w})\n"
+        f"⚫ {black_name}: {new_black} Elo ({sign_b})\n\n"
+        f"{AURA_ICON} {winner_name} nhận **+100 Aura** (số dư: {new_winner_aura})."
+    )
+
+
 def chess_hint(cid, hinter_id):
     """Gợi ý nước đi tốt nhất theo đánh giá vật chất nông (dùng chung _score_all_moves với bot).
     Trừ Elo người xin gợi ý. Trả về (text_gợi_ý, elo_mới)."""
@@ -986,12 +1071,24 @@ def chess_hint(cid, hinter_id):
 
 
 def chess_header_text(cid, display_names=None):
-    """Dòng hiển thị 2 người chơi + Elo, kiểu chess.com, đặt phía trên bàn cờ."""
+    """Dòng hiển thị 2 người chơi + Elo, kiểu chess.com, đặt phía trên bàn cờ.
+    PvP có thêm đồng hồ mm:ss của từng bên (chỉ bên tới lượt mới thực sự chạy)."""
     game = _chess_games[cid]
     if game["is_pvp"]:
         white_id, black_id = game["white_id"], game["black_id"]
         white_name = display_names[True] if display_names else f"<@{white_id}>"
         black_name = display_names[False] if display_names else f"<@{black_id}>"
+        if "clocks" in game:
+            w_left = chess_remaining_seconds(cid, chess.WHITE)
+            b_left = chess_remaining_seconds(cid, chess.BLACK)
+            mode_label = CHESS_TIME_MODES[game["time_mode"]]["label"]
+            w_mark = "⏳" if game["board"].turn == chess.WHITE else "⏸️"
+            b_mark = "⏳" if game["board"].turn == chess.BLACK else "⏸️"
+            return (
+                f"{mode_label}\n"
+                f"⚪ **{white_name}** — {get_elo(white_id)} Elo — {w_mark} `{_fmt_clock(w_left)}`\n"
+                f"⚫ **{black_name}** — {get_elo(black_id)} Elo — {b_mark} `{_fmt_clock(b_left)}`"
+            )
         return f"⚪ **{white_name}** — {get_elo(white_id)} Elo\n⚫ **{black_name}** — {get_elo(black_id)} Elo"
 
     player_id = game["player_id"]
