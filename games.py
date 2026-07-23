@@ -500,6 +500,45 @@ def get_elo(user_id):
     return _elo_cache.get(user_id, DEFAULT_ELO)
 
 
+def _set_elo(user_id, new_elo):
+    """Ghi thẳng Elo (không qua công thức Elo trận đấu) — dùng cho việc MUA Elo bằng Aura."""
+    _elo_cache[user_id] = new_elo
+    _firestore_save_doc("elo", user_id, {"elo": new_elo})
+    return new_elo
+
+
+# ============ MUA TÀI 🥶 (đổi Aura lấy Elo, kiểu meme "Messi mua tài") ============
+BUY_ELO_AURA_COST = 50    # giá mỗi lần mua
+BUY_ELO_AMOUNT = 100      # số Elo nhận được mỗi lần mua
+_buy_elo_receipts = {}    # {user_id: [{"time": ts, "cost": int, "amount": int, "elo_after": int, "aura_after": int}, ...]}
+
+
+def chess_buy_elo(user_id):
+    """Đổi BUY_ELO_AURA_COST Aura lấy BUY_ELO_AMOUNT Elo — 'mua tài' theo đúng nghĩa đen 🥶.
+    Trả về (thành_công, elo_mới, aura_mới) — thất bại nếu không đủ Aura.
+    Mỗi lần mua thành công được ghi lại thành 1 dòng hóa đơn cho lệnh /hoadon."""
+    balance = get_aura(user_id)
+    if balance < BUY_ELO_AURA_COST:
+        return False, get_elo(user_id), balance
+
+    new_aura = add_aura(user_id, -BUY_ELO_AURA_COST)
+    new_elo = _set_elo(user_id, get_elo(user_id) + BUY_ELO_AMOUNT)
+
+    _buy_elo_receipts.setdefault(user_id, []).append({
+        "time": time.time(),
+        "cost": BUY_ELO_AURA_COST,
+        "amount": BUY_ELO_AMOUNT,
+        "elo_after": new_elo,
+        "aura_after": new_aura,
+    })
+    return True, new_elo, new_aura
+
+
+def get_buy_elo_receipts(user_id):
+    """Lịch sử mua tài của 1 người, mới nhất trước — dùng cho /hoadon."""
+    return list(reversed(_buy_elo_receipts.get(user_id, [])))
+
+
 def _expected_score(elo_a, elo_b):
     return 1 / (1 + 10 ** ((elo_b - elo_a) / 400))
 
