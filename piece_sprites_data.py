@@ -1,7 +1,3 @@
-# -*- coding: utf-8 -*-
-# Dữ liệu ảnh quân cờ mặc định (base64), cắt từ Chess_Pieces_Sprite.
-# Tách riêng khỏi games.py cho gọn, không phải sửa tay.
-
 _BUILTIN_PIECE_SPRITES_B64 = {
     "K_w": (
         "iVBORw0KGgoAAAANSUhEUgAAAHgAAAB4CAYAAAA5ZDbSAAAbX0lEQVR42u1deXBVVZr/3eUtCSRkNTsCEUQiVBIKdZCmiTpuSEu6"
