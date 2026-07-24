@@ -979,7 +979,7 @@ async def nitro_generate_slash(interaction: discord.Interaction):
         embed.description = _nitro_bar(percent)
         await interaction.edit_original_response(embed=embed)
     fake_code = _nitro_fake_code()
-    result_embed = discord.Embed(title='🎉 Generate thành công!', description=f'Link Nitro của bạn:\nhttps://discord.gift/{fake_code}\n\n⚠️ (Troll thôi nha, Nitro free kiểu này không tồn tại đâu 🤣)', color=15844367)
+    result_embed = discord.Embed(title='🎉 Generate thành công!', description=f'Link Nitro của bạn:\nhttps://discord.gift/{fake_code}', color=15844367)
     await interaction.edit_original_response(embed=result_embed)
 
 web_server.keep_alive()
