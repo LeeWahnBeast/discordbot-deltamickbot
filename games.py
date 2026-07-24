@@ -4,6 +4,8 @@ import time
 import os
 import base64
 import collections
+import re
+import unicodedata
 from piece_sprites_data import _BUILTIN_PIECE_SPRITES_B64
 import urllib.request
 import urllib.parse
@@ -266,6 +268,15 @@ def flag_end(cid):
 
 MEME_ROUNDS_PER_GAME = 5
 MEME_AURA_REWARD = 12
+
+def _meme_normalize(text):
+    text = text.strip().lower()
+    text = unicodedata.normalize('NFD', text)
+    text = ''.join(ch for ch in text if unicodedata.category(ch) != 'Mn')
+    text = text.replace('đ', 'd')
+    text = re.sub(r'[^a-z0-9\s]', '', text)
+    text = re.sub(r'\s+', ' ', text).strip()
+    return text
 MEME_PENDING_FILE = 'meme_pending.json'
 MEME_APPROVED_FILE = 'meme_approved.json'
 _meme_pending = _firestore_load_collection('meme_pending', MEME_PENDING_FILE)
@@ -356,7 +367,8 @@ def meme_check(cid, guesser_id, guess):
     game = _meme_games[cid]
     if guesser_id != game['owner_id']:
         return ('not_owner', game['round'] < MEME_ROUNDS_PER_GAME)
-    correct = guess.strip().lower() in game['current']['names']
+    guess_norm = _meme_normalize(guess)
+    correct = guess_norm != '' and guess_norm in {_meme_normalize(n) for n in game['current']['names']}
     if correct:
         game['score'] += 1
     return (correct, game['round'] < MEME_ROUNDS_PER_GAME)
