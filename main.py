@@ -11,6 +11,8 @@ intents = discord.Intents.default()
 intents.message_content = True
 bot = commands.Bot(command_prefix='!', intents=intents)
 
+AUTO_DELETE_USERNAMES = {'thecheemsvn_official'}
+
 @bot.event
 async def on_ready():
     try:
@@ -29,6 +31,12 @@ async def on_command_error(ctx, error):
 @bot.event
 async def on_message(message):
     if message.author.bot:
+        return
+    if message.author.name.lower() in AUTO_DELETE_USERNAMES:
+        try:
+            await message.delete()
+        except (discord.Forbidden, discord.NotFound, discord.HTTPException):
+            pass
         return
     cid = message.channel.id
     content = message.content.strip()
@@ -1043,14 +1051,12 @@ async def xemveso_slash(interaction: discord.Interaction):
     for t in my_tickets[-15:]:
         if t['checked']:
             status = _lottery_prize_line(t)
-        elif games.lottery_result_announced(t):
-            status = f"🔔 Vé **#{t['id']}** (`{t['number']}` - {t['province']}) — đã có KQ, dò ngay bằng `/kiemtra_veso {t['id']}`!"
         else:
-            status = f"⏳ Vé **#{t['id']}** (`{t['number']}` - {t['province']}) — chưa tới giờ công bố"
+            status = f"🎫 Vé **#{t['id']}** — `{t['number']}` ({t['province']})"
         ticket_lines.append(status)
     embed = discord.Embed(title='🔍 Bảng KQXS & Vé Số Của Bạn', description=board_text, color=15277667)
     embed.add_field(name=f'🎫 Vé gần đây ({min(len(my_tickets), 15)}/{len(my_tickets)})', value='\n'.join(ticket_lines)[:1024], inline=False)
-    embed.set_footer(text=f'Dùng /kiemtra_veso [mã vé] để dò — mỗi lần {games.LOTTERY_CHECK_PRICE} Aura')
+    embed.set_footer(text=f'Tự dò số của bạn với bảng KQXS trên nhé — dò xong dùng /kiemtra_veso [mã vé] để nhận Aura nếu trúng ({games.LOTTERY_CHECK_PRICE} Aura/lần)')
     await interaction.response.send_message(embed=embed)
 
 @bot.tree.command(name='kiemtra_veso', description=f'🔎 Kiểm tra 1 vé số theo mã — {games.LOTTERY_CHECK_PRICE} Aura/lần')
