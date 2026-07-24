@@ -3,6 +3,7 @@ import io
 import time
 import os
 import base64
+import collections
 from piece_sprites_data import _BUILTIN_PIECE_SPRITES_B64
 import urllib.request
 import urllib.parse
@@ -454,13 +455,18 @@ def shop_list():
     _ensure_stock_cycle()
     return SHOP_ITEMS
 
+_RECEIPTS_MAX_PER_USER = 30
+
 def _add_receipt(user_id, item_key, item, cost_currency, cost, balance_after):
     entry = {
         'time': time.time(), 'item_key': item_key, 'item_name': item['name'],
         'emoji': item['emoji'], 'currency': cost_currency, 'cost': cost,
         'balance_after': balance_after,
     }
-    _receipts.setdefault(user_id, []).append(entry)
+    history = _receipts.setdefault(user_id, [])
+    history.append(entry)
+    if len(history) > _RECEIPTS_MAX_PER_USER:
+        del history[0:len(history) - _RECEIPTS_MAX_PER_USER]
     return entry
 
 def get_receipts(user_id):
@@ -653,7 +659,8 @@ for _pt, _letter in _PIECE_LETTER.items():
 PIECE_KEY_LABELS = {'K_w': 'Vua Trắng', 'Q_w': 'Hậu Trắng', 'R_w': 'Xe Trắng', 'B_w': 'Tượng Trắng', 'N_w': 'Mã Trắng', 'P_w': 'Tốt Trắng', 'K_b': 'Vua Đen', 'Q_b': 'Hậu Đen', 'R_b': 'Xe Đen', 'B_b': 'Tượng Đen', 'N_b': 'Mã Đen', 'P_b': 'Tốt Đen'}
 PIECE_THEME_FILE = 'chess_piece_themes.json'
 _piece_theme_cache = {uid: d for uid, d in _firestore_load_collection('chess_piece_theme', PIECE_THEME_FILE).items()}
-_piece_sprite_cache = {}
+_PIECE_SPRITE_CACHE_MAX = 64
+_piece_sprite_cache = collections.OrderedDict()
 
 def _piece_key(piece_type, color):
     return f'{_PIECE_LETTER[piece_type]}_{('w' if color == chess.WHITE else 'b')}'
@@ -681,6 +688,7 @@ def clear_piece_theme(user_id, key=None):
 
 def _load_piece_sprite(url):
     if url in _piece_sprite_cache:
+        _piece_sprite_cache.move_to_end(url)
         return _piece_sprite_cache[url]
     try:
         req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
@@ -690,8 +698,14 @@ def _load_piece_sprite(url):
     except Exception as e:
         print(f'[custom_chess] Không tải/đọc được ảnh từ {url}: {e!r}')
         _piece_sprite_cache[url] = None
+        _piece_sprite_cache.move_to_end(url)
+        if len(_piece_sprite_cache) > _PIECE_SPRITE_CACHE_MAX:
+            _piece_sprite_cache.popitem(last=False)
         return None
     _piece_sprite_cache[url] = sprite
+    _piece_sprite_cache.move_to_end(url)
+    if len(_piece_sprite_cache) > _PIECE_SPRITE_CACHE_MAX:
+        _piece_sprite_cache.popitem(last=False)
     return sprite
 
 def preview_piece_sprite(url):
