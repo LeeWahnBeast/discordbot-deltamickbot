@@ -46,6 +46,14 @@ def _firestore_save_doc(collection_name, user_id, data):
         _firestore_db.collection(collection_name).document(str(user_id)).set(data)
     except Exception as e:
         print(f"[firestore] Lỗi ghi '{collection_name}/{user_id}': {e!r}")
+
+def _firestore_delete_doc(collection_name, doc_id):
+    if _firestore_db is None:
+        return
+    try:
+        _firestore_db.collection(collection_name).document(str(doc_id)).delete()
+    except Exception as e:
+        print(f"[firestore] Lỗi xóa '{collection_name}/{doc_id}': {e!r}")
 AURA_FILE = 'aura_data.json'
 AURA_ICON = '<:mango:1529287058072408195>'
 _aura_cache = {uid: d.get('balance', 0) for uid, d in _firestore_load_collection('aura', AURA_FILE).items()}
@@ -218,15 +226,21 @@ def flag_end(cid):
 
 MEME_ROUNDS_PER_GAME = 5
 MEME_AURA_REWARD = 12
-_meme_pending = {}
-_meme_approved = {}
-_meme_next_id = [1]
+MEME_PENDING_FILE = 'meme_pending.json'
+MEME_APPROVED_FILE = 'meme_approved.json'
+_meme_pending = _firestore_load_collection('meme_pending', MEME_PENDING_FILE)
+_meme_approved = _firestore_load_collection('meme_approved', MEME_APPROVED_FILE)
 _meme_games = {}
 
+def _meme_next_id():
+    existing_ids = list(_meme_pending.keys()) + list(_meme_approved.keys())
+    return max(existing_ids, default=0) + 1
+
 def meme_submit(image_url, name, submitter_id):
-    meme_id = _meme_next_id[0]
-    _meme_next_id[0] += 1
-    _meme_pending[meme_id] = {'id': meme_id, 'image_url': image_url, 'name': name.strip().lower(), 'display_name': name.strip(), 'submitter_id': submitter_id, 'submitted_at': time.time()}
+    meme_id = _meme_next_id()
+    entry = {'id': meme_id, 'image_url': image_url, 'name': name.strip().lower(), 'display_name': name.strip(), 'submitter_id': submitter_id, 'submitted_at': time.time()}
+    _meme_pending[meme_id] = entry
+    _firestore_save_doc('meme_pending', meme_id, entry)
     return meme_id
 
 def meme_pending_list():
@@ -242,10 +256,15 @@ def meme_approve(meme_id, reviewer_id):
     meme['approved_by'] = reviewer_id
     meme['approved_at'] = time.time()
     _meme_approved[meme_id] = meme
+    _firestore_save_doc('meme_approved', meme_id, meme)
+    _firestore_delete_doc('meme_pending', meme_id)
     return True
 
 def meme_reject(meme_id, reviewer_id):
-    return _meme_pending.pop(meme_id, None) is not None
+    existed = _meme_pending.pop(meme_id, None) is not None
+    if existed:
+        _firestore_delete_doc('meme_pending', meme_id)
+    return existed
 
 def meme_pool_size():
     return len(_meme_approved)
