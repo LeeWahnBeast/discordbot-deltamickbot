@@ -69,6 +69,43 @@ def add_aura(user_id, amount):
     _firestore_save_doc('aura', user_id, {'balance': new_balance})
     return new_balance
 
+AURA_PLUS_FILE = 'aura_plus_data.json'
+AURA_PLUS_ICON = AURA_ICON
+AURA_PLUS_PER_GAME = 0.1
+AURA_PLUS_EXCHANGE_RATE = 10
+AURA_PLUS_EXCHANGE_FEE = 0.8
+_aura_plus_cache = {uid: d.get('balance', 0.0) for uid, d in _firestore_load_collection('aura_plus', AURA_PLUS_FILE).items()}
+
+def get_aura_plus(user_id):
+    return round(_aura_plus_cache.get(user_id, 0.0), 2)
+
+def add_aura_plus(user_id, amount):
+    new_balance = round(get_aura_plus(user_id) + amount, 2)
+    _aura_plus_cache[user_id] = new_balance
+    _firestore_save_doc('aura_plus', user_id, {'balance': new_balance})
+    return new_balance
+
+def award_game_completion_aura_plus(user_id):
+    return add_aura_plus(user_id, AURA_PLUS_PER_GAME)
+
+def exchange_aura_plus_to_aura(user_id, aura_plus_amount):
+    if aura_plus_amount <= 0 or get_aura_plus(user_id) < aura_plus_amount:
+        return None
+    gross_aura = aura_plus_amount * AURA_PLUS_EXCHANGE_RATE
+    net_aura = gross_aura * (1 - AURA_PLUS_EXCHANGE_FEE)
+    add_aura_plus(user_id, -aura_plus_amount)
+    new_aura_balance = add_aura(user_id, net_aura)
+    return {'spent': aura_plus_amount, 'received': net_aura, 'aura_after': new_aura_balance, 'aura_plus_after': get_aura_plus(user_id)}
+
+def exchange_aura_to_aura_plus(user_id, aura_amount):
+    if aura_amount <= 0 or get_aura(user_id) < aura_amount:
+        return None
+    gross_aura_plus = aura_amount / AURA_PLUS_EXCHANGE_RATE
+    net_aura_plus = round(gross_aura_plus * (1 - AURA_PLUS_EXCHANGE_FEE), 2)
+    add_aura(user_id, -aura_amount)
+    new_aura_plus_balance = add_aura_plus(user_id, net_aura_plus)
+    return {'spent': aura_amount, 'received': net_aura_plus, 'aura_after': get_aura(user_id), 'aura_plus_after': new_aura_plus_balance}
+
 def folk_valley_rank(score, total=5):
     if score <= 1:
         return ('🐓 GÀ', 'Con gà mổ lúa cũng đoán giỏi hơn thế này.\n*"Gieo hạt sai mùa // rồi trách đất không màu mỡ."*', 9133628)
@@ -87,10 +124,13 @@ _wordle_games = {}
 def wordle_active(cid):
     return cid in _wordle_games
 
-def wordle_start(cid):
+def wordle_start(cid, owner_id):
+    if daily_games_left_today('wordle', owner_id) <= 0:
+        return (None, False)
+    _consume_daily_slot('wordle', owner_id)
     word = random.choice(WORDS)
-    _wordle_games[cid] = {'word': word, 'guesses': 0}
-    return word
+    _wordle_games[cid] = {'word': word, 'guesses': 0, 'owner_id': owner_id}
+    return (word, True)
 
 def wordle_word(cid):
     return _wordle_games[cid]['word']
@@ -131,7 +171,7 @@ FLAG_POOLS = {'easy': FLAG_EASY, 'medium': FLAG_MEDIUM, 'hard': FLAG_HARD, 'insa
 FLAG_AURA_PER_DIFFICULTY = {'easy': 6, 'medium': 10, 'hard': 14, 'insane': 20, 'mythic': 28}
 FLAG_UNLOCK_SCORE_MYTHIC = 500
 ROUNDS_PER_GAME = 5
-DAILY_FREE_GAMES = {'flag': 5, 'meme': 5, 'chess_bot': 5}
+DAILY_FREE_GAMES = {'flag': 5, 'meme': 5, 'chess_bot': 5, 'wordle': 5}
 _flag_games = {}
 _daily_usage = {}
 _flag_lifetime_score = {}
@@ -444,7 +484,7 @@ SHOP_ITEMS = {
     'elo_100': {'emoji': '🥶', 'name': 'Mua Tài (100 Elo)', 'currency': 'aura', 'price': 50, 'stock': 8, 'rarity': 'common', 'appear_chance': 1.0, 'desc': '📈 +100 Elo ngay lập tức, không cần thắng, không cần chơi, không cần liêm sỉ.\n🐐 Messi mà thấy giá này chắc cũng phải khóc vì rẻ.'},
     'elo10': {'emoji': '💠', 'name': '10 Elo', 'currency': 'aura', 'price': 5, 'stock': 20, 'rarity': 'common', 'appear_chance': 1.0, 'desc': '📈 +10 Elo bé xíu, dành cho người mua tài mà vẫn muốn giữ chút liêm sỉ.\n🐜 Chưa đủ để flex nhưng đủ để tự lừa bản thân là đang tiến bộ.'},
     'hint_free': {'emoji': '💡', 'name': 'Gợi Ý Miễn Phí', 'currency': 'aura', 'price': 120, 'stock': 5, 'rarity': 'common', 'appear_chance': 1.0, 'desc': '🎯 Dùng 1 lần — hỏi bài mà không bị trừ điểm, sung sướng như quay cóp trót lọt.\n🧠 Não bạn nghỉ hưu sớm, bot lo hết.'},
-    'flag_slot': {'emoji': '🎟️', 'name': 'Slot Vé Game', 'currency': 'aura', 'price': 80, 'stock': 6, 'rarity': 'common', 'appear_chance': 1.0, 'desc': '📈 +1 lượt chơi hôm nay cho /flag, /meme VÀ cờ vua vs Bot (vượt giới hạn 5 vé/ngày mỗi loại).\n🌾 Nghiện game thì Folk Valley không cản, chỉ cần trả tiền vé.'},
+    'flag_slot': {'emoji': '🎟️', 'name': 'Slot Vé Game', 'currency': 'aura', 'price': 80, 'stock': 6, 'rarity': 'common', 'appear_chance': 1.0, 'desc': '📈 +1 lượt chơi hôm nay cho /wordle, /flag, /meme VÀ cờ vua vs Bot (vượt giới hạn 5 vé/ngày mỗi loại).\n🌾 Nghiện game thì Folk Valley không cản, chỉ cần trả tiền vé.'},
     'aura_500': {'emoji': '💰', 'name': 'Túi Aura (500)', 'currency': 'elo', 'price': 250, 'stock': 5, 'rarity': 'uncommon', 'appear_chance': 0.75, 'desc': '💸 Bán 250 Elo lấy 500 Aura — vay nóng lãi cắt cổ nhưng tự nguyện.\n🏦 Tín dụng đen phiên bản cờ vua, không ai ép bạn cả.'},
     'shield_timeout': {'emoji': '🛡️', 'name': 'Khiên Hết Giờ', 'currency': 'aura', 'price': 350, 'stock': 3, 'rarity': 'uncommon', 'appear_chance': 0.75, 'desc': '🎯 Dùng 1 lần — cộng free 60 giây để nghĩ nước đi cho thiên tài chậm tiêu.\n🐢 Rùa cũng có ngày về đích, miễn là mua đủ khiên.'},
     'trong_tai': {'emoji': '⚖️', 'name': 'Trọng Tài Chess (PvP)', 'currency': 'aura', 'price': 450, 'stock': 3, 'rarity': 'uncommon', 'appear_chance': 0.6, 'desc': '🎯 Dùng 1 lần — mua đứt ông trọng tài trận PvP tiếp theo.\n🛡️ Thổi còi thiên vị bạn công khai giữa thanh thiên bạch nhật.\n🤫 "Đây là quyết định cuối cùng, không khiếu nại" — trọng tài, vừa nhận phong bì.'},
@@ -558,6 +598,7 @@ def shop_buy(user_id, item_key):
         daily_add_slot('flag', user_id)
         daily_add_slot('meme', user_id)
         daily_add_slot('chess_bot', user_id)
+        daily_add_slot('wordle', user_id)
     elif item_key == 'mango_mustard':
         add_aura(user_id, 50)
     elif item_key == 'ronaldo_pasta':
