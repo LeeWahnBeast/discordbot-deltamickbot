@@ -19,6 +19,12 @@ async def on_ready():
     print(f'✅ Bot đã đăng nhập với tên {bot.user}')
 
 @bot.event
+async def on_command_error(ctx, error):
+    if isinstance(error, commands.CommandNotFound):
+        return
+    raise error
+
+@bot.event
 async def on_message(message):
     if message.author.bot:
         return
