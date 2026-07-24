@@ -41,7 +41,33 @@ async def on_message(message):
         if games.flag_active(cid):
             await _handle_flag_round(message, content)
             return
+        if games.meme_active(cid):
+            await _handle_meme_round(message, content)
+            return
     await bot.process_commands(message)
+
+async def _handle_meme_round(message, guess_text):
+    cid = message.channel.id
+    result, has_next = games.meme_check(cid, message.author.id, guess_text)
+    if result == 'not_owner':
+        return
+    correct = result
+    answer = games.meme_answer(cid)
+    round_num, total, score = games.meme_progress(cid)
+    if correct:
+        new_aura = games.add_aura(message.author.id, games.MEME_AURA_REWARD)
+        await message.channel.send(f'✅ Chính xác! Đó là **{answer}**! (Điểm: {score}/{round_num})\n{games.AURA_ICON} +{games.MEME_AURA_REWARD} Aura (số dư: {new_aura}).')
+    else:
+        await message.channel.send(f'❌ Sai rồi! Đáp án là **{answer}**! (Điểm: {score}/{round_num})')
+    if has_next:
+        url = games.meme_next(cid)
+        embed = discord.Embed(title=f'🎭 Vòng tiếp theo ({round_num + 1}/{total})', description='Chat thẳng tên meme để đoán! (chỉ người mở ván mới được tính điểm)', color=15277667)
+        embed.set_image(url=url)
+        await message.channel.send(embed=embed, view=EndGameView(cid, 'meme'))
+    else:
+        games.meme_end(cid)
+        embed = discord.Embed(title='🎭 TỔNG KẾT ĐOÁN MEME 🎭', description=f'**Điểm số: {score}/{total}**', color=15277667)
+        await message.channel.send(embed=embed)
 
 async def _deny_unless(interaction: discord.Interaction, allowed: bool, msg='❌ Đây không phải ván của bạn!'):
     if not allowed:
@@ -76,7 +102,7 @@ async def _handle_flag_round(message, guess_text):
         embed.set_footer(text='Folk Valley thì thầm: hẹn gặp lại ở vòng đoán sau...')
         await message.channel.send(embed=embed)
 MOVE_ANNOTATION_TEXT = {'!!': '✨ **!!** Nước đi thiên tài!', '??': '🤦 **??** Nước đi ngớ ngẩn!'}
-GAME_CONFIG = {'wordle': {'active': games.wordle_active, 'end': games.wordle_end, 'label': 'Wordle', 'reveal': lambda cid: f'Từ đúng là **{games.wordle_word(cid).upper()}**'}, 'flag': {'active': games.flag_active, 'end': games.flag_end, 'label': 'Đoán cờ', 'reveal': lambda cid: f'Đáp án là **{games.flag_answer(cid).title()}**'}, 'chess': {'active': games.chess_active, 'end': games.chess_end, 'label': 'Cờ vua', 'reveal': lambda cid: 'Ván đấu đã dừng.'}}
+GAME_CONFIG = {'wordle': {'active': games.wordle_active, 'end': games.wordle_end, 'label': 'Wordle', 'reveal': lambda cid: f'Từ đúng là **{games.wordle_word(cid).upper()}**'}, 'flag': {'active': games.flag_active, 'end': games.flag_end, 'label': 'Đoán cờ', 'reveal': lambda cid: f'Đáp án là **{games.flag_answer(cid).title()}**'}, 'meme': {'active': games.meme_active, 'end': games.meme_end, 'label': 'Đoán meme', 'reveal': lambda cid: f'Đáp án là **{games.meme_answer(cid)}**'}, 'chess': {'active': games.chess_active, 'end': games.chess_end, 'label': 'Cờ vua', 'reveal': lambda cid: 'Ván đấu đã dừng.'}}
 
 def make_end_button(cid, kind, row=None):
     cfg = GAME_CONFIG[kind]
@@ -437,7 +463,7 @@ async def ping_slash(interaction: discord.Interaction):
 @bot.tree.command(name='about', description='Thông tin về bot')
 async def about_slash(interaction: discord.Interaction):
     embed = discord.Embed(title='🤖 About Bot', description='Bot mini-game vui nhộn cho server: đoán chữ, đoán cờ, cờ vua, Delta Shop và bói vui.', color=5793266)
-    embed.add_field(name='🎮 Các lệnh', value='`/wordle` — đoán từ 5 chữ\n`/flag` — đoán cờ các nước\n`/chess` — cờ vua vs bot\n`/chess_invite @ai_đó` — mời PvP cờ vua\n`/chess_reset` — xóa ván cờ bị kẹt (nếu bot báo lỗi)\n`/whatuinto` — bói vui\n`/wiki <từ khóa>` — tra bách khoa toàn thư\n`/aura` — xem số dư Aura\n`/shop` — mở Delta Shop 🛒\n`/kho` — xem vật phẩm/buff đang có\n`/hoadon` — xem hóa đơn Delta Shop\n`/ping` — kiểm tra độ trễ', inline=False)
+    embed.add_field(name='🎮 Các lệnh', value='`/wordle` — đoán từ 5 chữ\n`/flag` — đoán cờ các nước\n`/meme` — đoán meme TikTok\n`/addmeme` — đóng góp meme mới\n`/chess` — cờ vua vs bot\n`/chess_invite @ai_đó` — mời PvP cờ vua\n`/chess_reset` — xóa ván cờ bị kẹt (nếu bot báo lỗi)\n`/whatuinto` — bói vui\n`/wiki <từ khóa>` — tra bách khoa toàn thư\n`/aura` — xem số dư Aura\n`/shop` — mở Delta Shop 🛒\n`/kho` — xem vật phẩm/buff đang có\n`/hoadon` — xem hóa đơn Delta Shop\n`/ping` — kiểm tra độ trễ', inline=False)
     embed.set_footer(text='Made by TVPixel')
     await interaction.response.send_message(embed=embed)
 
@@ -752,5 +778,74 @@ async def kho_slash(interaction: discord.Interaction, member: discord.Member=Non
     who = 'Bạn' if target.id == interaction.user.id else target.mention
     text = games.shop_inventory_text(target.id)
     await interaction.response.send_message(f'🎒 Kho đồ của {who}:\n{text}')
+
+@bot.tree.command(name='addmeme', description='📥 Đóng góp 1 meme TikTok vào pool đoán meme (cần admin duyệt trước khi chơi được)')
+@app_commands.describe(anh='Ảnh meme (upload trực tiếp)', ten='Tên/đáp án của meme này (vd: "Ohio rizz", "Skibidi toilet"...)')
+async def addmeme_slash(interaction: discord.Interaction, anh: discord.Attachment, ten: str):
+    if not anh.content_type or not anh.content_type.startswith('image/'):
+        await interaction.response.send_message('❌ File phải là ảnh (png/jpg/webp...).', ephemeral=True)
+        return
+    if len(ten.strip()) < 2:
+        await interaction.response.send_message('❌ Tên meme quá ngắn, đặt tên rõ ràng hơn nhé.', ephemeral=True)
+        return
+    meme_id = games.meme_submit(anh.url, ten, interaction.user.id)
+    await interaction.response.send_message(f'📥 Đã gửi meme **#{meme_id}** ("{ten}") vào hàng chờ duyệt!\n⚠️ Ảnh sẽ được kiểm duyệt (Discord AutoMod + admin) trước khi vào pool chơi — cấm tuyệt đối nội dung 18+/khiêu dâm, gửi vi phạm có thể bị xử lý.', ephemeral=True)
+
+@bot.tree.command(name='reviewmeme', description='🛡️ [Admin] Duyệt các meme đang chờ trong hàng đợi')
+async def reviewmeme_slash(interaction: discord.Interaction):
+    if not isinstance(interaction.user, discord.Member) or not interaction.user.guild_permissions.administrator:
+        await interaction.response.send_message('❌ Lệnh này chỉ dành cho admin server.', ephemeral=True)
+        return
+    pending = games.meme_pending_list()
+    if not pending:
+        await interaction.response.send_message('✅ Không có meme nào đang chờ duyệt.', ephemeral=True)
+        return
+    meme = pending[0]
+    embed = discord.Embed(title=f"🛡️ Duyệt meme #{meme['id']} ({len(pending)} đang chờ)", description=f"**Tên:** {meme['display_name']}\n**Người gửi:** <@{meme['submitter_id']}>", color=15105570)
+    embed.set_image(url=meme['image_url'])
+    embed.set_footer(text='⚠️ Kiểm tra kỹ nội dung 18+/khiêu dâm trước khi duyệt!')
+    await interaction.response.send_message(embed=embed, view=MemeReviewView(meme['id']))
+
+class MemeReviewView(discord.ui.View):
+
+    def __init__(self, meme_id):
+        super().__init__(timeout=120)
+        self.meme_id = meme_id
+
+    @discord.ui.button(label='✅ Duyệt', style=discord.ButtonStyle.success)
+    async def approve(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not isinstance(interaction.user, discord.Member) or not interaction.user.guild_permissions.administrator:
+            await interaction.response.send_message('❌ Chỉ admin mới duyệt được.', ephemeral=True)
+            return
+        ok = games.meme_approve(self.meme_id, interaction.user.id)
+        msg = f'✅ Đã duyệt meme #{self.meme_id}, giờ đã vào pool chơi!' if ok else '⚠️ Meme này đã được xử lý rồi.'
+        await interaction.response.edit_message(content=msg, embed=None, view=None)
+
+    @discord.ui.button(label='❌ Từ chối', style=discord.ButtonStyle.danger)
+    async def reject(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not isinstance(interaction.user, discord.Member) or not interaction.user.guild_permissions.administrator:
+            await interaction.response.send_message('❌ Chỉ admin mới duyệt được.', ephemeral=True)
+            return
+        ok = games.meme_reject(self.meme_id, interaction.user.id)
+        msg = f'❌ Đã từ chối meme #{self.meme_id}.' if ok else '⚠️ Meme này đã được xử lý rồi.'
+        await interaction.response.edit_message(content=msg, embed=None, view=None)
+
+@bot.tree.command(name='meme', description='🎭 Đoán meme TikTok — chat tên meme để đoán')
+async def meme_slash(interaction: discord.Interaction):
+    cid = interaction.channel_id
+    if games.meme_active(cid):
+        await interaction.response.send_message('⚠️ Đang có ván đoán meme chưa xong!', ephemeral=True)
+        return
+    if games.meme_pool_size() < 3:
+        await interaction.response.send_message(f'❌ Pool meme chưa đủ (cần tối thiểu 3, hiện có {games.meme_pool_size()}). Dùng `/addmeme` để đóng góp thêm!', ephemeral=True)
+        return
+    url, ok = games.meme_start(cid, interaction.user.id)
+    if not ok:
+        await interaction.response.send_message('❌ Không thể bắt đầu ván meme lúc này.', ephemeral=True)
+        return
+    embed = discord.Embed(title=f'🎭 Đoán Meme TikTok (1/{games.MEME_ROUNDS_PER_GAME})', description=f'Chat thẳng tên meme để đoán! Mỗi câu đúng: **+{games.MEME_AURA_REWARD} Aura**.', color=15277667)
+    embed.set_image(url=url)
+    await interaction.response.send_message(embed=embed, view=EndGameView(cid, 'meme'))
+
 web_server.keep_alive()
 bot.run(os.environ['DISCORD_KEY'])
