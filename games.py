@@ -367,6 +367,8 @@ def meme_check(cid, guesser_id, guess):
     game = _meme_games[cid]
     if guesser_id != game['owner_id']:
         return ('not_owner', game['round'] < MEME_ROUNDS_PER_GAME)
+    if game['current'] is None:
+        return (False, game['round'] < MEME_ROUNDS_PER_GAME)
     guess_norm = _meme_normalize(guess)
     correct = guess_norm != '' and guess_norm in {_meme_normalize(n) for n in game['current']['names']}
     if correct:
