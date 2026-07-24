@@ -1526,3 +1526,68 @@ def farm_status(user_id):
     _farm_settle_farmer(d, user_id)
     _farm_save(user_id)
     return dict(d)
+
+_FARM_PX_W, _FARM_PX_H, _FARM_SCALE = 40, 30, 10
+_FARM_SKY = (142, 207, 242)
+_FARM_HILL = (111, 191, 115)
+_FARM_DIRT = (155, 106, 62)
+_FARM_FURROW = (122, 82, 48)
+_FARM_HOLE = (92, 58, 33)
+_FARM_STEM = (62, 142, 65)
+_FARM_LEAF = (76, 175, 80)
+_FARM_LEAF2 = (102, 187, 106)
+_FARM_FLOWER = (255, 193, 7)
+_FARM_FLOWER2 = (255, 235, 59)
+
+def _farm_set(px, x, y, color):
+    if 0 <= x < _FARM_PX_W and 0 <= y < _FARM_PX_H:
+        px[x, y] = color
+
+def farm_render_image(user_id):
+    d = farm_status(user_id)
+    img = Image.new('RGB', (_FARM_PX_W, _FARM_PX_H), _FARM_SKY)
+    px = img.load()
+    for y in range(8, _FARM_PX_H):
+        for x in range(_FARM_PX_W):
+            px[x, y] = _FARM_DIRT
+    for y in (8, 9):
+        for x in range(_FARM_PX_W):
+            px[x, y] = _FARM_HILL
+    for y in range(11, _FARM_PX_H, 3):
+        for x in range(2, _FARM_PX_W - 2):
+            px[x, y] = _FARM_FURROW
+    cx, base_y = _FARM_PX_W // 2, 26
+    if d['farmer']:
+        fx = 8
+        for y in range(base_y - 6, base_y):
+            _farm_set(px, fx, y, (66, 99, 176))
+            _farm_set(px, fx + 1, y, (66, 99, 176))
+        for x in (fx, fx + 1):
+            _farm_set(px, x, base_y - 8, (255, 224, 189))
+        for x in range(fx - 1, fx + 3):
+            _farm_set(px, x, base_y - 9, (139, 69, 19))
+    if not d['planted']:
+        _farm_set(px, cx, base_y, _FARM_HOLE)
+        _farm_set(px, cx - 1, base_y, _FARM_HOLE)
+    else:
+        w = d['waterings']
+        stem_top = base_y - (2 if w == 0 else 5 if w == 1 else 8 if w == 2 else 11)
+        for y in range(stem_top, base_y + 1):
+            _farm_set(px, cx, y, _FARM_STEM)
+        if w >= 1:
+            _farm_set(px, cx - 1, stem_top + 2, _FARM_LEAF)
+            _farm_set(px, cx + 1, stem_top + 2, _FARM_LEAF)
+        if w >= 2:
+            _farm_set(px, cx - 2, stem_top + 4, _FARM_LEAF2)
+            _farm_set(px, cx + 2, stem_top + 4, _FARM_LEAF2)
+            _farm_set(px, cx - 1, stem_top + 1, _FARM_LEAF)
+            _farm_set(px, cx + 1, stem_top + 1, _FARM_LEAF)
+        if w >= FARM_WATERINGS_NEEDED:
+            for fx, fy in [(cx, stem_top - 1), (cx - 1, stem_top), (cx + 1, stem_top), (cx, stem_top)]:
+                _farm_set(px, fx, fy, _FARM_FLOWER)
+            _farm_set(px, cx, stem_top - 1, _FARM_FLOWER2)
+    img = img.resize((_FARM_PX_W * _FARM_SCALE, _FARM_PX_H * _FARM_SCALE), Image.NEAREST)
+    buf = io.BytesIO()
+    img.save(buf, format='PNG')
+    buf.seek(0)
+    return buf
