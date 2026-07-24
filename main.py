@@ -38,10 +38,12 @@ async def on_message(message):
                 await message.channel.send(f'`{word.upper()}`\n{result}')
                 if correct:
                     new_aura = games.add_aura(message.author.id, 10)
-                    await message.channel.send(f'🎉 Chính xác! {message.author.mention} đã đoán đúng!\n{games.AURA_ICON} +10 Aura (số dư: {new_aura}).')
+                    new_aura_plus = games.award_game_completion_aura_plus(message.author.id)
+                    await message.channel.send(f'🎉 Chính xác! {message.author.mention} đã đoán đúng!\n{games.AURA_ICON} +10 Aura (số dư: {new_aura}) và +{games.AURA_PLUS_PER_GAME} Aura+ (số dư: {new_aura_plus}).')
                     games.wordle_end(cid)
                 elif done:
-                    await message.channel.send(f'💀 Hết lượt! Từ đúng là: **{games.wordle_word(cid).upper()}**')
+                    new_aura_plus = games.award_game_completion_aura_plus(message.author.id)
+                    await message.channel.send(f'💀 Hết lượt! Từ đúng là: **{games.wordle_word(cid).upper()}**\n{games.AURA_PLUS_ICON} +{games.AURA_PLUS_PER_GAME} Aura+ (số dư: {new_aura_plus}) vì đã chơi hết ván.')
                     games.wordle_end(cid)
             return
         if games.flag_active(cid):
@@ -82,7 +84,8 @@ async def _handle_meme_round(message, guess_text):
         await message.channel.send(embed=embed, view=EndGameView(cid, 'meme'))
     else:
         games.meme_end(cid)
-        embed = discord.Embed(title='🎭 TỔNG KẾT ĐOÁN MEME 🎭', description=f'**Điểm số: {score}/{total}**', color=15277667)
+        new_aura_plus = games.award_game_completion_aura_plus(message.author.id)
+        embed = discord.Embed(title='🎭 TỔNG KẾT ĐOÁN MEME 🎭', description=f'**Điểm số: {score}/{total}**\n{games.AURA_PLUS_ICON} +{games.AURA_PLUS_PER_GAME} Aura+ vì đã hoàn thành ván (số dư: {new_aura_plus}).', color=15277667)
         await message.channel.send(embed=embed)
 
 async def _deny_unless(interaction: discord.Interaction, allowed: bool, msg='❌ Đây không phải ván của bạn!'):
@@ -113,7 +116,8 @@ async def _handle_flag_round(message, guess_text):
     else:
         tier, flavor, rank_color = games.folk_valley_rank(score, total)
         games.flag_end(cid)
-        embed = discord.Embed(title='🌾 TỔNG KẾT — FOLK VALLEY 🌾', description=f'**Điểm số: {score}/{total}**\n\n{flavor}', color=rank_color)
+        new_aura_plus = games.award_game_completion_aura_plus(message.author.id)
+        embed = discord.Embed(title='🌾 TỔNG KẾT — FOLK VALLEY 🌾', description=f'**Điểm số: {score}/{total}**\n\n{flavor}\n\n{games.AURA_PLUS_ICON} +{games.AURA_PLUS_PER_GAME} Aura+ vì đã hoàn thành ván (số dư: {new_aura_plus}).', color=rank_color)
         embed.add_field(name='Xếp loại', value=f'## {tier}')
         embed.set_footer(text='Folk Valley thì thầm: hẹn gặp lại ở vòng đoán sau...')
         await message.channel.send(embed=embed)
@@ -489,8 +493,12 @@ async def wordle_slash(interaction: discord.Interaction):
     if games.wordle_active(cid):
         await interaction.response.send_message('⚠️ Đang có ván Wordle chưa xong!', ephemeral=True)
         return
-    games.wordle_start(cid)
-    embed = discord.Embed(title='🎮 Wordle bắt đầu!', description=f'Chat thẳng một từ **5 chữ cái** để đoán (không cần lệnh).\nTối đa **{games.WORDLE_MAX_GUESSES} lượt**.\n\n🟩 đúng vị trí ・ 🟨 đúng chữ sai vị trí ・ ⬜ sai', color=3066993)
+    word, ok = games.wordle_start(cid, interaction.user.id)
+    if not ok:
+        await interaction.response.send_message('❌ Bạn đã hết lượt chơi `/wordle` hôm nay! Mua thêm 🎟️ Slot Vé Game ở `/shop` hoặc chờ mai nhé.', ephemeral=True)
+        return
+    left = games.daily_games_left_today('wordle', interaction.user.id)
+    embed = discord.Embed(title='🎮 Wordle bắt đầu!', description=f'Chat thẳng một từ **5 chữ cái** để đoán (không cần lệnh).\nTối đa **{games.WORDLE_MAX_GUESSES} lượt**.\n🎟️ Lượt chơi còn lại hôm nay: **{left}**\n\n🟩 đúng vị trí ・ 🟨 đúng chữ sai vị trí ・ ⬜ sai', color=3066993)
     await interaction.response.send_message(embed=embed, view=EndGameView(cid, 'wordle'))
 
 @bot.tree.command(name='flag', description='Đoán cờ các nước — chọn độ khó trước khi bắt đầu')
@@ -683,8 +691,30 @@ async def wiki_slash(interaction: discord.Interaction, tu_khoa: str):
 async def aura_slash(interaction: discord.Interaction, member: discord.Member=None):
     target = member or interaction.user
     balance = games.get_aura(target.id)
+    balance_plus = games.get_aura_plus(target.id)
     who = 'Bạn' if target.id == interaction.user.id else target.mention
-    await interaction.response.send_message(f'{games.AURA_ICON} {who} đang có **{balance} Aura**.')
+    await interaction.response.send_message(f'{games.AURA_ICON} {who} đang có **{balance} Aura** và **{balance_plus} Aura+**.')
+
+@bot.tree.command(name='chon_tiente', description='💱 Đổi qua lại giữa Aura và Aura+ (phí đổi 80%)')
+@app_commands.describe(loai='Chọn chiều đổi', so_luong='Số lượng muốn đổi')
+@app_commands.choices(loai=[app_commands.Choice(name='Aura+ ➜ Aura', value='plus_to_aura'), app_commands.Choice(name='Aura ➜ Aura+', value='aura_to_plus')])
+async def chon_tiente_slash(interaction: discord.Interaction, loai: app_commands.Choice[str], so_luong: float):
+    user_id = interaction.user.id
+    if so_luong <= 0:
+        await interaction.response.send_message('❌ Số lượng phải lớn hơn 0.', ephemeral=True)
+        return
+    if loai.value == 'plus_to_aura':
+        result = games.exchange_aura_plus_to_aura(user_id, so_luong)
+        if result is None:
+            await interaction.response.send_message(f'❌ Không đủ Aura+! Bạn hiện có **{games.get_aura_plus(user_id)} Aura+**.', ephemeral=True)
+            return
+        await interaction.response.send_message(f"💱 Đã đổi **{result['spent']} Aura+** ➜ **{result['received']:.1f} Aura** (phí đổi 80%).\n{games.AURA_ICON} Số dư: **{result['aura_after']} Aura**, **{result['aura_plus_after']} Aura+**.")
+    else:
+        result = games.exchange_aura_to_aura_plus(user_id, so_luong)
+        if result is None:
+            await interaction.response.send_message(f'❌ Không đủ Aura! Bạn hiện có **{games.get_aura(user_id)} Aura**.', ephemeral=True)
+            return
+        await interaction.response.send_message(f"💱 Đã đổi **{result['spent']} Aura** ➜ **{result['received']} Aura+** (phí đổi 80%).\n{games.AURA_ICON} Số dư: **{result['aura_after']} Aura**, **{result['aura_plus_after']} Aura+**.")
 
 def _format_receipt(target_name, r):
     ts = time.strftime('%d/%m/%Y %H:%M', time.localtime(r['time']))
