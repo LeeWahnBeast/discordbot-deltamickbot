@@ -990,50 +990,82 @@ async def nitro_generate_slash(interaction: discord.Interaction):
 
 def _lottery_prize_line(ticket):
     if ticket['prize_amount'] > 0:
-        return f"🎉 {ticket['prize_label']}! Trúng **{ticket['number']}** khớp đuôi với **{ticket['result_number']}** ({ticket['province']})\n{games.AURA_ICON} +{ticket['prize_amount']} Aura"
-    return f"😢 Chúc bạn may mắn lần sau — vé **{ticket['number']}** ({ticket['province']}) không trúng gì (KQ: {ticket['result_number']})"
+        return f"🎉 **{ticket['prize_label']}**! Vé **#{ticket['id']}** (`{ticket['number']}` - {ticket['province']})\n{games.AURA_ICON} +{ticket['prize_amount']} Aura"
+    return f"😢 Vé **#{ticket['id']}** (`{ticket['number']}` - {ticket['province']}) — chúc bạn may mắn lần sau!"
 
-@bot.tree.command(name='shop_dailyveso', description='🎟️ Mua vé số Phonk Delta — 10 Aura/tờ, kho chung server')
+def _lottery_shop_embed():
+    if games.lottery_sale_open():
+        remain = games.lottery_seconds_until_sale_change()
+        status = f'🟢 Đang mở bán — đóng cửa sau **{remain // 3600}h{(remain % 3600) // 60}p** (đúng {games.LOTTERY_SALE_CLOSE_HOUR}h chiều nay).'
+    else:
+        remain = games.lottery_seconds_until_sale_change()
+        status = f'🔴 Đã đóng cửa hôm nay — mở lại sau **{remain // 3600}h{(remain % 3600) // 60}p** (0h đêm nay).'
+    stock = games.lottery_stock_remaining()
+    embed = discord.Embed(title='🏪 Đại Lý Vé Số Phonk Delta', description=f"{status}\n\n📦 Kho còn: **{stock}/{games.LOTTERY_STOCK_TOTAL}** tờ hôm nay.\n💰 Giá: **{games.LOTTERY_TICKET_PRICE} Aura/tờ**\n🎲 Đài và dãy số được random hoàn toàn, không tự chọn được (né lạm phát 😎).\n\nBấm nút bên dưới để mua 1 tờ!", color=15277667)
+    return embed
+
+class LotteryShopView(discord.ui.View):
+
+    def __init__(self):
+        super().__init__(timeout=180)
+
+    @discord.ui.button(label='🎫 Mua vé số', style=discord.ButtonStyle.success)
+    async def buy(self, interaction: discord.Interaction, button: discord.ui.Button):
+        result = games.lottery_buy(interaction.user.id)
+        if not result['ok']:
+            await interaction.response.send_message(result['reason'], ephemeral=True)
+            return
+        ticket = result['ticket']
+        embed = discord.Embed(title='🎫 Vé Số Phonk Delta', description=f"**Tỉnh:** {ticket['province']}\n**Dãy số:** `{ticket['number']}`\n**Mã vé:** #{ticket['id']}\n\n📦 Kho còn lại: **{result['remaining']}/{games.LOTTERY_STOCK_TOTAL}** tờ hôm nay.\nXem bảng KQXS bằng `/xemveso`, hoặc kiểm tra riêng vé này bằng `/kiemtra_veso {ticket['id']}` sau {games.LOTTERY_SALE_CLOSE_HOUR}h chiều.", color=15277667)
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+
+@bot.tree.command(name='shop_dailyveso', description='🏪 Mở Đại Lý Vé Số Phonk Delta — bán tới 16h chiều, 10 Aura/tờ')
 async def shop_dailyveso_slash(interaction: discord.Interaction):
-    result = games.lottery_buy(interaction.user.id)
+    await interaction.response.send_message(embed=_lottery_shop_embed(), view=LotteryShopView())
+
+@bot.tree.command(name='xemveso', description='🔍 Xem bảng KQXS các tỉnh + danh sách vé số của bạn')
+async def xemveso_slash(interaction: discord.Interaction):
+    my_tickets = games.lottery_user_tickets(interaction.user.id)
+    if not my_tickets:
+        await interaction.response.send_message('❌ Bạn chưa có vé nào. Mua vé bằng `/shop_dailyveso`!', ephemeral=True)
+        return
+    unchecked = [t for t in my_tickets if not t['checked']]
+    announced_provinces = sorted({t['province'] for t in unchecked if games.lottery_result_announced(t)})
+    day_key = games._vn_today_key()
+    if announced_provinces:
+        board_text = '\n\n'.join(games.lottery_board_text(p, day_key) for p in announced_provinces)
+    elif unchecked:
+        remain = games.lottery_seconds_until_sale_change()
+        board_text = f'⏳ KQXS hôm nay chưa công bố — ra lúc {games.LOTTERY_SALE_CLOSE_HOUR}h chiều (còn **{remain // 3600}h{(remain % 3600) // 60}p**).'
+    else:
+        board_text = '_(Không còn vé nào chưa dò)_'
+    ticket_lines = []
+    for t in my_tickets[-15:]:
+        if t['checked']:
+            status = _lottery_prize_line(t)
+        elif games.lottery_result_announced(t):
+            status = f"🔔 Vé **#{t['id']}** (`{t['number']}` - {t['province']}) — đã có KQ, dò ngay bằng `/kiemtra_veso {t['id']}`!"
+        else:
+            status = f"⏳ Vé **#{t['id']}** (`{t['number']}` - {t['province']}) — chưa tới giờ công bố"
+        ticket_lines.append(status)
+    embed = discord.Embed(title='🔍 Bảng KQXS & Vé Số Của Bạn', description=board_text, color=15277667)
+    embed.add_field(name=f'🎫 Vé gần đây ({min(len(my_tickets), 15)}/{len(my_tickets)})', value='\n'.join(ticket_lines)[:1024], inline=False)
+    embed.set_footer(text=f'Dùng /kiemtra_veso [mã vé] để dò — mỗi lần {games.LOTTERY_CHECK_PRICE} Aura')
+    await interaction.response.send_message(embed=embed)
+
+@bot.tree.command(name='kiemtra_veso', description=f'🔎 Kiểm tra 1 vé số theo mã — {games.LOTTERY_CHECK_PRICE} Aura/lần')
+@app_commands.describe(ma_ve='Mã vé số cần kiểm tra (vd: 12)')
+async def kiemtra_veso_slash(interaction: discord.Interaction, ma_ve: int):
+    result = games.lottery_check_by_id(interaction.user.id, ma_ve)
     if not result['ok']:
         await interaction.response.send_message(result['reason'], ephemeral=True)
         return
     ticket = result['ticket']
-    embed = discord.Embed(title='🎫 Vé Số Phonk Delta', description=f"**Tỉnh:** {ticket['province']}\n**Dãy số:** `{ticket['number']}`\n**Mã vé:** #{ticket['id']}\n\n📦 Kho còn lại: **{result['remaining']}/{games.LOTTERY_STOCK_TOTAL}** tờ đợt này.\nDò kết quả bằng `/xemveso` khi có KQXS trong ngày!", color=15277667)
+    if ticket['prize_amount'] > 0:
+        embed = discord.Embed(title='🎉 CHÚC MỪNG TRÚNG THƯỞNG!', description=f"Vé **#{ticket['id']}** (`{ticket['number']}` - {ticket['province']})\n\n**{ticket['prize_label']}**\n{games.AURA_ICON} +{ticket['prize_amount']} Aura", color=15844367)
+    else:
+        embed = discord.Embed(title='😢 Chúc bạn may mắn lần sau', description=f"Vé **#{ticket['id']}** (`{ticket['number']}` - {ticket['province']}) không trúng gì.", color=8359053)
     await interaction.response.send_message(embed=embed)
-
-@bot.tree.command(name='xemveso', description='🔍 Dò thủ công các vé số Phonk Delta chưa dò của bạn')
-async def xemveso_slash(interaction: discord.Interaction):
-    pending = games.lottery_user_tickets(interaction.user.id, unchecked_only=True)
-    if not pending:
-        await interaction.response.send_message('❌ Bạn không có vé nào chưa dò. Mua vé mới bằng `/shop_dailyveso`!', ephemeral=True)
-        return
-    await interaction.response.defer()
-    results = games.lottery_check_all(interaction.user.id)
-    total_won = sum(t['prize_amount'] for t in results)
-    lines = [_lottery_prize_line(t) for t in results]
-    embed = discord.Embed(title=f'🔍 Kết quả dò vé số ({len(results)} tờ)', description='\n\n'.join(lines), color=15844367 if total_won > 0 else 8359053)
-    if total_won > 0:
-        embed.set_footer(text=f'Tổng cộng trúng: +{total_won} Aura')
-    await interaction.followup.send(embed=embed)
-
-@bot.tree.command(name='doveso_robot', description=f'🤖 Thuê robot dò auto toàn bộ vé số chưa dò — {games.LOTTERY_ROBOT_PRICE} Aura')
-async def doveso_robot_slash(interaction: discord.Interaction):
-    result = games.lottery_robot_check(interaction.user.id)
-    if not result['ok']:
-        await interaction.response.send_message(result['reason'], ephemeral=True)
-        return
-    await interaction.response.defer()
-    results = result['results']
-    total_won = sum(t['prize_amount'] for t in results)
-    lines = [_lottery_prize_line(t) for t in results]
-    description = '\n\n'.join(lines)
-    if len(description) > 3800:
-        description = description[:3800] + f'\n...(còn {len(results)} tờ, xem thêm bằng cách mua tiếp và dò)'
-    embed = discord.Embed(title=f'🤖 Robot đã dò xong {len(results)} tờ vé!', description=description, color=15844367 if total_won > 0 else 8359053)
-    embed.set_footer(text=f'Tổng cộng trúng: +{total_won} Aura (đã trừ {games.LOTTERY_ROBOT_PRICE} Aura thuê robot)')
-    await interaction.followup.send(embed=embed)
 
 web_server.keep_alive()
 bot.run(os.environ['DISCORD_KEY'])
