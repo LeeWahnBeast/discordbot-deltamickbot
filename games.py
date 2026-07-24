@@ -58,6 +58,13 @@ def _firestore_delete_doc(collection_name, doc_id):
         print(f"[firestore] Lỗi xóa '{collection_name}/{doc_id}': {e!r}")
 AURA_FILE = 'aura_data.json'
 AURA_ICON = '<:mango:1529287058072408195>'
+TAX_RATE = 0.05
+TAX_RECIPIENT_ID = 1210771747889090571
+
+def _apply_purchase_tax(price):
+    tax = max(1, round(price * TAX_RATE))
+    add_aura(TAX_RECIPIENT_ID, tax)
+    return tax
 _aura_cache = {uid: d.get('balance', 0) for uid, d in _firestore_load_collection('aura', AURA_FILE).items()}
 
 def get_aura(user_id):
@@ -510,6 +517,7 @@ def lottery_buy(user_id):
     if balance < LOTTERY_TICKET_PRICE:
         return {'ok': False, 'reason': f'❌ Không đủ Aura! Cần **{LOTTERY_TICKET_PRICE}**, bạn có **{balance}**.'}
     add_aura(user_id, -LOTTERY_TICKET_PRICE)
+    _apply_purchase_tax(LOTTERY_TICKET_PRICE)
     state['remaining'] -= 1
     _firestore_save_doc('lottery_stock', 0, state)
     province = random.choice(lottery_today_provinces())
@@ -785,6 +793,7 @@ def shop_buy(user_id, item_key):
         return {'ok': False, 'reason': f'❌ Không đủ {currency_label}! Cần **{price}**, bạn chỉ có **{current}**.', 'item': item, 'balance_after': current}
     if currency == 'aura':
         balance_after = add_aura(user_id, -price)
+        _apply_purchase_tax(price)
     else:
         balance_after = _set_elo(user_id, get_elo(user_id) - price)
     buffs = _get_buffs(user_id)
@@ -1414,3 +1423,106 @@ def wiki_lookup(keyword):
     except Exception as e:
         print(f"[wiki] Lỗi khi tra '{keyword}': {type(e).__name__}: {e}")
         return None
+FARM_FILE = 'farm_data.json'
+FARM_SEED_PRICE = 15
+FARM_WATER_COOLDOWN = 3 * 3600
+FARM_WATERINGS_NEEDED = 3
+FARM_HARVEST_REWARD = 45
+FARM_FARMER_DAILY_COST = 5
+_farm_cache = {int(uid): d for uid, d in _firestore_load_collection('farm', FARM_FILE).items()}
+
+def _farm_get(user_id):
+    d = _farm_cache.setdefault(user_id, {'seeds': 0, 'planted': False, 'waterings': 0, 'last_water': 0, 'farmer': False, 'farmer_next_charge': 0})
+    return d
+
+def _farm_save(user_id):
+    _firestore_save_doc('farm', user_id, _farm_cache[user_id])
+
+def _farm_settle_farmer(d, user_id):
+    if not d['farmer']:
+        return
+    now = time.time()
+    while d['farmer'] and d['farmer_next_charge'] <= now:
+        if get_aura(user_id) < FARM_FARMER_DAILY_COST:
+            d['farmer'] = False
+            break
+        add_aura(user_id, -FARM_FARMER_DAILY_COST)
+        d['farmer_next_charge'] += 86400
+        if d['planted'] and d['waterings'] < FARM_WATERINGS_NEEDED:
+            d['waterings'] += 1
+            d['last_water'] = now
+
+def farm_buy_seed(user_id):
+    price = FARM_SEED_PRICE
+    balance = get_aura(user_id)
+    if balance < price:
+        return {'ok': False, 'reason': f'❌ Không đủ Aura! Cần **{price}**, bạn có **{balance}**.'}
+    add_aura(user_id, -price)
+    _apply_purchase_tax(price)
+    d = _farm_get(user_id)
+    d['seeds'] += 1
+    _farm_save(user_id)
+    return {'ok': True, 'seeds': d['seeds']}
+
+def farm_plant(user_id):
+    d = _farm_get(user_id)
+    _farm_settle_farmer(d, user_id)
+    if d['planted']:
+        return {'ok': False, 'reason': '❌ Đất của bạn đang có cây trồng rồi, thu hoạch trước đã!'}
+    if d['seeds'] <= 0:
+        return {'ok': False, 'reason': '❌ Bạn chưa có hạt giống nào! Mua bằng `/muahatgiong`.'}
+    d['seeds'] -= 1
+    d['planted'] = True
+    d['waterings'] = 0
+    d['last_water'] = 0
+    _farm_save(user_id)
+    return {'ok': True}
+
+def farm_water(user_id):
+    d = _farm_get(user_id)
+    _farm_settle_farmer(d, user_id)
+    if not d['planted']:
+        return {'ok': False, 'reason': '❌ Bạn chưa trồng cây nào! Trồng bằng `/trong`.'}
+    if d['waterings'] >= FARM_WATERINGS_NEEDED:
+        return {'ok': False, 'reason': '✅ Cây đã đủ nước rồi, thu hoạch bằng `/thuhoach`!'}
+    now = time.time()
+    remain = d['last_water'] + FARM_WATER_COOLDOWN - now
+    if remain > 0:
+        return {'ok': False, 'reason': f'⏳ Chưa tới giờ tưới tiếp — còn **{int(remain // 3600)}h{int((remain % 3600) // 60)}p**.'}
+    d['waterings'] += 1
+    d['last_water'] = now
+    _farm_save(user_id)
+    return {'ok': True, 'waterings': d['waterings']}
+
+def farm_harvest(user_id):
+    d = _farm_get(user_id)
+    _farm_settle_farmer(d, user_id)
+    if not d['planted']:
+        return {'ok': False, 'reason': '❌ Bạn chưa trồng cây nào!'}
+    if d['waterings'] < FARM_WATERINGS_NEEDED:
+        return {'ok': False, 'reason': f"⏳ Cây chưa đủ nước ({d['waterings']}/{FARM_WATERINGS_NEEDED}), tưới thêm bằng `/tuoinuoc`."}
+    d['planted'] = False
+    d['waterings'] = 0
+    d['last_water'] = 0
+    _farm_save(user_id)
+    new_balance = add_aura(user_id, FARM_HARVEST_REWARD)
+    return {'ok': True, 'reward': FARM_HARVEST_REWARD, 'balance': new_balance}
+
+def farm_hire_farmer(user_id):
+    d = _farm_get(user_id)
+    if d['farmer']:
+        return {'ok': False, 'reason': '❌ Bạn đã thuê nông dân rồi!'}
+    balance = get_aura(user_id)
+    if balance < FARM_FARMER_DAILY_COST:
+        return {'ok': False, 'reason': f'❌ Không đủ Aura để trả công ngày đầu! Cần **{FARM_FARMER_DAILY_COST}**, bạn có **{balance}**.'}
+    add_aura(user_id, -FARM_FARMER_DAILY_COST)
+    d['farmer'] = True
+    d['farmer_next_charge'] = time.time() + 86400
+    _farm_save(user_id)
+    return {'ok': True}
+
+def farm_status(user_id):
+    d = _farm_get(user_id)
+    _farm_settle_farmer(d, user_id)
+    _farm_save(user_id)
+    return dict(d)
