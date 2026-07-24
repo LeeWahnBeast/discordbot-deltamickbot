@@ -801,16 +801,31 @@ async def reviewmeme_slash(interaction: discord.Interaction):
         await interaction.response.send_message('✅ Không có meme nào đang chờ duyệt.', ephemeral=True)
         return
     meme = pending[0]
+    embed = _meme_review_embed(meme)
+    await interaction.response.send_message(embed=embed, view=MemeReviewView(meme['id']))
+
+def _meme_review_embed(meme):
+    pending = games.meme_pending_list()
     embed = discord.Embed(title=f"🛡️ Duyệt meme #{meme['id']} ({len(pending)} đang chờ)", description=f"**Tên:** {meme['display_name']}\n**Người gửi:** <@{meme['submitter_id']}>", color=15105570)
     embed.set_image(url=meme['image_url'])
     embed.set_footer(text='⚠️ Kiểm tra kỹ nội dung 18+/khiêu dâm trước khi duyệt!')
-    await interaction.response.send_message(embed=embed, view=MemeReviewView(meme['id']))
+    return embed
 
 class MemeReviewView(discord.ui.View):
 
     def __init__(self, meme_id):
-        super().__init__(timeout=120)
+        super().__init__(timeout=300)
         self.meme_id = meme_id
+
+    async def _advance(self, interaction, result_line):
+        pending = games.meme_pending_list()
+        if not pending:
+            await interaction.response.edit_message(content=f'{result_line}\n✅ Hàng chờ đã hết, không còn meme nào để duyệt.', embed=None, view=None)
+            return
+        next_meme = pending[0]
+        embed = _meme_review_embed(next_meme)
+        next_view = MemeReviewView(next_meme['id'])
+        await interaction.response.edit_message(content=result_line, embed=embed, view=next_view)
 
     @discord.ui.button(label='✅ Duyệt', style=discord.ButtonStyle.success)
     async def approve(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -818,8 +833,8 @@ class MemeReviewView(discord.ui.View):
             await interaction.response.send_message('❌ Chỉ admin mới duyệt được.', ephemeral=True)
             return
         ok = games.meme_approve(self.meme_id, interaction.user.id)
-        msg = f'✅ Đã duyệt meme #{self.meme_id}, giờ đã vào pool chơi!' if ok else '⚠️ Meme này đã được xử lý rồi.'
-        await interaction.response.edit_message(content=msg, embed=None, view=None)
+        line = f'✅ Đã duyệt meme #{self.meme_id}!' if ok else f'⚠️ Meme #{self.meme_id} đã được xử lý rồi.'
+        await self._advance(interaction, line)
 
     @discord.ui.button(label='❌ Từ chối', style=discord.ButtonStyle.danger)
     async def reject(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -827,8 +842,8 @@ class MemeReviewView(discord.ui.View):
             await interaction.response.send_message('❌ Chỉ admin mới duyệt được.', ephemeral=True)
             return
         ok = games.meme_reject(self.meme_id, interaction.user.id)
-        msg = f'❌ Đã từ chối meme #{self.meme_id}.' if ok else '⚠️ Meme này đã được xử lý rồi.'
-        await interaction.response.edit_message(content=msg, embed=None, view=None)
+        line = f'❌ Đã từ chối meme #{self.meme_id}.' if ok else f'⚠️ Meme #{self.meme_id} đã được xử lý rồi.'
+        await self._advance(interaction, line)
 
 @bot.tree.command(name='meme', description='🎭 Đoán meme TikTok — chat tên meme để đoán')
 async def meme_slash(interaction: discord.Interaction):
