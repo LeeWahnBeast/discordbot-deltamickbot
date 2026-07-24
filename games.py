@@ -415,16 +415,22 @@ def meme_end(cid):
 
 LOTTERY_PROVINCES = ['Folk Valley', 'Ohio', 'Thành phố Delta', 'Shess Cex', 'Larp', 'Oliver Mango', 'Penaldo Pasta', 'Tỉnh Beast', 'Sinecraft Mex', 'Meow Meow']
 LOTTERY_TICKET_PRICE = 10
-LOTTERY_ROBOT_PRICE = 10000
+LOTTERY_CHECK_PRICE = 50
 LOTTERY_STOCK_TOTAL = 150
-LOTTERY_RESTOCK_SECONDS = 3 * 24 * 3600
+LOTTERY_SALE_CLOSE_HOUR = 16
+LOTTERY_WIN_CHANCE = 0.02
 LOTTERY_PRIZES = [
-    (6, 'Giải Đặc Biệt', 50000),
-    (5, 'Giải Nhất', 10000),
-    (4, 'Giải Nhì', 5000),
-    (3, 'Giải Ba', 1000),
-    (2, 'Giải Bốn', 500),
-    (1, 'Giải Năm', 20),
+    ('dac_biet', 'Giải Đặc Biệt', 50000),
+    ('nhat', 'Giải Nhất', 10000),
+    ('nhi', 'Giải Nhì', 5000),
+    ('ba', 'Giải Ba', 1000),
+    ('bon', 'Giải Bốn', 500),
+    ('nam', 'Giải Năm', 20),
+]
+LOTTERY_BOARD_STRUCTURE = [
+    ('Giải tám', 1, 2), ('Giải bảy', 1, 3), ('Giải sáu', 3, 4), ('Giải năm', 1, 4),
+    ('Giải tư', 7, 5), ('Giải ba', 2, 5), ('Giải nhì', 1, 5), ('Giải nhất', 1, 5),
+    ('Giải Đặc Biệt', 1, 6),
 ]
 LOTTERY_TICKETS_FILE = 'lottery_tickets.json'
 LOTTERY_STOCK_FILE = 'lottery_stock.json'
@@ -435,15 +441,35 @@ _lottery_next_ticket_id = max(_lottery_tickets.keys(), default=0) + 1
 def _vn_today_key():
     return time.strftime('%Y-%m-%d', time.gmtime(time.time() + 7 * 3600))
 
-def _lottery_province_result(province, day_key):
+def _vn_now():
+    return time.gmtime(time.time() + 7 * 3600)
+
+def lottery_sale_open():
+    return _vn_now().tm_hour < LOTTERY_SALE_CLOSE_HOUR
+
+def lottery_seconds_until_sale_change():
+    now_vn = time.time() + 7 * 3600
+    day_start_vn = now_vn - (now_vn % 86400)
+    close_ts_vn = day_start_vn + LOTTERY_SALE_CLOSE_HOUR * 3600
+    if now_vn < close_ts_vn:
+        target = close_ts_vn
+    else:
+        target = day_start_vn + 86400
+    return max(0, int(target - now_vn))
+
+def _lottery_province_board(province, day_key):
     rng = random.Random(f'{province}|{day_key}')
-    return f'{rng.randint(0, 999999):06d}'
+    board = []
+    for label, count, digits in LOTTERY_BOARD_STRUCTURE:
+        numbers = [f'{rng.randint(0, 10 ** digits - 1):0{digits}d}' for _ in range(count)]
+        board.append((label, numbers))
+    return board
 
 def _lottery_ensure_stock_cycle():
+    day_key = _vn_today_key()
     state = _lottery_stock_state.get(0)
-    now = time.time()
-    if state is None or now >= state.get('cycle_ends_at', 0):
-        state = {'remaining': LOTTERY_STOCK_TOTAL, 'cycle_ends_at': now + LOTTERY_RESTOCK_SECONDS}
+    if state is None or state.get('day_key') != day_key:
+        state = {'remaining': LOTTERY_STOCK_TOTAL, 'day_key': day_key}
         _lottery_stock_state[0] = state
         _firestore_save_doc('lottery_stock', 0, state)
     return state
@@ -452,14 +478,15 @@ def lottery_stock_remaining():
     return _lottery_ensure_stock_cycle()['remaining']
 
 def lottery_seconds_until_restock():
-    state = _lottery_ensure_stock_cycle()
-    return max(0, int(state['cycle_ends_at'] - time.time()))
+    return lottery_seconds_until_sale_change()
 
 def lottery_buy(user_id):
     global _lottery_next_ticket_id
+    if not lottery_sale_open():
+        return {'ok': False, 'reason': f'❌ Đại lý vé số đã đóng cửa lúc {LOTTERY_SALE_CLOSE_HOUR}h chiều rồi! Quay lại vào **0h ngày mai** nhé. (còn **{lottery_seconds_until_sale_change() // 3600}h{(lottery_seconds_until_sale_change() % 3600) // 60}p**)'}
     state = _lottery_ensure_stock_cycle()
     if state['remaining'] <= 0:
-        return {'ok': False, 'reason': f'❌ Hết vé số đợt này rồi! Chờ **{lottery_seconds_until_restock() // 3600}h** nữa để restock nhé.'}
+        return {'ok': False, 'reason': '❌ Hết vé số hôm nay rồi! Mai quay lại nhé.'}
     balance = get_aura(user_id)
     if balance < LOTTERY_TICKET_PRICE:
         return {'ok': False, 'reason': f'❌ Không đủ Aura! Cần **{LOTTERY_TICKET_PRICE}**, bạn có **{balance}**.'}
@@ -482,11 +509,20 @@ def lottery_user_tickets(user_id, unchecked_only=False):
     tickets.sort(key=lambda t: t['bought_at'])
     return tickets
 
-def _lottery_match_prize(ticket_number, result_number):
-    for match_len, label, amount in LOTTERY_PRIZES:
-        if ticket_number[-match_len:] == result_number[-match_len:]:
-            return (label, amount)
-    return (None, 0)
+def lottery_get_ticket(ticket_id):
+    return _lottery_tickets.get(ticket_id)
+
+def lottery_result_announced(ticket):
+    if ticket['day_key'] != _vn_today_key():
+        return True
+    return not lottery_sale_open()
+
+def lottery_board_text(province, day_key):
+    board = _lottery_province_board(province, day_key)
+    lines = [f'🎫 **KẾT QUẢ XỔ SỐ — {province.upper()}** (ngày {day_key})']
+    for label, numbers in board:
+        lines.append(f'**{label}:** {" - ".join(numbers)}')
+    return '\n'.join(lines)
 
 def lottery_check_ticket(ticket_id):
     ticket = _lottery_tickets.get(ticket_id)
@@ -494,10 +530,15 @@ def lottery_check_ticket(ticket_id):
         return None
     if ticket['checked']:
         return ticket
-    result_number = _lottery_province_result(ticket['province'], ticket['day_key'])
-    label, amount = _lottery_match_prize(ticket['number'], result_number)
+    if not lottery_result_announced(ticket):
+        return None
+    rng = random.Random(f"draw|{ticket['id']}|{ticket['province']}|{ticket['day_key']}|{ticket['number']}")
+    won = rng.random() < LOTTERY_WIN_CHANCE
+    if won:
+        prize_key, label, amount = rng.choice(LOTTERY_PRIZES)
+    else:
+        label, amount = (None, 0)
     ticket['checked'] = True
-    ticket['result_number'] = result_number
     ticket['prize_label'] = label
     ticket['prize_amount'] = amount
     if amount > 0:
@@ -508,18 +549,25 @@ def lottery_check_ticket(ticket_id):
 def lottery_check_all(user_id):
     tickets = lottery_user_tickets(user_id, unchecked_only=True)
     results = [lottery_check_ticket(t['id']) for t in tickets]
-    return results
+    return [r for r in results if r is not None]
 
-def lottery_robot_check(user_id):
+def lottery_check_by_id(user_id, ticket_id):
+    ticket = _lottery_tickets.get(ticket_id)
+    if ticket is None:
+        return {'ok': False, 'reason': f'❌ Không tìm thấy vé số **#{ticket_id}**.'}
+    if ticket['owner_id'] != user_id:
+        return {'ok': False, 'reason': '❌ Đây không phải vé số của bạn!'}
+    if ticket['checked']:
+        return {'ok': False, 'reason': f"⚠️ Vé **#{ticket_id}** đã được dò rồi (kết quả: {ticket['prize_label'] or 'không trúng'})."}
+    if not lottery_result_announced(ticket):
+        remain = lottery_seconds_until_sale_change()
+        return {'ok': False, 'reason': f'⏳ Vé **#{ticket_id}** chưa có kết quả — KQXS công bố lúc {LOTTERY_SALE_CLOSE_HOUR}h chiều nay (còn **{remain // 3600}h{(remain % 3600) // 60}p**).'}
     balance = get_aura(user_id)
-    if balance < LOTTERY_ROBOT_PRICE:
-        return {'ok': False, 'reason': f'❌ Không đủ Aura để thuê robot! Cần **{LOTTERY_ROBOT_PRICE}**, bạn có **{balance}**.'}
-    pending = lottery_user_tickets(user_id, unchecked_only=True)
-    if not pending:
-        return {'ok': False, 'reason': '❌ Bạn không có vé nào chưa dò.'}
-    add_aura(user_id, -LOTTERY_ROBOT_PRICE)
-    results = lottery_check_all(user_id)
-    return {'ok': True, 'results': results}
+    if balance < LOTTERY_CHECK_PRICE:
+        return {'ok': False, 'reason': f'❌ Không đủ Aura để kiểm tra! Cần **{LOTTERY_CHECK_PRICE}**, bạn có **{balance}**.'}
+    add_aura(user_id, -LOTTERY_CHECK_PRICE)
+    ticket = lottery_check_ticket(ticket_id)
+    return {'ok': True, 'ticket': ticket}
 
 WHATUINTO_LABELS = [('Femboy', 'Mềm mại bên ngoài, hỗn loạn bên trong. Bạn là hiện thân của "tưởng vậy mà không phải vậy".'), ('Tomboy', 'Năng lượng xắn tay áo, không ngại dơ. Bạn chọn hành động thay vì drama.'), ('Tsundere', '"Không phải tôi thích đâu nhé!" — trong khi tay đã làm sẵn hết rồi.'), ('Mommy ASMR', 'Giọng nói của bạn có thể ru cả server ngủ. Năng lượng chăm sóc tối thượng.'), ('Yandere ASMR', 'Ngọt ngào đến đáng ngờ. Ai chọc bạn giận thì... thôi khỏi nói.'), ('Vợ hàng xóm', 'Huyền thoại khu phố, ai cũng biết tên nhưng chẳng ai dám hỏi thẳng.'), ('Folk Valley', 'Bạn thuộc về nơi cỏ cây biết nói và gà biết deploy code.'), ('Scambodia', 'Chuyên gia lừa đảo... tình cảm. Cẩn thận, coi chừng mất ví lẫn mất tim.')]
 
