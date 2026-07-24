@@ -11,24 +11,6 @@ intents = discord.Intents.default()
 intents.message_content = True
 bot = commands.Bot(command_prefix='!', intents=intents)
 
-AUTO_DELETE_USERNAMES = {'thecheemsvn_official'}
-
-async def _purge_target_history():
-    for guild in bot.guilds:
-        for channel in guild.text_channels:
-            perms = channel.permissions_for(guild.me)
-            if not (perms.manage_messages and perms.read_message_history):
-                continue
-            try:
-                await channel.purge(
-                    limit=500,
-                    check=lambda m: m.author.name.lower() in AUTO_DELETE_USERNAMES,
-                    bulk=True,
-                )
-            except (discord.Forbidden, discord.HTTPException):
-                pass
-            await asyncio.sleep(2)
-
 @bot.event
 async def on_ready():
     try:
@@ -37,7 +19,6 @@ async def on_ready():
     except Exception as e:
         print(f'⚠️ Lỗi đồng bộ slash command: {e}')
     print(f'✅ Bot đã đăng nhập với tên {bot.user}')
-    asyncio.create_task(_purge_target_history())
 
 @bot.event
 async def on_command_error(ctx, error):
@@ -48,12 +29,6 @@ async def on_command_error(ctx, error):
 @bot.event
 async def on_message(message):
     if message.author.bot:
-        return
-    if message.author.name.lower() in AUTO_DELETE_USERNAMES:
-        try:
-            await message.delete()
-        except (discord.Forbidden, discord.NotFound, discord.HTTPException):
-            pass
         return
     cid = message.channel.id
     content = message.content.strip()
