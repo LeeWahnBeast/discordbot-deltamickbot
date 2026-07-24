@@ -413,6 +413,114 @@ def meme_progress(cid):
 def meme_end(cid):
     _meme_games.pop(cid, None)
 
+LOTTERY_PROVINCES = ['Folk Valley', 'Ohio', 'Thành phố Delta', 'Shess Cex', 'Larp', 'Oliver Mango', 'Penaldo Pasta', 'Tỉnh Beast', 'Sinecraft Mex', 'Meow Meow']
+LOTTERY_TICKET_PRICE = 10
+LOTTERY_ROBOT_PRICE = 10000
+LOTTERY_STOCK_TOTAL = 150
+LOTTERY_RESTOCK_SECONDS = 3 * 24 * 3600
+LOTTERY_PRIZES = [
+    (6, 'Giải Đặc Biệt', 50000),
+    (5, 'Giải Nhất', 10000),
+    (4, 'Giải Nhì', 5000),
+    (3, 'Giải Ba', 1000),
+    (2, 'Giải Bốn', 500),
+    (1, 'Giải Năm', 20),
+]
+LOTTERY_TICKETS_FILE = 'lottery_tickets.json'
+LOTTERY_STOCK_FILE = 'lottery_stock.json'
+_lottery_tickets = _firestore_load_collection('lottery_tickets', LOTTERY_TICKETS_FILE)
+_lottery_stock_state = _firestore_load_collection('lottery_stock', LOTTERY_STOCK_FILE)
+_lottery_next_ticket_id = max(_lottery_tickets.keys(), default=0) + 1
+
+def _vn_today_key():
+    return time.strftime('%Y-%m-%d', time.gmtime(time.time() + 7 * 3600))
+
+def _lottery_province_result(province, day_key):
+    rng = random.Random(f'{province}|{day_key}')
+    return f'{rng.randint(0, 999999):06d}'
+
+def _lottery_ensure_stock_cycle():
+    state = _lottery_stock_state.get(0)
+    now = time.time()
+    if state is None or now >= state.get('cycle_ends_at', 0):
+        state = {'remaining': LOTTERY_STOCK_TOTAL, 'cycle_ends_at': now + LOTTERY_RESTOCK_SECONDS}
+        _lottery_stock_state[0] = state
+        _firestore_save_doc('lottery_stock', 0, state)
+    return state
+
+def lottery_stock_remaining():
+    return _lottery_ensure_stock_cycle()['remaining']
+
+def lottery_seconds_until_restock():
+    state = _lottery_ensure_stock_cycle()
+    return max(0, int(state['cycle_ends_at'] - time.time()))
+
+def lottery_buy(user_id):
+    global _lottery_next_ticket_id
+    state = _lottery_ensure_stock_cycle()
+    if state['remaining'] <= 0:
+        return {'ok': False, 'reason': f'❌ Hết vé số đợt này rồi! Chờ **{lottery_seconds_until_restock() // 3600}h** nữa để restock nhé.'}
+    balance = get_aura(user_id)
+    if balance < LOTTERY_TICKET_PRICE:
+        return {'ok': False, 'reason': f'❌ Không đủ Aura! Cần **{LOTTERY_TICKET_PRICE}**, bạn có **{balance}**.'}
+    add_aura(user_id, -LOTTERY_TICKET_PRICE)
+    state['remaining'] -= 1
+    _firestore_save_doc('lottery_stock', 0, state)
+    province = random.choice(LOTTERY_PROVINCES)
+    number = f'{random.randint(0, 999999):06d}'
+    ticket_id = _lottery_next_ticket_id
+    _lottery_next_ticket_id += 1
+    ticket = {'id': ticket_id, 'owner_id': user_id, 'province': province, 'number': number, 'day_key': _vn_today_key(), 'bought_at': time.time(), 'checked': False, 'prize_label': None, 'prize_amount': 0}
+    _lottery_tickets[ticket_id] = ticket
+    _firestore_save_doc('lottery_tickets', ticket_id, ticket)
+    return {'ok': True, 'ticket': ticket, 'remaining': state['remaining']}
+
+def lottery_user_tickets(user_id, unchecked_only=False):
+    tickets = [t for t in _lottery_tickets.values() if t['owner_id'] == user_id]
+    if unchecked_only:
+        tickets = [t for t in tickets if not t['checked']]
+    tickets.sort(key=lambda t: t['bought_at'])
+    return tickets
+
+def _lottery_match_prize(ticket_number, result_number):
+    for match_len, label, amount in LOTTERY_PRIZES:
+        if ticket_number[-match_len:] == result_number[-match_len:]:
+            return (label, amount)
+    return (None, 0)
+
+def lottery_check_ticket(ticket_id):
+    ticket = _lottery_tickets.get(ticket_id)
+    if ticket is None:
+        return None
+    if ticket['checked']:
+        return ticket
+    result_number = _lottery_province_result(ticket['province'], ticket['day_key'])
+    label, amount = _lottery_match_prize(ticket['number'], result_number)
+    ticket['checked'] = True
+    ticket['result_number'] = result_number
+    ticket['prize_label'] = label
+    ticket['prize_amount'] = amount
+    if amount > 0:
+        add_aura(ticket['owner_id'], amount)
+    _firestore_save_doc('lottery_tickets', ticket_id, ticket)
+    return ticket
+
+def lottery_check_all(user_id):
+    tickets = lottery_user_tickets(user_id, unchecked_only=True)
+    results = [lottery_check_ticket(t['id']) for t in tickets]
+    return results
+
+def lottery_robot_check(user_id):
+    balance = get_aura(user_id)
+    if balance < LOTTERY_ROBOT_PRICE:
+        return {'ok': False, 'reason': f'❌ Không đủ Aura để thuê robot! Cần **{LOTTERY_ROBOT_PRICE}**, bạn có **{balance}**.'}
+    pending = lottery_user_tickets(user_id, unchecked_only=True)
+    if not pending:
+        return {'ok': False, 'reason': '❌ Bạn không có vé nào chưa dò.'}
+    add_aura(user_id, -LOTTERY_ROBOT_PRICE)
+    results = lottery_check_all(user_id)
+    return {'ok': True, 'results': results}
+
 WHATUINTO_LABELS = [('Femboy', 'Mềm mại bên ngoài, hỗn loạn bên trong. Bạn là hiện thân của "tưởng vậy mà không phải vậy".'), ('Tomboy', 'Năng lượng xắn tay áo, không ngại dơ. Bạn chọn hành động thay vì drama.'), ('Tsundere', '"Không phải tôi thích đâu nhé!" — trong khi tay đã làm sẵn hết rồi.'), ('Mommy ASMR', 'Giọng nói của bạn có thể ru cả server ngủ. Năng lượng chăm sóc tối thượng.'), ('Yandere ASMR', 'Ngọt ngào đến đáng ngờ. Ai chọc bạn giận thì... thôi khỏi nói.'), ('Vợ hàng xóm', 'Huyền thoại khu phố, ai cũng biết tên nhưng chẳng ai dám hỏi thẳng.'), ('Folk Valley', 'Bạn thuộc về nơi cỏ cây biết nói và gà biết deploy code.'), ('Scambodia', 'Chuyên gia lừa đảo... tình cảm. Cẩn thận, coi chừng mất ví lẫn mất tim.')]
 
 def whatuinto_roll():
