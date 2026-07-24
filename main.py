@@ -654,11 +654,10 @@ _PIECE_CHOICES = [app_commands.Choice(name=label, value=key) for key, label in g
 @app_commands.choices(quan=_PIECE_CHOICES)
 async def custom_chess_slash(interaction: discord.Interaction, quan: app_commands.Choice[str], link: str):
     await interaction.response.defer(ephemeral=True)
-    sprite = games.preview_piece_sprite(link)
-    if sprite is None:
-        await interaction.followup.send('❌ Không đọc được ảnh từ link này. Kiểm tra lại: link phải trỏ thẳng tới file ảnh (PNG/JPG).')
+    ok = games.set_piece_theme(interaction.user.id, quan.value, link)
+    if not ok:
+        await interaction.followup.send('❌ Không tải/đọc được ảnh từ link này. Kiểm tra lại: link phải trỏ thẳng tới file ảnh (PNG/JPG) và còn truy cập được (lưu ý: link CDN Discord có thể hết hạn sau vài giờ, hãy dùng link ảnh cố định như Imgur).')
         return
-    games.set_piece_theme(interaction.user.id, quan.value, link)
     preview = games.piece_theme_preview_image(interaction.user.id)
     file = discord.File(preview, filename='piece_theme.png')
     await interaction.followup.send(content=f'✅ Đã đổi ảnh cho **{quan.name}**! Đây là toàn bộ bộ quân cờ hiện tại của bạn:', file=file)
@@ -1023,32 +1022,31 @@ class LotteryShopView(discord.ui.View):
 async def shop_dailyveso_slash(interaction: discord.Interaction):
     await interaction.response.send_message(embed=_lottery_shop_embed(), view=LotteryShopView())
 
-@bot.tree.command(name='xemveso', description='🔍 Xem bảng KQXS các tỉnh + danh sách vé số của bạn')
+@bot.tree.command(name='xemveso', description='🔍 Xem bảng KQXS 3 tỉnh hôm nay + danh sách vé số của bạn')
 async def xemveso_slash(interaction: discord.Interaction):
-    my_tickets = games.lottery_user_tickets(interaction.user.id)
-    if not my_tickets:
-        await interaction.response.send_message('❌ Bạn chưa có vé nào. Mua vé bằng `/shop_dailyveso`!', ephemeral=True)
-        return
-    unchecked = [t for t in my_tickets if not t['checked']]
-    announced_provinces = sorted({t['province'] for t in unchecked if games.lottery_result_announced(t)})
+    weekday, date_str = games.lottery_today_label()
+    today_provinces = games.lottery_today_provinces()
     day_key = games._vn_today_key()
-    if announced_provinces:
-        board_text = '\n\n'.join(games.lottery_board_text(p, day_key) for p in announced_provinces)
-    elif unchecked:
-        remain = games.lottery_seconds_until_sale_change()
-        board_text = f'⏳ KQXS hôm nay chưa công bố — ra lúc {games.LOTTERY_SALE_CLOSE_HOUR}h chiều (còn **{remain // 3600}h{(remain % 3600) // 60}p**).'
+    embed = discord.Embed(title=f'📋 KẾT QUẢ XỔ SỐ — {weekday.upper()} - {date_str}', color=15277667)
+    if games.lottery_result_announced({'day_key': day_key}):
+        for province in today_provinces:
+            embed.add_field(name=province, value=games.lottery_board_table(province, day_key), inline=True)
     else:
-        board_text = '_(Không còn vé nào chưa dò)_'
-    ticket_lines = []
-    for t in my_tickets[-15:]:
-        if t['checked']:
-            status = _lottery_prize_line(t)
-        else:
-            status = f"🎫 Vé **#{t['id']}** — `{t['number']}` ({t['province']})"
-        ticket_lines.append(status)
-    embed = discord.Embed(title='🔍 Bảng KQXS & Vé Số Của Bạn', description=board_text, color=15277667)
-    embed.add_field(name=f'🎫 Vé gần đây ({min(len(my_tickets), 15)}/{len(my_tickets)})', value='\n'.join(ticket_lines)[:1024], inline=False)
-    embed.set_footer(text=f'Tự dò số của bạn với bảng KQXS trên nhé — dò xong dùng /kiemtra_veso [mã vé] để nhận Aura nếu trúng ({games.LOTTERY_CHECK_PRICE} Aura/lần)')
+        remain = games.lottery_seconds_until_sale_change()
+        embed.description = f'⏳ KQXS hôm nay chưa công bố — ra lúc {games.LOTTERY_SALE_CLOSE_HOUR}h chiều (còn **{remain // 3600}h{(remain % 3600) // 60}p**).\n\n**Tỉnh mở hôm nay:** {", ".join(today_provinces)}'
+    my_tickets = games.lottery_user_tickets(interaction.user.id)
+    if my_tickets:
+        ticket_lines = []
+        for t in my_tickets[-15:]:
+            if t['checked']:
+                status = _lottery_prize_line(t)
+            else:
+                status = f"🎫 Vé **#{t['id']}** — `{t['number']}` ({t['province']})"
+            ticket_lines.append(status)
+        embed.add_field(name=f'🎫 Vé của bạn ({min(len(my_tickets), 15)}/{len(my_tickets)})', value='\n'.join(ticket_lines)[:1024], inline=False)
+        embed.set_footer(text=f'Tự dò số của bạn với bảng KQXS trên nhé — dò xong dùng /kiemtra_veso [mã vé] để nhận Aura nếu trúng ({games.LOTTERY_CHECK_PRICE} Aura/lần)')
+    else:
+        embed.set_footer(text='Bạn chưa có vé nào — mua vé bằng /shop_dailyveso')
     await interaction.response.send_message(embed=embed)
 
 @bot.tree.command(name='kiemtra_veso', description=f'🔎 Kiểm tra 1 vé số theo mã — {games.LOTTERY_CHECK_PRICE} Aura/lần')
