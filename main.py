@@ -1074,7 +1074,8 @@ async def trong_slash(interaction: discord.Interaction):
     if not result['ok']:
         await interaction.response.send_message(result['reason'], ephemeral=True)
         return
-    await interaction.response.send_message(f'🌾 Đã trồng cây! Tưới nước mỗi **3 tiếng** bằng `/tuoinuoc`, cần tưới **{games.FARM_WATERINGS_NEEDED} lần** để thu hoạch.')
+    file = discord.File(games.farm_render_image(interaction.user.id), filename='nongtrai.png')
+    await interaction.response.send_message(f'🌾 Đã trồng cây! Tưới nước mỗi **3 tiếng** bằng `/tuoinuoc`, cần tưới **{games.FARM_WATERINGS_NEEDED} lần** để thu hoạch.', file=file)
 
 @bot.tree.command(name='tuoinuoc', description='💧 Tưới nước cho cây (mỗi 3 tiếng/lần)')
 async def tuoinuoc_slash(interaction: discord.Interaction):
@@ -1082,7 +1083,8 @@ async def tuoinuoc_slash(interaction: discord.Interaction):
     if not result['ok']:
         await interaction.response.send_message(result['reason'], ephemeral=True)
         return
-    await interaction.response.send_message(f"💧 Đã tưới nước! ({result['waterings']}/{games.FARM_WATERINGS_NEEDED}) — {'sẵn sàng thu hoạch bằng `/thuhoach`!' if result['waterings'] >= games.FARM_WATERINGS_NEEDED else 'tưới tiếp sau 3 tiếng nữa nhé.'}")
+    file = discord.File(games.farm_render_image(interaction.user.id), filename='nongtrai.png')
+    await interaction.response.send_message(f"💧 Đã tưới nước! ({result['waterings']}/{games.FARM_WATERINGS_NEEDED}) — {'sẵn sàng thu hoạch bằng `/thuhoach`!' if result['waterings'] >= games.FARM_WATERINGS_NEEDED else 'tưới tiếp sau 3 tiếng nữa nhé.'}", file=file)
 
 @bot.tree.command(name='thuhoach', description='🧺 Thu hoạch cây đã đủ nước')
 async def thuhoach_slash(interaction: discord.Interaction):
@@ -1090,7 +1092,8 @@ async def thuhoach_slash(interaction: discord.Interaction):
     if not result['ok']:
         await interaction.response.send_message(result['reason'], ephemeral=True)
         return
-    await interaction.response.send_message(f"🧺 Thu hoạch thành công! {games.AURA_ICON} +{result['reward']} Aura (số dư: **{result['balance']}**).")
+    file = discord.File(games.farm_render_image(interaction.user.id), filename='nongtrai.png')
+    await interaction.response.send_message(f"🧺 Thu hoạch thành công! {games.AURA_ICON} +{result['reward']} Aura (số dư: **{result['balance']}**).", file=file)
 
 @bot.tree.command(name='thuenongdan', description=f'👨‍🌾 Thuê nông dân tự tưới cây — {games.FARM_FARMER_DAILY_COST} Aura/ngày')
 async def thuenongdan_slash(interaction: discord.Interaction):
@@ -1099,6 +1102,23 @@ async def thuenongdan_slash(interaction: discord.Interaction):
         await interaction.response.send_message(result['reason'], ephemeral=True)
         return
     await interaction.response.send_message(f"👨‍🌾 Đã thuê nông dân! Cây sẽ tự được tưới mỗi ngày, trừ **{games.FARM_FARMER_DAILY_COST} Aura/ngày** từ số dư của bạn. Hết Aura thì nông dân tự nghỉ việc nhé.")
+
+@bot.tree.command(name='nongtrai', description='🌾 Xem ruộng của bạn (ảnh pixel)')
+async def nongtrai_slash(interaction: discord.Interaction):
+    status = games.farm_status(interaction.user.id)
+    image_buf = games.farm_render_image(interaction.user.id)
+    file = discord.File(image_buf, filename='nongtrai.png')
+    if not status['planted']:
+        state_text = f"🕳️ Đất trống — trồng hạt bằng `/trong` (đang có **{status['seeds']}** hạt giống)"
+    elif status['waterings'] >= games.FARM_WATERINGS_NEEDED:
+        state_text = '✅ Cây đã chín — thu hoạch ngay bằng `/thuhoach`!'
+    else:
+        state_text = f"🌱 Đang lớn — đã tưới **{status['waterings']}/{games.FARM_WATERINGS_NEEDED}** lần, tưới tiếp bằng `/tuoinuoc`"
+    embed = discord.Embed(title='🌾 Ruộng của bạn', description=state_text, color=6584896)
+    embed.add_field(name='👨‍🌾 Nông dân', value='✅ Đã thuê' if status['farmer'] else '❌ Chưa thuê', inline=True)
+    embed.add_field(name='🌱 Hạt giống còn', value=str(status['seeds']), inline=True)
+    embed.set_image(url='attachment://nongtrai.png')
+    await interaction.response.send_message(embed=embed, file=file)
 
 web_server.keep_alive()
 bot.run(os.environ['DISCORD_KEY'])
