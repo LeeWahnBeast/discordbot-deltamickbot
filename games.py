@@ -215,6 +215,82 @@ def flag_owner(cid):
 def flag_end(cid):
     _flag_games.pop(cid, None)
 
+MEME_ROUNDS_PER_GAME = 5
+MEME_AURA_REWARD = 12
+_meme_pending = {}
+_meme_approved = {}
+_meme_next_id = [1]
+_meme_games = {}
+
+def meme_submit(image_url, name, submitter_id):
+    meme_id = _meme_next_id[0]
+    _meme_next_id[0] += 1
+    _meme_pending[meme_id] = {'id': meme_id, 'image_url': image_url, 'name': name.strip().lower(), 'display_name': name.strip(), 'submitter_id': submitter_id, 'submitted_at': time.time()}
+    return meme_id
+
+def meme_pending_list():
+    return list(_meme_pending.values())
+
+def meme_pending_get(meme_id):
+    return _meme_pending.get(meme_id)
+
+def meme_approve(meme_id, reviewer_id):
+    meme = _meme_pending.pop(meme_id, None)
+    if meme is None:
+        return False
+    meme['approved_by'] = reviewer_id
+    meme['approved_at'] = time.time()
+    _meme_approved[meme_id] = meme
+    return True
+
+def meme_reject(meme_id, reviewer_id):
+    return _meme_pending.pop(meme_id, None) is not None
+
+def meme_pool_size():
+    return len(_meme_approved)
+
+def meme_active(cid):
+    return cid in _meme_games
+
+def meme_start(cid, owner_id):
+    if len(_meme_approved) < 3:
+        return (None, False)
+    _meme_games[cid] = {'round': 0, 'score': 0, 'current': None, 'owner_id': owner_id, 'used_ids': set()}
+    return (meme_next(cid), True)
+
+def meme_next(cid):
+    game = _meme_games[cid]
+    if game['round'] >= MEME_ROUNDS_PER_GAME:
+        return None
+    pool = [m for mid, m in _meme_approved.items() if mid not in game['used_ids']]
+    if not pool:
+        pool = list(_meme_approved.values())
+        game['used_ids'] = set()
+    meme = random.choice(pool)
+    game['used_ids'].add(meme['id'])
+    game['current'] = meme
+    game['round'] += 1
+    return meme['image_url']
+
+def meme_check(cid, guesser_id, guess):
+    game = _meme_games[cid]
+    if guesser_id != game['owner_id']:
+        return ('not_owner', game['round'] < MEME_ROUNDS_PER_GAME)
+    correct = guess.strip().lower() == game['current']['name']
+    if correct:
+        game['score'] += 1
+    return (correct, game['round'] < MEME_ROUNDS_PER_GAME)
+
+def meme_answer(cid):
+    return _meme_games[cid]['current']['display_name']
+
+def meme_progress(cid):
+    g = _meme_games[cid]
+    return (g['round'], MEME_ROUNDS_PER_GAME, g['score'])
+
+def meme_end(cid):
+    _meme_games.pop(cid, None)
+
 WHATUINTO_LABELS = [('Femboy', 'Mềm mại bên ngoài, hỗn loạn bên trong. Bạn là hiện thân của "tưởng vậy mà không phải vậy".'), ('Tomboy', 'Năng lượng xắn tay áo, không ngại dơ. Bạn chọn hành động thay vì drama.'), ('Tsundere', '"Không phải tôi thích đâu nhé!" — trong khi tay đã làm sẵn hết rồi.'), ('Mommy ASMR', 'Giọng nói của bạn có thể ru cả server ngủ. Năng lượng chăm sóc tối thượng.'), ('Yandere ASMR', 'Ngọt ngào đến đáng ngờ. Ai chọc bạn giận thì... thôi khỏi nói.'), ('Vợ hàng xóm', 'Huyền thoại khu phố, ai cũng biết tên nhưng chẳng ai dám hỏi thẳng.'), ('Folk Valley', 'Bạn thuộc về nơi cỏ cây biết nói và gà biết deploy code.'), ('Scambodia', 'Chuyên gia lừa đảo... tình cảm. Cẩn thận, coi chừng mất ví lẫn mất tim.')]
 
 def whatuinto_roll():
@@ -319,19 +395,23 @@ def _set_elo(user_id, new_elo):
     return new_elo
 SHOP_RESTOCK_SECONDS = 5 * 60
 SHOP_ITEMS = {
-    'elo_100': {'emoji': '🥶', 'name': 'Mua Tài (100 Elo)', 'currency': 'aura', 'price': 50, 'stock': 8, 'desc': '📈 +100 Elo ngay lập tức, không cần thắng, không cần chơi, không cần liêm sỉ.\n🐐 Messi mà thấy giá này chắc cũng phải khóc vì rẻ.'},
-    'elo10': {'emoji': '💠', 'name': '10 Elo', 'currency': 'aura', 'price': 5, 'stock': 20, 'desc': '📈 +10 Elo bé xíu, dành cho người mua tài mà vẫn muốn giữ chút liêm sỉ.\n🐜 Chưa đủ để flex nhưng đủ để tự lừa bản thân là đang tiến bộ.'},
-    'cu_cai': {'emoji': '🥕', 'name': 'Củ Cải', 'currency': 'aura', 'price': 500, 'stock': 3, 'desc': '🎯 Dùng 1 lần — nhét củ cải vào não Chess Bot:\n🤯 IQ bot rớt về âm, đi cờ như đang say rượu ngoài quán nhậu.\n♟️ Thua ván này thì thôi khỏi chơi cờ luôn đi bạn ơi. 💀🥶'},
-    'double_aura': {'emoji': '✨', 'name': 'Nhân Đôi Aura (24 giờ)', 'currency': 'elo', 'price': 300, 'stock': 4, 'desc': '⏳ x2 Aura trong 24 giờ — bán Elo lấy Aura như bán nhà lấy vàng mã.\n🤑 Tư bản đích thực, không màng liêm sỉ chỉ màng lợi nhuận.'},
-    'role_gubby': {'emoji': '🐹', 'name': 'Role Gubby', 'currency': 'aura', 'price': 1900, 'stock': 2, 'desc': '🎖️ Vĩnh viễn thành Gubby chính hiệu, không hoàn không đổi trả.\n🐹 Một khi đã Gubby thì Gubby cả đời, hối hận cũng muộn rồi.'},
-    'trong_tai': {'emoji': '⚖️', 'name': 'Trọng Tài Chess (PvP)', 'currency': 'aura', 'price': 450, 'stock': 3, 'desc': '🎯 Dùng 1 lần — mua đứt ông trọng tài trận PvP tiếp theo.\n🛡️ Thổi còi thiên vị bạn công khai giữa thanh thiên bạch nhật.\n🤫 "Đây là quyết định cuối cùng, không khiếu nại" — trọng tài, vừa nhận phong bì.'},
-    'hint_free': {'emoji': '💡', 'name': 'Gợi Ý Miễn Phí', 'currency': 'aura', 'price': 120, 'stock': 5, 'desc': '🎯 Dùng 1 lần — hỏi bài mà không bị trừ điểm, sung sướng như quay cóp trót lọt.\n🧠 Não bạn nghỉ hưu sớm, bot lo hết.'},
-    'aura_500': {'emoji': '💰', 'name': 'Túi Aura (500)', 'currency': 'elo', 'price': 250, 'stock': 5, 'desc': '💸 Bán 250 Elo lấy 500 Aura — vay nóng lãi cắt cổ nhưng tự nguyện.\n🏦 Tín dụng đen phiên bản cờ vua, không ai ép bạn cả.'},
-    'shield_timeout': {'emoji': '🛡️', 'name': 'Khiên Hết Giờ', 'currency': 'aura', 'price': 350, 'stock': 3, 'desc': '🎯 Dùng 1 lần — cộng free 60 giây để nghĩ nước đi cho thiên tài chậm tiêu.\n🐢 Rùa cũng có ngày về đích, miễn là mua đủ khiên.'},
-    'flag_slot': {'emoji': '🎟️', 'name': 'Slot Đoán Cờ', 'currency': 'aura', 'price': 80, 'stock': 6, 'desc': '📈 +1 lượt chơi /flag hôm nay, vượt giới hạn 5 ván/ngày.\n🌾 Nghiện đoán cờ thì Folk Valley không cản, chỉ cần trả tiền vé.'},
+    'elo_100': {'emoji': '🥶', 'name': 'Mua Tài (100 Elo)', 'currency': 'aura', 'price': 50, 'stock': 8, 'rarity': 'common', 'appear_chance': 1.0, 'desc': '📈 +100 Elo ngay lập tức, không cần thắng, không cần chơi, không cần liêm sỉ.\n🐐 Messi mà thấy giá này chắc cũng phải khóc vì rẻ.'},
+    'elo10': {'emoji': '💠', 'name': '10 Elo', 'currency': 'aura', 'price': 5, 'stock': 20, 'rarity': 'common', 'appear_chance': 1.0, 'desc': '📈 +10 Elo bé xíu, dành cho người mua tài mà vẫn muốn giữ chút liêm sỉ.\n🐜 Chưa đủ để flex nhưng đủ để tự lừa bản thân là đang tiến bộ.'},
+    'hint_free': {'emoji': '💡', 'name': 'Gợi Ý Miễn Phí', 'currency': 'aura', 'price': 120, 'stock': 5, 'rarity': 'common', 'appear_chance': 1.0, 'desc': '🎯 Dùng 1 lần — hỏi bài mà không bị trừ điểm, sung sướng như quay cóp trót lọt.\n🧠 Não bạn nghỉ hưu sớm, bot lo hết.'},
+    'flag_slot': {'emoji': '🎟️', 'name': 'Slot Đoán Cờ', 'currency': 'aura', 'price': 80, 'stock': 6, 'rarity': 'common', 'appear_chance': 1.0, 'desc': '📈 +1 lượt chơi /flag hôm nay, vượt giới hạn 5 ván/ngày.\n🌾 Nghiện đoán cờ thì Folk Valley không cản, chỉ cần trả tiền vé.'},
+    'aura_500': {'emoji': '💰', 'name': 'Túi Aura (500)', 'currency': 'elo', 'price': 250, 'stock': 5, 'rarity': 'uncommon', 'appear_chance': 0.75, 'desc': '💸 Bán 250 Elo lấy 500 Aura — vay nóng lãi cắt cổ nhưng tự nguyện.\n🏦 Tín dụng đen phiên bản cờ vua, không ai ép bạn cả.'},
+    'shield_timeout': {'emoji': '🛡️', 'name': 'Khiên Hết Giờ', 'currency': 'aura', 'price': 350, 'stock': 3, 'rarity': 'uncommon', 'appear_chance': 0.75, 'desc': '🎯 Dùng 1 lần — cộng free 60 giây để nghĩ nước đi cho thiên tài chậm tiêu.\n🐢 Rùa cũng có ngày về đích, miễn là mua đủ khiên.'},
+    'trong_tai': {'emoji': '⚖️', 'name': 'Trọng Tài Chess (PvP)', 'currency': 'aura', 'price': 450, 'stock': 3, 'rarity': 'uncommon', 'appear_chance': 0.6, 'desc': '🎯 Dùng 1 lần — mua đứt ông trọng tài trận PvP tiếp theo.\n🛡️ Thổi còi thiên vị bạn công khai giữa thanh thiên bạch nhật.\n🤫 "Đây là quyết định cuối cùng, không khiếu nại" — trọng tài, vừa nhận phong bì.'},
+    'double_aura': {'emoji': '✨', 'name': 'Nhân Đôi Aura (24 giờ)', 'currency': 'elo', 'price': 300, 'stock': 4, 'rarity': 'rare', 'appear_chance': 0.4, 'desc': '⏳ x2 Aura trong 24 giờ — bán Elo lấy Aura như bán nhà lấy vàng mã.\n🤑 Tư bản đích thực, không màng liêm sỉ chỉ màng lợi nhuận.'},
+    'cu_cai': {'emoji': '🥕', 'name': 'Củ Cải', 'currency': 'aura', 'price': 500, 'stock': 2, 'rarity': 'rare', 'appear_chance': 0.35, 'desc': '🎯 Dùng 1 lần — nhét củ cải vào não Chess Bot:\n🤯 IQ bot rớt về âm, đi cờ như đang say rượu ngoài quán nhậu.\n♟️ Thua ván này thì thôi khỏi chơi cờ luôn đi bạn ơi. 💀🥶'},
+    'mango_mustard': {'emoji': '🥭', 'name': 'Mango Mustard', 'currency': 'aura', 'price': 666, 'stock': 1, 'rarity': 'legendary', 'appear_chance': 0.15, 'desc': '🎯 Dùng 1 lần — sốt mù tạt xoài huyền thoại, không ai hiểu công thức nhưng ai cũng sợ.\n💥 Ăn vào +50 Aura NGAY LẬP TỨC vì can đảm thử món này xứng đáng được thưởng.\n🤢 Tác dụng phụ: ám ảnh vị giác vĩnh viễn.'},
+    'ronaldo_pasta': {'emoji': '🍝', 'name': 'Ronaldo Pasta', 'currency': 'elo', 'price': 500, 'stock': 1, 'rarity': 'legendary', 'appear_chance': 0.15, 'desc': '🎯 Dùng 1 lần — đĩa mì Ý SIUUUU chính hiệu, ăn vào tự tin thái quá.\n📈 +150 Elo NGAY LẬP TỨC vì tự tin cũng là một loại sức mạnh.\n⚠️ Cảnh báo: có thể khiến bạn ăn mừng quá lố sau mỗi nước đi.'},
+    'role_gubby': {'emoji': '🐹', 'name': 'Role Gubby', 'currency': 'aura', 'price': 1900, 'stock': 1, 'rarity': 'legendary', 'appear_chance': 0.2, 'desc': '🎖️ Vĩnh viễn thành Gubby chính hiệu, không hoàn không đổi trả.\n🐹 Một khi đã Gubby thì Gubby cả đời, hối hận cũng muộn rồi.'},
 }
+RARITY_LABEL = {'common': '⚪ Thường', 'uncommon': '🟢 Ít gặp', 'rare': '🔵 Hiếm', 'legendary': '🟣 Huyền thoại'}
 _user_buffs = {}
 _shop_stock = {}
+_shop_available = {}
 _shop_stock_cycle = None
 _receipts = {}
 
@@ -341,12 +421,20 @@ def _ensure_stock_cycle():
     if _shop_stock_cycle != cycle:
         _shop_stock_cycle = cycle
         _shop_stock.clear()
+        _shop_available.clear()
+        rng = random.Random(cycle)
         for key, item in SHOP_ITEMS.items():
-            _shop_stock[key] = item['stock']
+            available = rng.random() < item['appear_chance']
+            _shop_available[key] = available
+            _shop_stock[key] = item['stock'] if available else 0
 
 def shop_stock_left(item_key):
     _ensure_stock_cycle()
     return _shop_stock.get(item_key, 0)
+
+def shop_item_available(item_key):
+    _ensure_stock_cycle()
+    return _shop_available.get(item_key, False)
 
 def _get_buffs(user_id):
     return _user_buffs.setdefault(user_id, {'cu_cai': 0, 'trong_tai': 0, 'double_aura_until': 0, 'gubby_role': False, 'hint_free': 0, 'shield_timeout': 0})
@@ -383,7 +471,7 @@ def shop_buy(user_id, item_key):
     item = SHOP_ITEMS.get(item_key)
     if item is None:
         return {'ok': False, 'reason': '❌ Vật phẩm không tồn tại.', 'item': None, 'balance_after': None}
-    if _shop_stock.get(item_key, 0) <= 0:
+    if not _shop_available.get(item_key, False) or _shop_stock.get(item_key, 0) <= 0:
         return {'ok': False, 'reason': f"❌ **{item['name']}** đã hết hàng đợt này! Chờ restock sau **{shop_seconds_until_restock() // 60} phút** nhé.", 'item': item, 'balance_after': None}
     currency = item['currency']
     price = item['price']
@@ -417,6 +505,10 @@ def shop_buy(user_id, item_key):
         buffs['shield_timeout'] += 1
     elif item_key == 'flag_slot':
         flag_add_daily_slot(user_id)
+    elif item_key == 'mango_mustard':
+        add_aura(user_id, 50)
+    elif item_key == 'ronaldo_pasta':
+        _set_elo(user_id, get_elo(user_id) + 150)
     _shop_stock[item_key] -= 1
     receipt = _add_receipt(user_id, item_key, item, currency, price, balance_after)
     return {'ok': True, 'reason': None, 'item': item, 'balance_after': balance_after, 'receipt': receipt}
