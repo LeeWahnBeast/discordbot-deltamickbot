@@ -1035,16 +1035,13 @@ async def xemveso_slash(interaction: discord.Interaction):
         remain = games.lottery_seconds_until_sale_change()
         embed.description = f'⏳ KQXS hôm nay chưa công bố — ra lúc {games.LOTTERY_SALE_CLOSE_HOUR}h chiều (còn **{remain // 3600}h{(remain % 3600) // 60}p**).\n\n**Tỉnh mở hôm nay:** {", ".join(today_provinces)}'
     my_tickets = games.lottery_user_tickets(interaction.user.id)
-    if my_tickets:
-        ticket_lines = []
-        for t in my_tickets[-15:]:
-            if t['checked']:
-                status = _lottery_prize_line(t)
-            else:
-                status = f"🎫 Vé **#{t['id']}** — `{t['number']}` ({t['province']})"
-            ticket_lines.append(status)
-        embed.add_field(name=f'🎫 Vé của bạn ({min(len(my_tickets), 15)}/{len(my_tickets)})', value='\n'.join(ticket_lines)[:1024], inline=False)
+    pending = [t for t in my_tickets if not t['checked']]
+    if pending:
+        ticket_lines = [f"🎫 Vé **#{t['id']}** — `{t['number']}` ({t['province']})" for t in pending[-15:]]
+        embed.add_field(name=f'🎫 Vé chưa dò ({min(len(pending), 15)}/{len(pending)})', value='\n'.join(ticket_lines)[:1024], inline=False)
         embed.set_footer(text=f'Tự dò số của bạn với bảng KQXS trên nhé — dò xong dùng /kiemtra_veso [mã vé] để nhận Aura nếu trúng ({games.LOTTERY_CHECK_PRICE} Aura/lần)')
+    elif my_tickets:
+        embed.set_footer(text='Bạn đã dò hết vé rồi — mua thêm vé mới bằng /shop_dailyveso')
     else:
         embed.set_footer(text='Bạn chưa có vé nào — mua vé bằng /shop_dailyveso')
     await interaction.response.send_message(embed=embed)
@@ -1062,6 +1059,46 @@ async def kiemtra_veso_slash(interaction: discord.Interaction, ma_ve: int):
     else:
         embed = discord.Embed(title='😢 Chúc bạn may mắn lần sau', description=f"Vé **#{ticket['id']}** (`{ticket['number']}` - {ticket['province']}) không trúng gì.", color=8359053)
     await interaction.response.send_message(embed=embed)
+
+@bot.tree.command(name='muahatgiong', description=f'🌱 Mua hạt giống — {games.FARM_SEED_PRICE} Aura/hạt')
+async def muahatgiong_slash(interaction: discord.Interaction):
+    result = games.farm_buy_seed(interaction.user.id)
+    if not result['ok']:
+        await interaction.response.send_message(result['reason'], ephemeral=True)
+        return
+    await interaction.response.send_message(f"🌱 Đã mua 1 hạt giống! Bạn hiện có **{result['seeds']}** hạt. Trồng bằng `/trong`.")
+
+@bot.tree.command(name='trong', description='🌾 Trồng hạt giống xuống đất')
+async def trong_slash(interaction: discord.Interaction):
+    result = games.farm_plant(interaction.user.id)
+    if not result['ok']:
+        await interaction.response.send_message(result['reason'], ephemeral=True)
+        return
+    await interaction.response.send_message(f'🌾 Đã trồng cây! Tưới nước mỗi **3 tiếng** bằng `/tuoinuoc`, cần tưới **{games.FARM_WATERINGS_NEEDED} lần** để thu hoạch.')
+
+@bot.tree.command(name='tuoinuoc', description='💧 Tưới nước cho cây (mỗi 3 tiếng/lần)')
+async def tuoinuoc_slash(interaction: discord.Interaction):
+    result = games.farm_water(interaction.user.id)
+    if not result['ok']:
+        await interaction.response.send_message(result['reason'], ephemeral=True)
+        return
+    await interaction.response.send_message(f"💧 Đã tưới nước! ({result['waterings']}/{games.FARM_WATERINGS_NEEDED}) — {'sẵn sàng thu hoạch bằng `/thuhoach`!' if result['waterings'] >= games.FARM_WATERINGS_NEEDED else 'tưới tiếp sau 3 tiếng nữa nhé.'}")
+
+@bot.tree.command(name='thuhoach', description='🧺 Thu hoạch cây đã đủ nước')
+async def thuhoach_slash(interaction: discord.Interaction):
+    result = games.farm_harvest(interaction.user.id)
+    if not result['ok']:
+        await interaction.response.send_message(result['reason'], ephemeral=True)
+        return
+    await interaction.response.send_message(f"🧺 Thu hoạch thành công! {games.AURA_ICON} +{result['reward']} Aura (số dư: **{result['balance']}**).")
+
+@bot.tree.command(name='thuenongdan', description=f'👨‍🌾 Thuê nông dân tự tưới cây — {games.FARM_FARMER_DAILY_COST} Aura/ngày')
+async def thuenongdan_slash(interaction: discord.Interaction):
+    result = games.farm_hire_farmer(interaction.user.id)
+    if not result['ok']:
+        await interaction.response.send_message(result['reason'], ephemeral=True)
+        return
+    await interaction.response.send_message(f"👨‍🌾 Đã thuê nông dân! Cây sẽ tự được tưới mỗi ngày, trừ **{games.FARM_FARMER_DAILY_COST} Aura/ngày** từ số dư của bạn. Hết Aura thì nông dân tự nghỉ việc nhé.")
 
 web_server.keep_alive()
 bot.run(os.environ['DISCORD_KEY'])
