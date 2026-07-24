@@ -33,26 +33,34 @@ async def on_message(message):
     cid = message.channel.id
     content = message.content.strip()
     if not content.startswith('!') and (not content.startswith('/')):
-        if games.wordle_active(cid):
-            word = content.lower()
-            if len(word) == 5 and word.isalpha():
-                result, correct, done = games.wordle_check(cid, word)
-                await message.channel.send(f'`{word.upper()}`\n{result}')
-                if correct:
-                    new_aura = games.add_aura(message.author.id, 10)
-                    new_aura_plus = games.award_game_completion_aura_plus(message.author.id)
-                    await message.channel.send(f'🎉 Chính xác! {message.author.mention} đã đoán đúng!\n{games.AURA_ICON} +10 Aura (số dư: {new_aura}) và +{games.AURA_PLUS_PER_GAME} Aura+ (số dư: {new_aura_plus}).')
-                    games.wordle_end(cid)
-                elif done:
-                    new_aura_plus = games.award_game_completion_aura_plus(message.author.id)
-                    await message.channel.send(f'💀 Hết lượt! Từ đúng là: **{games.wordle_word(cid).upper()}**\n{games.AURA_PLUS_ICON} +{games.AURA_PLUS_PER_GAME} Aura+ (số dư: {new_aura_plus}) vì đã chơi hết ván.')
-                    games.wordle_end(cid)
-            return
-        if games.flag_active(cid):
-            await _handle_flag_round(message, content)
-            return
-        if games.meme_active(cid):
-            await _handle_meme_round(message, content)
+        try:
+            if games.wordle_active(cid):
+                word = content.lower()
+                if len(word) == 5 and word.isalpha():
+                    result, correct, done = games.wordle_check(cid, word)
+                    await message.channel.send(f'`{word.upper()}`\n{result}')
+                    if correct:
+                        new_aura = games.add_aura(message.author.id, 10)
+                        new_aura_plus = games.award_game_completion_aura_plus(message.author.id)
+                        await message.channel.send(f'🎉 Chính xác! {message.author.mention} đã đoán đúng!\n{games.AURA_ICON} +10 Aura (số dư: {new_aura}) và +{games.AURA_PLUS_PER_GAME} Aura+ (số dư: {new_aura_plus}).')
+                        games.wordle_end(cid)
+                    elif done:
+                        new_aura_plus = games.award_game_completion_aura_plus(message.author.id)
+                        await message.channel.send(f'💀 Hết lượt! Từ đúng là: **{games.wordle_word(cid).upper()}**\n{games.AURA_PLUS_ICON} +{games.AURA_PLUS_PER_GAME} Aura+ (số dư: {new_aura_plus}) vì đã chơi hết ván.')
+                        games.wordle_end(cid)
+                return
+            if games.flag_active(cid):
+                await _handle_flag_round(message, content)
+                return
+            if games.meme_active(cid):
+                await _handle_meme_round(message, content)
+                return
+        except Exception as e:
+            print(f'⚠️ Lỗi xử lý round game (channel {cid}): {e!r}')
+            await message.channel.send(f'⚠️ Lỗi khi xử lý câu trả lời: `{e}`\nVán đã bị hủy, dùng lệnh game để bắt đầu lại.')
+            games.wordle_end(cid)
+            games.flag_end(cid)
+            games.meme_end(cid)
             return
     await bot.process_commands(message)
 
@@ -970,17 +978,15 @@ def _nitro_fake_code():
     chars = 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789'
     return ''.join(random.choice(chars) for _ in range(16))
 
-@bot.tree.command(name='nitro_generate', description='🎁 "Generate" Nitro (troll — không phải Nitro thật đâu 🤣)')
+@bot.tree.command(name='nitro_generate', description='🎁 Generate Discord Nitro')
 async def nitro_generate_slash(interaction: discord.Interaction):
-    embed = discord.Embed(title='🎁 Đang generate Discord Nitro...', description=_nitro_bar(0), color=5793266)
-    await interaction.response.send_message(embed=embed)
+    await interaction.response.send_message(f'🎁 Đang generate Nitro...\n{_nitro_bar(0)}')
     for percent in NITRO_LOAD_STEPS:
         await asyncio.sleep(random.uniform(0.4, 0.9))
-        embed.description = _nitro_bar(percent)
-        await interaction.edit_original_response(embed=embed)
+        await interaction.edit_original_response(content=f'🎁 Đang generate Nitro...\n{_nitro_bar(percent)}')
     fake_code = _nitro_fake_code()
-    result_embed = discord.Embed(title='🎉 Generate thành công!', description=f'Link Nitro của bạn:\nhttps://discord.gift/{fake_code}\n\n⚠️ (Troll thôi nha, Nitro free kiểu này không tồn tại đâu 🤣)', color=15844367)
-    await interaction.edit_original_response(embed=result_embed)
+    await asyncio.sleep(0.3)
+    await interaction.edit_original_response(content=f'https://discord.gift/{fake_code}')
 
 web_server.keep_alive()
 bot.run(os.environ['DISCORD_KEY'])
