@@ -46,6 +46,15 @@ async def on_message(message):
             return
     await bot.process_commands(message)
 
+async def _get_display_name_no_ping(user_id):
+    user = bot.get_user(user_id)
+    if user is None:
+        try:
+            user = await bot.fetch_user(user_id)
+        except discord.HTTPException:
+            return 'Ẩn danh'
+    return user.display_name
+
 async def _handle_meme_round(message, guess_text):
     cid = message.channel.id
     result, has_next = games.meme_check(cid, message.author.id, guess_text)
@@ -61,7 +70,8 @@ async def _handle_meme_round(message, guess_text):
         await message.channel.send(f'❌ Sai rồi! Đáp án là **{answer}**! (Điểm: {score}/{round_num})')
     if has_next:
         url = games.meme_next(cid)
-        embed = discord.Embed(title=f'🎭 Vòng tiếp theo ({round_num + 1}/{total})', description='Chat thẳng tên meme để đoán! (chỉ người mở ván mới được tính điểm)', color=15277667)
+        submitter_name = await _get_display_name_no_ping(games.meme_current_submitter_id(cid))
+        embed = discord.Embed(title=f'🎭 Vòng tiếp theo ({round_num + 1}/{total})', description=f'Chat thẳng tên meme để đoán! (chỉ người mở ván mới được tính điểm)\n📤 Gửi bởi: **{submitter_name}**', color=15277667)
         embed.set_image(url=url)
         await message.channel.send(embed=embed, view=EndGameView(cid, 'meme'))
     else:
@@ -182,7 +192,7 @@ class DifficultyView(discord.ui.View):
             if difficulty == 'mythic':
                 await interaction.response.send_message(f'❌ Chưa mở khóa Mythic! Cần tích lũy **{games.FLAG_UNLOCK_SCORE_MYTHIC}** điểm đoán đúng (hiện có: {games.flag_lifetime_score(self.owner_id)}).', ephemeral=True)
             else:
-                await interaction.response.send_message('❌ Bạn đã hết lượt chơi `/flag` hôm nay! Mua thêm 🎟️ Slot Đoán Cờ ở `/shop` hoặc chờ mai nhé.', ephemeral=True)
+                await interaction.response.send_message('❌ Bạn đã hết lượt chơi `/flag` hôm nay! Mua thêm 🎟️ Slot Vé Game ở `/shop` hoặc chờ mai nhé.', ephemeral=True)
             return
         left = games.flag_games_left_today(self.owner_id)
         reward = games.FLAG_AURA_PER_DIFFICULTY[difficulty]
@@ -485,7 +495,7 @@ async def flag_slash(interaction: discord.Interaction):
         return
     left = games.flag_games_left_today(interaction.user.id)
     if left <= 0:
-        await interaction.response.send_message('❌ Bạn đã hết lượt chơi `/flag` hôm nay! Mua thêm 🎟️ Slot Đoán Cờ ở `/shop` hoặc chờ mai nhé.', ephemeral=True)
+        await interaction.response.send_message('❌ Bạn đã hết lượt chơi `/flag` hôm nay! Mua thêm 🎟️ Slot Vé Game ở `/shop` hoặc chờ mai nhé.', ephemeral=True)
         return
     view = DifficultyView(cid, interaction.user.id)
     desc = f'🌱 **Dễ** (+{games.FLAG_AURA_PER_DIFFICULTY["easy"]} Aura/câu) — các nước nổi tiếng\n🌾 **Trung bình** (+{games.FLAG_AURA_PER_DIFFICULTY["medium"]} Aura/câu) — các nước quen thuộc vừa phải\n🔥 **Khó** (+{games.FLAG_AURA_PER_DIFFICULTY["hard"]} Aura/câu) — các nước ít gặp hơn\n💀 **Insane** (+{games.FLAG_AURA_PER_DIFFICULTY["insane"]} Aura/câu) — các nước siêu hiếm!'
@@ -517,7 +527,10 @@ class ChessDifficultyView(discord.ui.View):
         if games.chess_active(self.cid):
             await interaction.response.send_message('⚠️ Đang có ván cờ vua chưa xong trong kênh này!', ephemeral=True)
             return
-        games.chess_start(self.cid, self.player_id, bot_elo)
+        _, ok = games.chess_start(self.cid, self.player_id, bot_elo)
+        if not ok:
+            await interaction.response.send_message('❌ Bạn đã hết lượt chơi cờ vs Bot hôm nay! Mua thêm 🎟️ Slot ở `/shop` hoặc chờ mai nhé.', ephemeral=True)
+            return
         image = games.chess_board_image(self.cid)
         file = discord.File(image, filename='board.png')
         embed = _chess_board_embed(self.cid, 'Chọn **quân** rồi chọn **ô muốn đi tới** bằng menu bên dưới.')
@@ -707,11 +720,24 @@ async def hoadon_slash(interaction: discord.Interaction, member: discord.Member=
     await interaction.response.send_message(f'🧾 Hóa đơn Delta Shop của {who}:\n' + '\n'.join(lines))
 GUBBY_ROLE_ID = 1528977786490978454
 
-def _shop_embed():
+SHOP_ITEMS_PER_PAGE = 4
+
+def _shop_page_keys(page):
+    keys = list(games.shop_list().keys())
+    start = page * SHOP_ITEMS_PER_PAGE
+    return keys[start:start + SHOP_ITEMS_PER_PAGE]
+
+def _shop_page_count():
+    total = len(games.shop_list())
+    return max(1, -(-total // SHOP_ITEMS_PER_PAGE))
+
+def _shop_embed(page=0):
     remain = games.shop_seconds_until_restock()
     m, s = divmod(remain, 60)
+    total_pages = _shop_page_count()
     lines = ['> 🕒 Restock mỗi 5 phút, học hỏi tinh hoa từ Grow a Garden — nhanh tay kẻo hết, chậm tay ăn cám.', '', '╭────────────────────────────╮', '🛍️ Gian Hàng Bán Danh Dự', '╰────────────────────────────╯', '']
-    for key, item in games.shop_list().items():
+    for key in _shop_page_keys(page):
+        item = games.shop_list()[key]
         currency_label = 'Aura' if item['currency'] == 'aura' else 'Elo'
         stock = games.shop_stock_left(key)
         stock_line = f'📦 Còn lại: **{stock}**' if stock > 0 else '📦 **CHÁY HÀNG** (dân tình gom sạch rồi)'
@@ -723,24 +749,48 @@ def _shop_embed():
     lines.append(f'⏰ Restock tiếp theo sau: **{m}:{s:02d}** — ráng chờ hoặc ráng nghèo.')
     lines.append('')
     lines.append('*"Tiền không mua được hạnh phúc... nhưng mua được Elo, mà Elo còn đáng giá hơn hạnh phúc."* 🥕🥶')
-    embed = discord.Embed(title='🛒 Delta Shop', description='\n'.join(lines), color=3066993)
+    embed = discord.Embed(title=f'🛒 Delta Shop (trang {page + 1}/{total_pages})', description='\n'.join(lines), color=3066993)
     return embed
 
 class ShopView(discord.ui.View):
 
-    def __init__(self, buyer_id):
+    def __init__(self, buyer_id, page=0):
         super().__init__(timeout=120)
         self.buyer_id = buyer_id
+        self.page = page
+        total_pages = _shop_page_count()
         options = []
-        for key, item in games.shop_list().items():
+        for key in _shop_page_keys(page):
+            item = games.shop_list()[key]
             stock = games.shop_stock_left(key)
             label = f"{item['name']} — {item['price']} {('Aura' if item['currency'] == 'aura' else 'Elo')}"
             if stock <= 0:
                 label += ' (Hết hàng)'
             options.append(discord.SelectOption(label=label, value=key, emoji=item['emoji']))
-        select = discord.ui.Select(placeholder='🛒 Chọn vật phẩm muốn mua...', options=options)
+        select = discord.ui.Select(placeholder='🛒 Chọn vật phẩm muốn mua...', options=options, row=0)
         select.callback = self.on_select
         self.add_item(select)
+        prev_button = discord.ui.Button(label='◀', style=discord.ButtonStyle.secondary, disabled=page <= 0, row=1)
+        prev_button.callback = self.on_prev
+        self.add_item(prev_button)
+        page_label = discord.ui.Button(label=f'{page + 1}/{total_pages}', style=discord.ButtonStyle.secondary, disabled=True, row=1)
+        self.add_item(page_label)
+        next_button = discord.ui.Button(label='▶', style=discord.ButtonStyle.secondary, disabled=page >= total_pages - 1, row=1)
+        next_button.callback = self.on_next
+        self.add_item(next_button)
+
+    async def _goto(self, interaction, new_page):
+        if await _deny_unless(interaction, interaction.user.id == self.buyer_id, '❌ Đây không phải shop của bạn, dùng `/shop` để mở cái riêng!'):
+            return
+        embed = _shop_embed(new_page)
+        view = ShopView(self.buyer_id, new_page)
+        await interaction.response.edit_message(embed=embed, view=view)
+
+    async def on_prev(self, interaction: discord.Interaction):
+        await self._goto(interaction, self.page - 1)
+
+    async def on_next(self, interaction: discord.Interaction):
+        await self._goto(interaction, self.page + 1)
 
     async def on_select(self, interaction: discord.Interaction):
         if await _deny_unless(interaction, interaction.user.id == self.buyer_id, '❌ Đây không phải shop của bạn, dùng `/shop` để mở cái riêng!'):
@@ -767,8 +817,8 @@ class ShopView(discord.ui.View):
 
 @bot.tree.command(name='shop', description='🛒 Mở Delta Shop — đổi Aura/Elo lấy vật phẩm & buff')
 async def shop_slash(interaction: discord.Interaction):
-    embed = _shop_embed()
-    view = ShopView(interaction.user.id)
+    embed = _shop_embed(0)
+    view = ShopView(interaction.user.id, 0)
     await interaction.response.send_message(embed=embed, view=view)
 
 @bot.tree.command(name='kho', description='🎒 Xem vật phẩm/buff bạn đang sở hữu từ Delta Shop')
@@ -788,7 +838,12 @@ async def addmeme_slash(interaction: discord.Interaction, anh: discord.Attachmen
     if len(ten.strip()) < 2:
         await interaction.response.send_message('❌ Tên meme quá ngắn, đặt tên rõ ràng hơn nhé.', ephemeral=True)
         return
+    where, existing = games._meme_find_by_url(anh.url)
     meme_id = games.meme_submit(anh.url, ten, interaction.user.id)
+    if existing is not None:
+        status = 'đã duyệt, chơi được ngay' if where == 'approved' else 'đang chờ duyệt'
+        await interaction.response.send_message(f'🔗 Ảnh này trùng với meme **#{meme_id}** ({status})! Đã thêm **"{ten}"** làm đáp án phụ cho ảnh đó — giờ đoán đúng tên nào trong số các tên cũng được tính.', ephemeral=True)
+        return
     await interaction.response.send_message(f'📥 Đã gửi meme **#{meme_id}** ("{ten}") vào hàng chờ duyệt!\n⚠️ Ảnh sẽ được kiểm duyệt (Discord AutoMod + admin) trước khi vào pool chơi — cấm tuyệt đối nội dung 18+/khiêu dâm, gửi vi phạm có thể bị xử lý.', ephemeral=True)
 
 @bot.tree.command(name='reviewmeme', description='🛡️ [Admin] Duyệt các meme đang chờ trong hàng đợi')
@@ -801,12 +856,14 @@ async def reviewmeme_slash(interaction: discord.Interaction):
         await interaction.response.send_message('✅ Không có meme nào đang chờ duyệt.', ephemeral=True)
         return
     meme = pending[0]
-    embed = _meme_review_embed(meme)
+    embed = await _meme_review_embed(meme)
     await interaction.response.send_message(embed=embed, view=MemeReviewView(meme['id']))
 
-def _meme_review_embed(meme):
+async def _meme_review_embed(meme):
     pending = games.meme_pending_list()
-    embed = discord.Embed(title=f"🛡️ Duyệt meme #{meme['id']} ({len(pending)} đang chờ)", description=f"**Tên:** {meme['display_name']}\n**Người gửi:** <@{meme['submitter_id']}>", color=15105570)
+    names_text = ' / '.join(meme['display_names'])
+    submitter_name = await _get_display_name_no_ping(meme['submitter_id'])
+    embed = discord.Embed(title=f"🛡️ Duyệt meme #{meme['id']} ({len(pending)} đang chờ)", description=f"**Tên:** {names_text}\n**Người gửi:** {submitter_name}", color=15105570)
     embed.set_image(url=meme['image_url'])
     embed.set_footer(text='⚠️ Kiểm tra kỹ nội dung 18+/khiêu dâm trước khi duyệt!')
     return embed
@@ -823,7 +880,7 @@ class MemeReviewView(discord.ui.View):
             await interaction.response.edit_message(content=f'{result_line}\n✅ Hàng chờ đã hết, không còn meme nào để duyệt.', embed=None, view=None)
             return
         next_meme = pending[0]
-        embed = _meme_review_embed(next_meme)
+        embed = await _meme_review_embed(next_meme)
         next_view = MemeReviewView(next_meme['id'])
         await interaction.response.edit_message(content=result_line, embed=embed, view=next_view)
 
@@ -856,9 +913,11 @@ async def meme_slash(interaction: discord.Interaction):
         return
     url, ok = games.meme_start(cid, interaction.user.id)
     if not ok:
-        await interaction.response.send_message('❌ Không thể bắt đầu ván meme lúc này.', ephemeral=True)
+        await interaction.response.send_message('❌ Bạn đã hết lượt chơi `/meme` hôm nay! Mua thêm 🎟️ Slot Vé Game ở `/shop` hoặc chờ mai nhé.', ephemeral=True)
         return
-    embed = discord.Embed(title=f'🎭 Đoán Meme TikTok (1/{games.MEME_ROUNDS_PER_GAME})', description=f'Chat thẳng tên meme để đoán! Mỗi câu đúng: **+{games.MEME_AURA_REWARD} Aura**.', color=15277667)
+    left = games.daily_games_left_today('meme', interaction.user.id)
+    submitter_name = await _get_display_name_no_ping(games.meme_current_submitter_id(cid))
+    embed = discord.Embed(title=f'🎭 Đoán Meme TikTok (1/{games.MEME_ROUNDS_PER_GAME})', description=f'Chat thẳng tên meme để đoán! Mỗi câu đúng: **+{games.MEME_AURA_REWARD} Aura**.\n🎟️ Lượt chơi còn lại hôm nay: **{left}**\n📤 Gửi bởi: **{submitter_name}**', color=15277667)
     embed.set_image(url=url)
     await interaction.response.send_message(embed=embed, view=EndGameView(cid, 'meme'))
 
