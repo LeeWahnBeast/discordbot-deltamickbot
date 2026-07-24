@@ -131,9 +131,9 @@ FLAG_POOLS = {'easy': FLAG_EASY, 'medium': FLAG_MEDIUM, 'hard': FLAG_HARD, 'insa
 FLAG_AURA_PER_DIFFICULTY = {'easy': 6, 'medium': 10, 'hard': 14, 'insane': 20, 'mythic': 28}
 FLAG_UNLOCK_SCORE_MYTHIC = 500
 ROUNDS_PER_GAME = 5
-FLAG_DAILY_FREE_GAMES = 5
+DAILY_FREE_GAMES = {'flag': 5, 'meme': 5, 'chess_bot': 5}
 _flag_games = {}
-_flag_daily_usage = {}
+_daily_usage = {}
 _flag_lifetime_score = {}
 
 def _today_key():
@@ -145,37 +145,37 @@ def flag_lifetime_score(user_id):
 def flag_mythic_unlocked(user_id):
     return flag_lifetime_score(user_id) >= FLAG_UNLOCK_SCORE_MYTHIC
 
-def flag_games_played_today(user_id):
+def _get_daily_usage(game_type, user_id):
     day = _today_key()
-    usage = _flag_daily_usage.get(user_id)
-    if not usage or usage['day'] != day:
-        return 0
-    return usage['count']
+    usage = _daily_usage.setdefault(game_type, {}).setdefault(user_id, {'day': day, 'count': 0, 'extra_slots': 0})
+    if usage['day'] != day:
+        usage['day'] = day
+        usage['count'] = 0
+        usage['extra_slots'] = 0
+    return usage
+
+def daily_games_played_today(game_type, user_id):
+    return _get_daily_usage(game_type, user_id)['count']
+
+def daily_games_left_today(game_type, user_id):
+    usage = _get_daily_usage(game_type, user_id)
+    limit = DAILY_FREE_GAMES[game_type] + usage['extra_slots']
+    return max(0, limit - usage['count'])
+
+def daily_add_slot(game_type, user_id):
+    _get_daily_usage(game_type, user_id)['extra_slots'] += 1
+
+def _consume_daily_slot(game_type, user_id):
+    _get_daily_usage(game_type, user_id)['count'] += 1
+
+def flag_games_played_today(user_id):
+    return daily_games_played_today('flag', user_id)
 
 def flag_games_left_today(user_id):
-    day = _today_key()
-    usage = _flag_daily_usage.get(user_id)
-    extra_slots = usage['extra_slots'] if usage and usage['day'] == day else 0
-    limit = FLAG_DAILY_FREE_GAMES + extra_slots
-    return max(0, limit - flag_games_played_today(user_id))
+    return daily_games_left_today('flag', user_id)
 
 def flag_add_daily_slot(user_id):
-    day = _today_key()
-    usage = _flag_daily_usage.setdefault(user_id, {'day': day, 'count': 0, 'extra_slots': 0})
-    if usage['day'] != day:
-        usage['day'] = day
-        usage['count'] = 0
-        usage['extra_slots'] = 0
-    usage['extra_slots'] += 1
-
-def _consume_daily_flag_slot(user_id):
-    day = _today_key()
-    usage = _flag_daily_usage.setdefault(user_id, {'day': day, 'count': 0, 'extra_slots': 0})
-    if usage['day'] != day:
-        usage['day'] = day
-        usage['count'] = 0
-        usage['extra_slots'] = 0
-    usage['count'] += 1
+    daily_add_slot('flag', user_id)
 
 def flag_active(cid):
     return cid in _flag_games
@@ -183,9 +183,9 @@ def flag_active(cid):
 def flag_start(cid, owner_id, difficulty):
     if difficulty == 'mythic' and (not flag_mythic_unlocked(owner_id)):
         return (None, False)
-    if flag_games_left_today(owner_id) <= 0:
+    if daily_games_left_today('flag', owner_id) <= 0:
         return (None, False)
-    _consume_daily_flag_slot(owner_id)
+    _consume_daily_slot('flag', owner_id)
     _flag_games[cid] = {'pool': FLAG_POOLS[difficulty], 'round': 0, 'score': 0, 'country': None, 'owner_id': owner_id, 'difficulty': difficulty}
     return (flag_next(cid), True)
 
@@ -236,9 +236,26 @@ def _meme_next_id():
     existing_ids = list(_meme_pending.keys()) + list(_meme_approved.keys())
     return max(existing_ids, default=0) + 1
 
+def _meme_find_by_url(image_url):
+    for meme in _meme_pending.values():
+        if meme['image_url'] == image_url:
+            return ('pending', meme)
+    for meme in _meme_approved.values():
+        if meme['image_url'] == image_url:
+            return ('approved', meme)
+    return (None, None)
+
 def meme_submit(image_url, name, submitter_id):
+    clean_name = name.strip()
+    where, existing = _meme_find_by_url(image_url)
+    if existing is not None:
+        if clean_name.lower() not in existing['names']:
+            existing['names'].append(clean_name.lower())
+            existing['display_names'].append(clean_name)
+            _firestore_save_doc(f'meme_{where}', existing['id'], existing)
+        return existing['id']
     meme_id = _meme_next_id()
-    entry = {'id': meme_id, 'image_url': image_url, 'name': name.strip().lower(), 'display_name': name.strip(), 'submitter_id': submitter_id, 'submitted_at': time.time()}
+    entry = {'id': meme_id, 'image_url': image_url, 'names': [clean_name.lower()], 'display_names': [clean_name], 'submitter_id': submitter_id, 'submitted_at': time.time()}
     _meme_pending[meme_id] = entry
     _firestore_save_doc('meme_pending', meme_id, entry)
     return meme_id
@@ -275,6 +292,9 @@ def meme_active(cid):
 def meme_start(cid, owner_id):
     if len(_meme_approved) < 3:
         return (None, False)
+    if daily_games_left_today('meme', owner_id) <= 0:
+        return (None, False)
+    _consume_daily_slot('meme', owner_id)
     _meme_games[cid] = {'round': 0, 'score': 0, 'current': None, 'owner_id': owner_id, 'used_ids': set()}
     return (meme_next(cid), True)
 
@@ -296,13 +316,16 @@ def meme_check(cid, guesser_id, guess):
     game = _meme_games[cid]
     if guesser_id != game['owner_id']:
         return ('not_owner', game['round'] < MEME_ROUNDS_PER_GAME)
-    correct = guess.strip().lower() == game['current']['name']
+    correct = guess.strip().lower() in game['current']['names']
     if correct:
         game['score'] += 1
     return (correct, game['round'] < MEME_ROUNDS_PER_GAME)
 
 def meme_answer(cid):
-    return _meme_games[cid]['current']['display_name']
+    return ' / '.join(_meme_games[cid]['current']['display_names'])
+
+def meme_current_submitter_id(cid):
+    return _meme_games[cid]['current']['submitter_id']
 
 def meme_progress(cid):
     g = _meme_games[cid]
@@ -372,9 +395,12 @@ def chess_force_reset(cid):
     return existed
 
 def chess_start(cid, player_id, bot_elo=1200):
+    if daily_games_left_today('chess_bot', player_id) <= 0:
+        return (False, False)
+    _consume_daily_slot('chess_bot', player_id)
     dumbed = shop_consume_cu_cai(player_id)
     _chess_games[cid] = {'board': chess.Board(), 'is_pvp': False, 'player_id': player_id, 'player_color': chess.WHITE, 'last_move_at': time.time(), 'bot_elo': bot_elo, 'last_move': None, 'bot_dumbed': dumbed}
-    return dumbed
+    return (dumbed, True)
 
 def chess_start_pvp(cid, white_id, black_id, time_mode=CHESS_DEFAULT_TIME_MODE):
     cfg = CHESS_TIME_MODES[time_mode]
@@ -418,7 +444,7 @@ SHOP_ITEMS = {
     'elo_100': {'emoji': '🥶', 'name': 'Mua Tài (100 Elo)', 'currency': 'aura', 'price': 50, 'stock': 8, 'rarity': 'common', 'appear_chance': 1.0, 'desc': '📈 +100 Elo ngay lập tức, không cần thắng, không cần chơi, không cần liêm sỉ.\n🐐 Messi mà thấy giá này chắc cũng phải khóc vì rẻ.'},
     'elo10': {'emoji': '💠', 'name': '10 Elo', 'currency': 'aura', 'price': 5, 'stock': 20, 'rarity': 'common', 'appear_chance': 1.0, 'desc': '📈 +10 Elo bé xíu, dành cho người mua tài mà vẫn muốn giữ chút liêm sỉ.\n🐜 Chưa đủ để flex nhưng đủ để tự lừa bản thân là đang tiến bộ.'},
     'hint_free': {'emoji': '💡', 'name': 'Gợi Ý Miễn Phí', 'currency': 'aura', 'price': 120, 'stock': 5, 'rarity': 'common', 'appear_chance': 1.0, 'desc': '🎯 Dùng 1 lần — hỏi bài mà không bị trừ điểm, sung sướng như quay cóp trót lọt.\n🧠 Não bạn nghỉ hưu sớm, bot lo hết.'},
-    'flag_slot': {'emoji': '🎟️', 'name': 'Slot Đoán Cờ', 'currency': 'aura', 'price': 80, 'stock': 6, 'rarity': 'common', 'appear_chance': 1.0, 'desc': '📈 +1 lượt chơi /flag hôm nay, vượt giới hạn 5 ván/ngày.\n🌾 Nghiện đoán cờ thì Folk Valley không cản, chỉ cần trả tiền vé.'},
+    'flag_slot': {'emoji': '🎟️', 'name': 'Slot Vé Game', 'currency': 'aura', 'price': 80, 'stock': 6, 'rarity': 'common', 'appear_chance': 1.0, 'desc': '📈 +1 lượt chơi hôm nay cho /flag, /meme VÀ cờ vua vs Bot (vượt giới hạn 5 vé/ngày mỗi loại).\n🌾 Nghiện game thì Folk Valley không cản, chỉ cần trả tiền vé.'},
     'aura_500': {'emoji': '💰', 'name': 'Túi Aura (500)', 'currency': 'elo', 'price': 250, 'stock': 5, 'rarity': 'uncommon', 'appear_chance': 0.75, 'desc': '💸 Bán 250 Elo lấy 500 Aura — vay nóng lãi cắt cổ nhưng tự nguyện.\n🏦 Tín dụng đen phiên bản cờ vua, không ai ép bạn cả.'},
     'shield_timeout': {'emoji': '🛡️', 'name': 'Khiên Hết Giờ', 'currency': 'aura', 'price': 350, 'stock': 3, 'rarity': 'uncommon', 'appear_chance': 0.75, 'desc': '🎯 Dùng 1 lần — cộng free 60 giây để nghĩ nước đi cho thiên tài chậm tiêu.\n🐢 Rùa cũng có ngày về đích, miễn là mua đủ khiên.'},
     'trong_tai': {'emoji': '⚖️', 'name': 'Trọng Tài Chess (PvP)', 'currency': 'aura', 'price': 450, 'stock': 3, 'rarity': 'uncommon', 'appear_chance': 0.6, 'desc': '🎯 Dùng 1 lần — mua đứt ông trọng tài trận PvP tiếp theo.\n🛡️ Thổi còi thiên vị bạn công khai giữa thanh thiên bạch nhật.\n🤫 "Đây là quyết định cuối cùng, không khiếu nại" — trọng tài, vừa nhận phong bì.'},
@@ -426,7 +452,7 @@ SHOP_ITEMS = {
     'cu_cai': {'emoji': '🥕', 'name': 'Củ Cải', 'currency': 'aura', 'price': 500, 'stock': 2, 'rarity': 'rare', 'appear_chance': 0.35, 'desc': '🎯 Dùng 1 lần — nhét củ cải vào não Chess Bot:\n🤯 IQ bot rớt về âm, đi cờ như đang say rượu ngoài quán nhậu.\n♟️ Thua ván này thì thôi khỏi chơi cờ luôn đi bạn ơi. 💀🥶'},
     'mango_mustard': {'emoji': '🥭', 'name': 'Mango Mustard', 'currency': 'aura', 'price': 666, 'stock': 1, 'rarity': 'legendary', 'appear_chance': 0.15, 'desc': '🎯 Dùng 1 lần — sốt mù tạt xoài huyền thoại, không ai hiểu công thức nhưng ai cũng sợ.\n💥 Ăn vào +50 Aura NGAY LẬP TỨC vì can đảm thử món này xứng đáng được thưởng.\n🤢 Tác dụng phụ: ám ảnh vị giác vĩnh viễn.'},
     'ronaldo_pasta': {'emoji': '🍝', 'name': 'Ronaldo Pasta', 'currency': 'elo', 'price': 500, 'stock': 1, 'rarity': 'legendary', 'appear_chance': 0.15, 'desc': '🎯 Dùng 1 lần — đĩa mì Ý SIUUUU chính hiệu, ăn vào tự tin thái quá.\n📈 +150 Elo NGAY LẬP TỨC vì tự tin cũng là một loại sức mạnh.\n⚠️ Cảnh báo: có thể khiến bạn ăn mừng quá lố sau mỗi nước đi.'},
-    'role_gubby': {'emoji': '🐹', 'name': 'Role Gubby', 'currency': 'aura', 'price': 1900, 'stock': 1, 'rarity': 'legendary', 'appear_chance': 0.2, 'desc': '🎖️ Vĩnh viễn thành Gubby chính hiệu, không hoàn không đổi trả.\n🐹 Một khi đã Gubby thì Gubby cả đời, hối hận cũng muộn rồi.'},
+    'role_gubby': {'emoji': '🐹', 'name': 'Role Gubby', 'currency': 'aura', 'price': 3100, 'stock': 1, 'rarity': 'legendary', 'appear_chance': 0.2, 'desc': '🎖️ Vĩnh viễn thành Gubby chính hiệu, không hoàn không đổi trả.\n🐹 Một khi đã Gubby thì Gubby cả đời, hối hận cũng muộn rồi.'},
 }
 RARITY_LABEL = {'common': '⚪ Thường', 'uncommon': '🟢 Ít gặp', 'rare': '🔵 Hiếm', 'legendary': '🟣 Huyền thoại'}
 _user_buffs = {}
@@ -529,7 +555,9 @@ def shop_buy(user_id, item_key):
     elif item_key == 'shield_timeout':
         buffs['shield_timeout'] += 1
     elif item_key == 'flag_slot':
-        flag_add_daily_slot(user_id)
+        daily_add_slot('flag', user_id)
+        daily_add_slot('meme', user_id)
+        daily_add_slot('chess_bot', user_id)
     elif item_key == 'mango_mustard':
         add_aura(user_id, 50)
     elif item_key == 'ronaldo_pasta':
