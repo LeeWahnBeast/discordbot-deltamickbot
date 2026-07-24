@@ -279,8 +279,31 @@ def _meme_normalize(text):
     return text
 MEME_PENDING_FILE = 'meme_pending.json'
 MEME_APPROVED_FILE = 'meme_approved.json'
-_meme_pending = _firestore_load_collection('meme_pending', MEME_PENDING_FILE)
-_meme_approved = _firestore_load_collection('meme_approved', MEME_APPROVED_FILE)
+
+def _meme_repair_entry(meme):
+    changed = False
+    if 'names' not in meme or not meme['names']:
+        fallback = meme.get('name') or meme.get('answer') or meme.get('display_name') or 'unknown'
+        meme['names'] = [str(fallback).strip().lower()]
+        changed = True
+    if 'display_names' not in meme or not meme['display_names']:
+        meme['display_names'] = [n for n in meme['names']]
+        changed = True
+    return (meme, changed)
+
+def _meme_load_and_repair(collection_name, fallback_file):
+    raw = _firestore_load_collection(collection_name, fallback_file)
+    fixed = {}
+    for mid, m in raw.items():
+        meme, changed = _meme_repair_entry(m)
+        if changed:
+            _firestore_save_doc(collection_name, mid, meme)
+            print(f'🔧 Đã vá meme #{mid} trong {collection_name} (thiếu names/display_names).')
+        fixed[mid] = meme
+    return fixed
+
+_meme_pending = _meme_load_and_repair('meme_pending', MEME_PENDING_FILE)
+_meme_approved = _meme_load_and_repair('meme_approved', MEME_APPROVED_FILE)
 _meme_games = {}
 
 def _meme_next_id():
@@ -321,6 +344,7 @@ def meme_approve(meme_id, reviewer_id):
     meme = _meme_pending.pop(meme_id, None)
     if meme is None:
         return False
+    meme, _ = _meme_repair_entry(meme)
     meme['approved_by'] = reviewer_id
     meme['approved_at'] = time.time()
     _meme_approved[meme_id] = meme
@@ -358,6 +382,7 @@ def meme_next(cid):
         pool = list(_meme_approved.values())
         game['used_ids'] = set()
     meme = random.choice(pool)
+    meme, _ = _meme_repair_entry(meme)
     game['used_ids'].add(meme['id'])
     game['current'] = meme
     game['round'] += 1
