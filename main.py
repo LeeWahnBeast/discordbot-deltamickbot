@@ -1,6 +1,8 @@
 import discord
 import os
 import time
+import random
+import asyncio
 import web_server
 import games
 from discord.ext import commands
@@ -956,6 +958,29 @@ async def meme_slash(interaction: discord.Interaction):
     embed = discord.Embed(title=f'🎭 Đoán Meme TikTok (1/{games.MEME_ROUNDS_PER_GAME})', description=f'Chat thẳng tên meme để đoán! Mỗi câu đúng: **+{games.MEME_AURA_REWARD} Aura**.\n🎟️ Lượt chơi còn lại hôm nay: **{left}**\n📤 Gửi bởi: **{submitter_name}**', color=15277667)
     embed.set_image(url=url)
     await interaction.response.send_message(embed=embed, view=EndGameView(cid, 'meme'))
+
+NITRO_LOAD_STEPS = [12, 27, 41, 58, 73, 86, 94, 100]
+
+def _nitro_bar(percent):
+    filled = round(percent / 100 * 8)
+    bar = '▰' * filled + '▱' * (8 - filled)
+    return f'{bar} `{percent}%`'
+
+def _nitro_fake_code():
+    chars = 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789'
+    return ''.join(random.choice(chars) for _ in range(16))
+
+@bot.tree.command(name='nitro_generate', description='🎁 "Generate" Nitro (troll — không phải Nitro thật đâu 🤣)')
+async def nitro_generate_slash(interaction: discord.Interaction):
+    embed = discord.Embed(title='🎁 Đang generate Discord Nitro...', description=_nitro_bar(0), color=5793266)
+    await interaction.response.send_message(embed=embed)
+    for percent in NITRO_LOAD_STEPS:
+        await asyncio.sleep(random.uniform(0.4, 0.9))
+        embed.description = _nitro_bar(percent)
+        await interaction.edit_original_response(embed=embed)
+    fake_code = _nitro_fake_code()
+    result_embed = discord.Embed(title='🎉 Generate thành công!', description=f'Link Nitro của bạn:\nhttps://discord.gift/{fake_code}\n\n⚠️ (Troll thôi nha, Nitro free kiểu này không tồn tại đâu 🤣)', color=15844367)
+    await interaction.edit_original_response(embed=result_embed)
 
 web_server.keep_alive()
 bot.run(os.environ['DISCORD_KEY'])
