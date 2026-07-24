@@ -414,6 +414,16 @@ def meme_end(cid):
     _meme_games.pop(cid, None)
 
 LOTTERY_PROVINCES = ['Folk Valley', 'Ohio', 'Thành phố Delta', 'Shess Cex', 'Larp', 'Oliver Mango', 'Penaldo Pasta', 'Tỉnh Beast', 'Sinecraft Mex', 'Meow Meow']
+LOTTERY_WEEKDAY_LABELS = ['Thứ hai', 'Thứ ba', 'Thứ tư', 'Thứ năm', 'Thứ sáu', 'Thứ bảy', 'Chủ nhật']
+LOTTERY_WEEKDAY_PROVINCES = {
+    0: ['Folk Valley', 'Ohio', 'Thành phố Delta'],
+    1: ['Shess Cex', 'Larp', 'Oliver Mango'],
+    2: ['Penaldo Pasta', 'Tỉnh Beast', 'Sinecraft Mex'],
+    3: ['Meow Meow', 'Folk Valley', 'Ohio'],
+    4: ['Thành phố Delta', 'Shess Cex', 'Larp'],
+    5: ['Oliver Mango', 'Penaldo Pasta', 'Tỉnh Beast'],
+    6: ['Sinecraft Mex', 'Meow Meow', 'Folk Valley'],
+}
 LOTTERY_TICKET_PRICE = 10
 LOTTERY_CHECK_PRICE = 50
 LOTTERY_STOCK_TOTAL = 150
@@ -443,6 +453,15 @@ def _vn_today_key():
 
 def _vn_now():
     return time.gmtime(time.time() + 7 * 3600)
+
+def lottery_today_provinces():
+    return LOTTERY_WEEKDAY_PROVINCES[_vn_now().tm_wday]
+
+def lottery_today_label():
+    now = _vn_now()
+    weekday = LOTTERY_WEEKDAY_LABELS[now.tm_wday]
+    date_str = time.strftime('%d/%m/%Y', now)
+    return (weekday, date_str)
 
 def lottery_sale_open():
     return _vn_now().tm_hour < LOTTERY_SALE_CLOSE_HOUR
@@ -493,7 +512,7 @@ def lottery_buy(user_id):
     add_aura(user_id, -LOTTERY_TICKET_PRICE)
     state['remaining'] -= 1
     _firestore_save_doc('lottery_stock', 0, state)
-    province = random.choice(LOTTERY_PROVINCES)
+    province = random.choice(lottery_today_provinces())
     number = f'{random.randint(0, 999999):06d}'
     ticket_id = _lottery_next_ticket_id
     _lottery_next_ticket_id += 1
@@ -517,14 +536,11 @@ def lottery_result_announced(ticket):
         return True
     return not lottery_sale_open()
 
-def lottery_board_text(province, day_key):
+def lottery_board_table(province, day_key):
     board = _lottery_province_board(province, day_key)
     label_width = max((len(label) for label, _ in board))
-    rows = []
-    for label, numbers in board:
-        rows.append(f'{label.ljust(label_width)} : {"  ".join(numbers)}')
-    table = '\n'.join(rows)
-    return f'🎫 **KẾT QUẢ XỔ SỐ — {province.upper()}** (ngày {day_key})\n```\n{table}\n```'
+    rows = [f'{label.ljust(label_width)} : {"  ".join(numbers)}' for label, numbers in board]
+    return '```\n' + '\n'.join(rows) + '\n```'
 
 def lottery_check_ticket(ticket_id):
     ticket = _lottery_tickets.get(ticket_id)
@@ -955,9 +971,22 @@ def get_piece_theme_url(user_id, piece_type, color):
     return d.get(_piece_key(piece_type, color)) if d else None
 
 def set_piece_theme(user_id, key, url):
+    raw = _fetch_image_bytes(url)
+    if raw is None:
+        return False
+    try:
+        img = Image.open(io.BytesIO(raw)).convert('RGBA').resize((_SQUARE_PX, _SQUARE_PX), Image.LANCZOS)
+        buf = io.BytesIO()
+        img.save(buf, format='PNG')
+        stored_value = 'b64:' + base64.b64encode(buf.getvalue()).decode('ascii')
+    except Exception as e:
+        print(f'[custom_chess] Ảnh tải được nhưng không đọc được (không phải ảnh hợp lệ?) từ {url}: {e!r}')
+        return False
     d = _piece_theme_cache.setdefault(user_id, {})
-    d[key] = url
+    d[key] = stored_value
     _firestore_save_doc('chess_piece_theme', user_id, d)
+    _piece_sprite_cache.pop(stored_value, None)
+    return True
 
 def clear_piece_theme(user_id, key=None):
     d = _piece_theme_cache.get(user_id)
@@ -971,24 +1000,36 @@ def clear_piece_theme(user_id, key=None):
     _firestore_save_doc('chess_piece_theme', user_id, d)
     return existed
 
-def _load_piece_sprite(url):
-    if url in _piece_sprite_cache:
-        _piece_sprite_cache.move_to_end(url)
-        return _piece_sprite_cache[url]
+def _fetch_image_bytes(url):
     try:
         req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
-        with urllib.request.urlopen(req, timeout=6) as resp:
-            raw = resp.read()
+        with urllib.request.urlopen(req, timeout=8) as resp:
+            return resp.read()
+    except Exception as e:
+        print(f'[custom_chess] Không tải được ảnh từ {url}: {e!r}')
+        return None
+
+def _load_piece_sprite(value):
+    if value in _piece_sprite_cache:
+        _piece_sprite_cache.move_to_end(value)
+        return _piece_sprite_cache[value]
+    try:
+        if value.startswith('b64:'):
+            raw = base64.b64decode(value[4:])
+        else:
+            raw = _fetch_image_bytes(value)
+            if raw is None:
+                raise ValueError('fetch failed')
         sprite = Image.open(io.BytesIO(raw)).convert('RGBA').resize((_SQUARE_PX, _SQUARE_PX), Image.LANCZOS)
     except Exception as e:
-        print(f'[custom_chess] Không tải/đọc được ảnh từ {url}: {e!r}')
-        _piece_sprite_cache[url] = None
-        _piece_sprite_cache.move_to_end(url)
+        print(f'[custom_chess] Không đọc được ảnh: {e!r}')
+        _piece_sprite_cache[value] = None
+        _piece_sprite_cache.move_to_end(value)
         if len(_piece_sprite_cache) > _PIECE_SPRITE_CACHE_MAX:
             _piece_sprite_cache.popitem(last=False)
         return None
-    _piece_sprite_cache[url] = sprite
-    _piece_sprite_cache.move_to_end(url)
+    _piece_sprite_cache[value] = sprite
+    _piece_sprite_cache.move_to_end(value)
     if len(_piece_sprite_cache) > _PIECE_SPRITE_CACHE_MAX:
         _piece_sprite_cache.popitem(last=False)
     return sprite
