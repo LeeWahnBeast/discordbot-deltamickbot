@@ -519,10 +519,12 @@ def lottery_result_announced(ticket):
 
 def lottery_board_text(province, day_key):
     board = _lottery_province_board(province, day_key)
-    lines = [f'🎫 **KẾT QUẢ XỔ SỐ — {province.upper()}** (ngày {day_key})']
+    label_width = max((len(label) for label, _ in board))
+    rows = []
     for label, numbers in board:
-        lines.append(f'**{label}:** {" - ".join(numbers)}')
-    return '\n'.join(lines)
+        rows.append(f'{label.ljust(label_width)} : {"  ".join(numbers)}')
+    table = '\n'.join(rows)
+    return f'🎫 **KẾT QUẢ XỔ SỐ — {province.upper()}** (ngày {day_key})\n```\n{table}\n```'
 
 def lottery_check_ticket(ticket_id):
     ticket = _lottery_tickets.get(ticket_id)
