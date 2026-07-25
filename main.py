@@ -1084,8 +1084,8 @@ def _garden_embed(user_id, status=None):
     embed.set_image(url='attachment://nongtrai.png')
     return embed
 
-def _garden_file(user_id):
-    return discord.File(games.farm_render_image(user_id), filename='nongtrai.png')
+def _garden_file(user_id, status=None):
+    return discord.File(games.farm_render_image(user_id, status), filename='nongtrai.png')
 
 def _seed_option_desc(seed_key):
     seed = games.FARM_SEEDS[seed_key]
@@ -1263,7 +1263,8 @@ class GardenView(discord.ui.View):
 
 @bot.tree.command(name='vuon', description='🌾 Mở khu vườn của bạn — mua hạt, trồng, tưới, thu hoạch, bán')
 async def vuon_slash(interaction: discord.Interaction):
-    await interaction.response.send_message(embed=_garden_embed(interaction.user.id), file=_garden_file(interaction.user.id), view=GardenView(interaction.user.id))
+    status = games.farm_status(interaction.user.id)
+    await interaction.response.send_message(embed=_garden_embed(interaction.user.id, status), file=_garden_file(interaction.user.id, status), view=GardenView(interaction.user.id))
 
 @bot.tree.command(name='nhapcode', description='🎁 Nhập code để nhận thưởng Aura/Aura+/hạt giống')
 @app_commands.describe(code='Mã code (phân biệt hoa thường)')
