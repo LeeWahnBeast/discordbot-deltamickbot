@@ -1305,5 +1305,38 @@ async def admin_congaura_slash(interaction: discord.Interaction, nguoi: discord.
     new_balance = games.add_aura(nguoi.id, so_luong)
     await interaction.response.send_message(f"👑 Đã cộng **{so_luong}** Aura cho {nguoi.mention}. Số dư hiện tại: **{new_balance}**.", ephemeral=True)
 
+@bot.tree.command(name='bangxephang', description='🏆 Xem bảng xếp hạng Aura hoặc Elo')
+@app_commands.describe(loai='Xếp theo Aura hay Elo')
+@app_commands.choices(loai=[app_commands.Choice(name='Aura', value='aura'), app_commands.Choice(name='Elo', value='elo')])
+async def bangxephang_slash(interaction: discord.Interaction, loai: app_commands.Choice[str] = None):
+    key = loai.value if loai else 'aura'
+    top = games.top_aura(10) if key == 'aura' else games.top_elo(10)
+    title = '🏆 Top 10 Aura' if key == 'aura' else '🏆 Top 10 Elo'
+    if not top:
+        await interaction.response.send_message('_(Chưa có dữ liệu xếp hạng)_', ephemeral=True)
+        return
+    medals = ['🥇', '🥈', '🥉']
+    lines = []
+    for i, (uid, value) in enumerate(top):
+        rank = medals[i] if i < 3 else f'#{i + 1}'
+        lines.append(f"{rank} <@{uid}> — **{value}**{' Aura' if key == 'aura' else ' Elo'}")
+    embed = discord.Embed(title=title, description='\n'.join(lines), color=15844367)
+    await interaction.response.send_message(embed=embed)
+
+@bot.tree.command(name='help', description='📖 Xem danh sách tất cả lệnh của bot')
+async def help_slash(interaction: discord.Interaction):
+    embed = discord.Embed(title='📖 Danh Sách Lệnh', description='Toàn bộ slash command hiện có:', color=3447003)
+    lines = [f"`/{cmd.name}` — {cmd.description}" for cmd in sorted(bot.tree.get_commands(), key=lambda c: c.name)]
+    chunk, chunk_len, part = [], 0, 1
+    for line in lines:
+        if chunk_len + len(line) + 1 > 1000:
+            embed.add_field(name=f'Lệnh (phần {part})', value='\n'.join(chunk), inline=False)
+            chunk, chunk_len, part = [], 0, part + 1
+        chunk.append(line)
+        chunk_len += len(line) + 1
+    if chunk:
+        embed.add_field(name=f'Lệnh (phần {part})', value='\n'.join(chunk), inline=False)
+    await interaction.response.send_message(embed=embed, ephemeral=True)
+
 web_server.keep_alive()
 bot.run(os.environ['DISCORD_KEY'])
