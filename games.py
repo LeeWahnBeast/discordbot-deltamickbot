@@ -186,7 +186,7 @@ FLAG_POOLS = {'easy': FLAG_EASY, 'medium': FLAG_MEDIUM, 'hard': FLAG_HARD, 'insa
 FLAG_AURA_PER_DIFFICULTY = {'easy': 6, 'medium': 10, 'hard': 14, 'insane': 20, 'mythic': 28}
 FLAG_UNLOCK_SCORE_MYTHIC = 500
 ROUNDS_PER_GAME = 5
-DAILY_FREE_GAMES = {'flag': 5, 'meme': 5, 'chess_bot': 5, 'wordle': 5}
+DAILY_FREE_GAMES = {'flag': 5, 'toan': 5, 'chess_bot': 5, 'wordle': 5}
 _flag_games = {}
 _daily_usage = {}
 _flag_lifetime_score = {}
@@ -279,152 +279,220 @@ def flag_owner(cid):
 def flag_end(cid):
     _flag_games.pop(cid, None)
 
-MEME_ROUNDS_PER_GAME = 5
-MEME_AURA_REWARD = 12
+# ==================== GAME GIẢI TOÁN (/toan) ====================
+TOAN_TIME_LIMIT_SECONDS = 30
+TOAN_UPDATE_INTERVAL_SECONDS = 10
+TOAN_MAX_LIVES = 10
+TOAN_EASY_REWARD = 100
+TOAN_EASY_TAX_RATE = 0.5
+TOAN_MED_HARD_REWARD = 10
+LATEX_RENDER_BASE = 'https://latex.codecogs.com/png.image?\\dpi{200}'
 
-def _meme_normalize(text):
+def _latex_url(expr):
+    return LATEX_RENDER_BASE + urllib.parse.quote(expr)
+
+def _toan_rand_grade():
+    grade = random.randint(1, 12)
+    if grade <= 5:
+        tier = 'easy'
+    elif grade == 6:
+        tier = 'medium'
+    else:
+        tier = 'hard'
+    return (grade, tier)
+
+def _toan_gen_easy(grade):
+    # Lớp 1-5: cộng trừ nhân chia cơ bản
+    kind = random.choice(['add', 'sub', 'mul', 'div'])
+    if grade <= 2:
+        a, b = random.randint(1, 20), random.randint(1, 20)
+    elif grade <= 3:
+        a, b = random.randint(1, 100), random.randint(1, 100)
+    else:
+        a, b = random.randint(1, 500), random.randint(1, 500)
+    if kind == 'add':
+        expr = f'{a} + {b}'
+        answer = a + b
+    elif kind == 'sub':
+        if a < b:
+            a, b = b, a
+        expr = f'{a} - {b}'
+        answer = a - b
+    elif kind == 'mul':
+        a, b = random.randint(2, 12), random.randint(2, 12)
+        expr = f'{a} \\times {b}'
+        answer = a * b
+    else:
+        b = random.randint(2, 12)
+        answer = random.randint(2, 20)
+        a = b * answer
+        expr = f'{a} \\div {b}'
+    question_text = f'Tính: {expr.replace(chr(92) + "times", "x").replace(chr(92) + "div", ":")}'
+    return (question_text, _latex_url(expr), str(answer), f'{expr} = {answer}')
+
+def _toan_gen_medium():
+    # Lớp 6: số âm, phân số đơn giản, tỉ lệ phần trăm, luỹ thừa nhỏ
+    kind = random.choice(['neg_add', 'percent', 'pow', 'frac_add'])
+    if kind == 'neg_add':
+        a = random.randint(-50, 50)
+        b = random.randint(-50, 50)
+        expr = f'({a}) + ({b})'
+        answer = a + b
+        solution = f'{expr} = {answer}'
+        q = f'Tính: {a} + ({b})'
+    elif kind == 'percent':
+        percent = random.choice([10, 20, 25, 50, 75])
+        total = random.choice([40, 80, 120, 200, 400])
+        answer = total * percent // 100
+        expr = f'{percent}\\% \\times {total}'
+        q = f'Tính {percent}% của {total}'
+        solution = f'{percent}\\% \\times {total} = {answer}'
+    elif kind == 'pow':
+        base = random.randint(2, 9)
+        exp = random.randint(2, 3)
+        answer = base ** exp
+        expr = f'{base}^{{{exp}}}'
+        q = f'Tính: {base}^{exp}'
+        solution = f'{expr} = {answer}'
+    else:
+        d = random.choice([2, 3, 4, 5, 6])
+        n1 = random.randint(1, d - 1)
+        n2 = random.randint(1, d - 1)
+        num = n1 + n2
+        answer_frac = f'{num}/{d}'
+        expr = f'\\frac{{{n1}}}{{{d}}} + \\frac{{{n2}}}{{{d}}}'
+        q = f'Tính: {n1}/{d} + {n2}/{d} (dạng phân số tối giản)'
+        import math as _math
+        g = _math.gcd(num, d)
+        answer = f'{num // g}/{d // g}'
+        solution = f'{expr} = \\frac{{{num}}}{{{d}}} = {answer}'
+        return (q, _latex_url(expr), answer, solution)
+    return (q, _latex_url(expr), str(answer), solution)
+
+def _toan_gen_hard():
+    # Lớp 7-12: hệ trục toạ độ, căn bậc, phương trình bậc 2 đơn giản, hằng đẳng thức
+    kind = random.choice(['coord_distance', 'sqrt', 'quadratic_identity', 'linear_eq'])
+    if kind == 'coord_distance':
+        x1, y1 = random.randint(-10, 10), random.randint(-10, 10)
+        dx, dy = random.choice([(3, 4), (6, 8), (5, 12), (9, 12), (8, 15)])
+        x2, y2 = x1 + dx, y1 + dy
+        answer = int((dx ** 2 + dy ** 2) ** 0.5)
+        expr = f'A({x1};{y1}),\\ B({x2};{y2})'
+        q = f'Trong hệ trục toạ độ Oxy, cho A({x1};{y1}) và B({x2};{y2}). Tính độ dài đoạn AB.'
+        solution = f'AB = \\sqrt{{({x2}-({x1}))^2+({y2}-({y1}))^2}} = \\sqrt{{{dx}^2+{dy}^2}} = {answer}'
+    elif kind == 'sqrt':
+        base = random.choice([4, 9, 16, 25, 36, 49, 64, 81, 100, 121, 144])
+        answer = int(base ** 0.5)
+        expr = f'\\sqrt{{{base}}}'
+        q = f'Tính căn bậc hai: √{base}'
+        solution = f'\\sqrt{{{base}}} = {answer}'
+    elif kind == 'quadratic_identity':
+        a, b = random.randint(1, 9), random.randint(1, 9)
+        expr = f'(x+{a})(x-{a})'
+        answer = f'x^2 - {a * a}'
+        q = f'Khai triển hằng đẳng thức: (x+{a})(x-{a})'
+        solution = f'(x+{a})(x-{a}) = x^2 - {a}^2 = x^2 - {a * a}'
+    else:
+        a = random.randint(2, 9)
+        x = random.randint(-10, 10)
+        b = random.randint(-20, 20)
+        c = a * x + b
+        expr = f'{a}x + ({b}) = {c}'
+        answer = str(x)
+        q = f'Giải phương trình: {a}x + ({b}) = {c}, tìm x'
+        solution = f'{a}x = {c} - ({b}) \\Rightarrow x = {x}'
+    return (q, _latex_url(expr), str(answer), solution)
+
+def toan_generate_question():
+    grade, tier = _toan_rand_grade()
+    if tier == 'easy':
+        q, img, answer, solution = _toan_gen_easy(grade)
+        reward, tax_rate = (TOAN_EASY_REWARD, TOAN_EASY_TAX_RATE)
+    elif tier == 'medium':
+        q, img, answer, solution = _toan_gen_medium()
+        reward, tax_rate = (TOAN_MED_HARD_REWARD, 0.0)
+    else:
+        q, img, answer, solution = _toan_gen_hard()
+        reward, tax_rate = (TOAN_MED_HARD_REWARD, 0.0)
+    tier_label = {'easy': f'Dễ (Lớp {grade})', 'medium': f'Trung bình (Lớp {grade})', 'hard': f'Khó (Lớp {grade})'}[tier]
+    return {'question': q, 'image_url': img, 'answer': str(answer).strip(), 'solution': solution, 'solution_image_url': _latex_url(solution), 'reward': reward, 'tax_rate': tax_rate, 'tier_label': tier_label, 'grade': grade}
+
+def _toan_normalize_answer(text):
     text = text.strip().lower()
-    text = unicodedata.normalize('NFD', text)
-    text = ''.join(ch for ch in text if unicodedata.category(ch) != 'Mn')
-    text = text.replace('đ', 'd')
-    text = re.sub(r'[^a-z0-9\s]', '', text)
-    text = re.sub(r'\s+', ' ', text).strip()
+    text = text.replace(' ', '')
+    text = text.replace('x=', '')
     return text
-MEME_PENDING_FILE = 'meme_pending.json'
-MEME_APPROVED_FILE = 'meme_approved.json'
 
-def _meme_repair_entry(meme):
-    changed = False
-    if 'names' not in meme or not meme['names']:
-        fallback = meme.get('name') or meme.get('answer') or meme.get('display_name') or 'unknown'
-        meme['names'] = [str(fallback).strip().lower()]
-        changed = True
-    if 'display_names' not in meme or not meme['display_names']:
-        meme['display_names'] = [n for n in meme['names']]
-        changed = True
-    return (meme, changed)
+_toan_games = {}
 
-def _meme_load_and_repair(collection_name, fallback_file):
-    raw = _firestore_load_collection(collection_name, fallback_file)
-    fixed = {}
-    for mid, m in raw.items():
-        meme, changed = _meme_repair_entry(m)
-        if changed:
-            _firestore_save_doc(collection_name, mid, meme)
-            print(f'🔧 Đã vá meme #{mid} trong {collection_name} (thiếu names/display_names).')
-        fixed[mid] = meme
-    return fixed
+def toan_active(cid):
+    return cid in _toan_games
 
-_meme_pending = _meme_load_and_repair('meme_pending', MEME_PENDING_FILE)
-_meme_approved = _meme_load_and_repair('meme_approved', MEME_APPROVED_FILE)
-_meme_games = {}
-
-def _meme_next_id():
-    existing_ids = list(_meme_pending.keys()) + list(_meme_approved.keys())
-    return max(existing_ids, default=0) + 1
-
-def _meme_find_by_url(image_url):
-    for meme in _meme_pending.values():
-        if meme['image_url'] == image_url:
-            return ('pending', meme)
-    for meme in _meme_approved.values():
-        if meme['image_url'] == image_url:
-            return ('approved', meme)
-    return (None, None)
-
-def meme_submit(image_url, name, submitter_id):
-    clean_name = name.strip()
-    where, existing = _meme_find_by_url(image_url)
-    if existing is not None:
-        if clean_name.lower() not in existing['names']:
-            existing['names'].append(clean_name.lower())
-            existing['display_names'].append(clean_name)
-            _firestore_save_doc(f'meme_{where}', existing['id'], existing)
-        return existing['id']
-    meme_id = _meme_next_id()
-    entry = {'id': meme_id, 'image_url': image_url, 'names': [clean_name.lower()], 'display_names': [clean_name], 'submitter_id': submitter_id, 'submitted_at': time.time()}
-    _meme_pending[meme_id] = entry
-    _firestore_save_doc('meme_pending', meme_id, entry)
-    return meme_id
-
-def meme_pending_list():
-    return list(_meme_pending.values())
-
-def meme_pending_get(meme_id):
-    return _meme_pending.get(meme_id)
-
-def meme_approve(meme_id, reviewer_id):
-    meme = _meme_pending.pop(meme_id, None)
-    if meme is None:
-        return False
-    meme, _ = _meme_repair_entry(meme)
-    meme['approved_by'] = reviewer_id
-    meme['approved_at'] = time.time()
-    _meme_approved[meme_id] = meme
-    _firestore_save_doc('meme_approved', meme_id, meme)
-    _firestore_delete_doc('meme_pending', meme_id)
-    return True
-
-def meme_reject(meme_id, reviewer_id):
-    existed = _meme_pending.pop(meme_id, None) is not None
-    if existed:
-        _firestore_delete_doc('meme_pending', meme_id)
-    return existed
-
-def meme_pool_size():
-    return len(_meme_approved)
-
-def meme_active(cid):
-    return cid in _meme_games
-
-def meme_start(cid, owner_id):
-    if len(_meme_approved) < 3:
+def toan_start(cid, owner_id):
+    if daily_games_left_today('toan', owner_id) <= 0:
         return (None, False)
-    if daily_games_left_today('meme', owner_id) <= 0:
-        return (None, False)
-    _consume_daily_slot('meme', owner_id)
-    _meme_games[cid] = {'round': 0, 'score': 0, 'current': None, 'owner_id': owner_id, 'used_ids': set()}
-    return (meme_next(cid), True)
+    _consume_daily_slot('toan', owner_id)
+    q = toan_generate_question()
+    _toan_games[cid] = {'owner_id': owner_id, 'lives': TOAN_MAX_LIVES, 'solved': 0, 'total_aura': 0, 'current': q, 'round_token': 0}
+    return (q, True)
 
-def meme_next(cid):
-    game = _meme_games[cid]
-    if game['round'] >= MEME_ROUNDS_PER_GAME:
-        return None
-    pool = [m for mid, m in _meme_approved.items() if mid not in game['used_ids']]
-    if not pool:
-        pool = list(_meme_approved.values())
-        game['used_ids'] = set()
-    meme = random.choice(pool)
-    meme, _ = _meme_repair_entry(meme)
-    game['used_ids'].add(meme['id'])
-    game['current'] = meme
-    game['round'] += 1
-    return meme['image_url']
+def toan_current(cid):
+    return _toan_games[cid]['current']
 
-def meme_check(cid, guesser_id, guess):
-    game = _meme_games[cid]
+def toan_lives(cid):
+    return _toan_games[cid]['lives']
+
+def toan_owner(cid):
+    return _toan_games[cid]['owner_id']
+
+def toan_round_token(cid):
+    return _toan_games[cid]['round_token']
+
+def toan_check(cid, guesser_id, guess):
+    game = _toan_games[cid]
     if guesser_id != game['owner_id']:
-        return ('not_owner', game['round'] < MEME_ROUNDS_PER_GAME)
-    if game['current'] is None:
-        return (False, game['round'] < MEME_ROUNDS_PER_GAME)
-    guess_norm = _meme_normalize(guess)
-    correct = guess_norm != '' and guess_norm in {_meme_normalize(n) for n in game['current']['names']}
+        return 'not_owner'
+    correct_answer = _toan_normalize_answer(game['current']['answer'])
+    guess_norm = _toan_normalize_answer(guess)
+    correct = guess_norm != '' and guess_norm == correct_answer
     if correct:
-        game['score'] += 1
-    return (correct, game['round'] < MEME_ROUNDS_PER_GAME)
+        reward = game['current']['reward']
+        tax_rate = game['current']['tax_rate']
+        tax = round(reward * tax_rate)
+        net = reward - tax
+        if tax > 0:
+            add_aura(TAX_RECIPIENT_ID, tax)
+        new_balance = add_aura(guesser_id, net)
+        game['solved'] += 1
+        game['total_aura'] += net
+        return ('correct', net, tax, new_balance)
+    else:
+        game['lives'] -= 1
+        return ('wrong', 0, 0, get_aura(guesser_id))
 
-def meme_answer(cid):
-    return ' / '.join(_meme_games[cid]['current']['display_names'])
+def toan_timeout(cid):
+    game = _toan_games[cid]
+    game['lives'] -= 1
 
-def meme_current_submitter_id(cid):
-    return _meme_games[cid]['current']['submitter_id']
+def toan_next(cid):
+    game = _toan_games[cid]
+    if game['lives'] <= 0:
+        return None
+    q = toan_generate_question()
+    game['current'] = q
+    game['round_token'] += 1
+    return q
 
-def meme_progress(cid):
-    g = _meme_games[cid]
-    return (g['round'], MEME_ROUNDS_PER_GAME, g['score'])
+def toan_over(cid):
+    return _toan_games[cid]['lives'] <= 0
 
-def meme_end(cid):
-    _meme_games.pop(cid, None)
+def toan_summary(cid):
+    g = _toan_games[cid]
+    return (g['solved'], g['total_aura'], TOAN_MAX_LIVES - g['lives'])
+
+def toan_end(cid):
+    _toan_games.pop(cid, None)
+# ==================== HẾT GAME GIẢI TOÁN ====================
 
 LOTTERY_PROVINCES = ['Folk Valley', 'Ohio', 'Thành phố Delta', 'Shess Cex', 'Larp', 'Oliver Mango', 'Penaldo Pasta', 'Tỉnh Beast', 'Sinecraft Mex', 'Meow Meow']
 LOTTERY_WEEKDAY_LABELS = ['Thứ hai', 'Thứ ba', 'Thứ tư', 'Thứ năm', 'Thứ sáu', 'Thứ bảy', 'Chủ nhật']
@@ -715,7 +783,7 @@ SHOP_ITEMS = {
     'elo_100': {'emoji': '🥶', 'name': 'Mua Tài (100 Elo)', 'currency': 'aura', 'price': 50, 'stock': 8, 'rarity': 'common', 'appear_chance': 1.0, 'desc': '📈 +100 Elo ngay lập tức, không cần thắng, không cần chơi, không cần liêm sỉ.\n🐐 Messi mà thấy giá này chắc cũng phải khóc vì rẻ.'},
     'elo10': {'emoji': '💠', 'name': '10 Elo', 'currency': 'aura', 'price': 5, 'stock': 20, 'rarity': 'common', 'appear_chance': 1.0, 'desc': '📈 +10 Elo bé xíu, dành cho người mua tài mà vẫn muốn giữ chút liêm sỉ.\n🐜 Chưa đủ để flex nhưng đủ để tự lừa bản thân là đang tiến bộ.'},
     'hint_free': {'emoji': '💡', 'name': 'Gợi Ý Miễn Phí', 'currency': 'aura', 'price': 120, 'stock': 5, 'rarity': 'common', 'appear_chance': 1.0, 'desc': '🎯 Dùng 1 lần — hỏi bài mà không bị trừ điểm, sung sướng như quay cóp trót lọt.\n🧠 Não bạn nghỉ hưu sớm, bot lo hết.'},
-    'flag_slot': {'emoji': '🎟️', 'name': 'Slot Vé Game', 'currency': 'aura', 'price': 80, 'stock': 6, 'rarity': 'common', 'appear_chance': 1.0, 'desc': '📈 +1 lượt chơi hôm nay cho /wordle, /flag, /meme VÀ cờ vua vs Bot (vượt giới hạn 5 vé/ngày mỗi loại).\n🌾 Nghiện game thì Folk Valley không cản, chỉ cần trả tiền vé.'},
+    'flag_slot': {'emoji': '🎟️', 'name': 'Slot Vé Game', 'currency': 'aura', 'price': 80, 'stock': 6, 'rarity': 'common', 'appear_chance': 1.0, 'desc': '📈 +1 lượt chơi hôm nay cho /wordle, /flag, /toan VÀ cờ vua vs Bot (vượt giới hạn 5 vé/ngày mỗi loại).\n🌾 Nghiện game thì Folk Valley không cản, chỉ cần trả tiền vé.'},
     'aura_500': {'emoji': '💰', 'name': 'Túi Aura (500)', 'currency': 'elo', 'price': 250, 'stock': 5, 'rarity': 'uncommon', 'appear_chance': 0.75, 'desc': '💸 Bán 250 Elo lấy 500 Aura — vay nóng lãi cắt cổ nhưng tự nguyện.\n🏦 Tín dụng đen phiên bản cờ vua, không ai ép bạn cả.'},
     'shield_timeout': {'emoji': '🛡️', 'name': 'Khiên Hết Giờ', 'currency': 'aura', 'price': 350, 'stock': 3, 'rarity': 'uncommon', 'appear_chance': 0.75, 'desc': '🎯 Dùng 1 lần — cộng free 60 giây để nghĩ nước đi cho thiên tài chậm tiêu.\n🐢 Rùa cũng có ngày về đích, miễn là mua đủ khiên.'},
     'trong_tai': {'emoji': '⚖️', 'name': 'Trọng Tài Chess (PvP)', 'currency': 'aura', 'price': 450, 'stock': 3, 'rarity': 'uncommon', 'appear_chance': 0.6, 'desc': '🎯 Dùng 1 lần — mua đứt ông trọng tài trận PvP tiếp theo.\n🛡️ Thổi còi thiên vị bạn công khai giữa thanh thiên bạch nhật.\n🤫 "Đây là quyết định cuối cùng, không khiếu nại" — trọng tài, vừa nhận phong bì.'},
@@ -828,7 +896,7 @@ def shop_buy(user_id, item_key):
         buffs['shield_timeout'] += 1
     elif item_key == 'flag_slot':
         daily_add_slot('flag', user_id)
-        daily_add_slot('meme', user_id)
+        daily_add_slot('toan', user_id)
         daily_add_slot('chess_bot', user_id)
         daily_add_slot('wordle', user_id)
     elif item_key == 'mango_mustard':
