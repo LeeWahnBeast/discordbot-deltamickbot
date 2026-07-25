@@ -1444,8 +1444,13 @@ _farm_cache = {int(uid): d for uid, d in _firestore_load_collection('farm', FARM
 
 def _farm_get(user_id):
     d = _farm_cache.setdefault(user_id, {})
-    d.setdefault('seeds', {})
-    d.setdefault('fruits', {})
+    if not isinstance(d.get('seeds'), dict):
+        d['seeds'] = {}
+    if not isinstance(d.get('fruits'), dict):
+        d['fruits'] = {}
+    d.pop('planted', None)
+    d.pop('waterings', None)
+    d.pop('last_water', None)
     d.setdefault('plot_seed', None)
     d.setdefault('plot_waterings', 0)
     d.setdefault('plot_last_water', 0)
