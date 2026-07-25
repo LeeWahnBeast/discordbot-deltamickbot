@@ -1423,16 +1423,35 @@ def wiki_lookup(keyword):
     except Exception as e:
         print(f"[wiki] Lỗi khi tra '{keyword}': {type(e).__name__}: {e}")
         return None
+
 FARM_FILE = 'farm_data.json'
-FARM_SEED_PRICE = 15
 FARM_WATER_COOLDOWN = 3 * 3600
 FARM_WATERINGS_NEEDED = 3
-FARM_HARVEST_REWARD = 45
-FARM_FARMER_DAILY_COST = 5
+FARM_FARMER_DAILY_COST = 350
+FARM_FARMER_SELL_FEE = 0.10
+FARM_FARMER_CYCLE_SECONDS = 15 * 60
+FARM_RARITY_LABELS = {'common': '⚪ Common', 'uncommon': '🟢 Uncommon', 'legend': '🟡 Legend', 'secret': '🔴 Secret'}
+FARM_SEEDS = {
+    'oliver': {'name': 'Cây Oliver', 'rarity': 'common', 'price': 0.1, 'reusable': True, 'yield_aura': 0.1, 'yield_aura_plus': 0.0},
+    'phonk': {'name': 'Phonk Seed', 'rarity': 'common', 'price': 0.1, 'reusable': False, 'yield_aura': 2, 'yield_aura_plus': 0.01},
+    'folkvalley': {'name': 'Folk Valley Seed', 'rarity': 'uncommon', 'price': 0.5, 'reusable': False, 'yield_aura': 5.5, 'yield_aura_plus': 0.2},
+    'skibidi': {'name': 'Skibidi Seed', 'rarity': 'uncommon', 'price': 0.9, 'reusable': False, 'yield_aura': 10.9, 'yield_aura_plus': 0.5},
+    'delta': {'name': 'Delta Seed', 'rarity': 'legend', 'price': 1.9, 'reusable': True, 'yield_aura': 100, 'yield_aura_plus': 0.9},
+    'penado': {'name': 'Penado Pesta', 'rarity': 'legend', 'price': 40, 'reusable': True, 'yield_aura': 500, 'yield_aura_plus': 30},
+    'beast': {'name': 'Beast Seed', 'rarity': 'secret', 'price': 100, 'reusable': False, 'yield_aura': 5000, 'yield_aura_plus': 190},
+}
 _farm_cache = {int(uid): d for uid, d in _firestore_load_collection('farm', FARM_FILE).items()}
 
 def _farm_get(user_id):
-    d = _farm_cache.setdefault(user_id, {'seeds': 0, 'planted': False, 'waterings': 0, 'last_water': 0, 'farmer': False, 'farmer_next_charge': 0})
+    d = _farm_cache.setdefault(user_id, {})
+    d.setdefault('seeds', {})
+    d.setdefault('fruits', {})
+    d.setdefault('plot_seed', None)
+    d.setdefault('plot_waterings', 0)
+    d.setdefault('plot_last_water', 0)
+    d.setdefault('farmer', False)
+    d.setdefault('farmer_next_charge', 0)
+    d.setdefault('farmer_next_tick', 0)
     return d
 
 def _farm_save(user_id):
@@ -1448,65 +1467,103 @@ def _farm_settle_farmer(d, user_id):
             break
         add_aura(user_id, -FARM_FARMER_DAILY_COST)
         d['farmer_next_charge'] += 86400
-        if d['planted'] and d['waterings'] < FARM_WATERINGS_NEEDED:
-            d['waterings'] += 1
-            d['last_water'] = now
+    if not d['farmer']:
+        return
+    if d['farmer_next_tick'] <= 0:
+        d['farmer_next_tick'] = now + FARM_FARMER_CYCLE_SECONDS
+        return
+    while d['farmer_next_tick'] <= now:
+        if d['plot_seed']:
+            if d['plot_waterings'] < FARM_WATERINGS_NEEDED:
+                d['plot_waterings'] += 1
+                d['plot_last_water'] = now
+            else:
+                seed = FARM_SEEDS[d['plot_seed']]
+                net_aura = seed['yield_aura'] * (1 - FARM_FARMER_SELL_FEE)
+                net_aura_plus = round(seed['yield_aura_plus'] * (1 - FARM_FARMER_SELL_FEE), 2)
+                add_aura(user_id, int(round(net_aura)))
+                if net_aura_plus:
+                    add_aura_plus(user_id, net_aura_plus)
+                if seed['reusable']:
+                    d['plot_waterings'] = 0
+                    d['plot_last_water'] = now
+                else:
+                    d['plot_seed'] = None
+                    d['plot_waterings'] = 0
+                    d['plot_last_water'] = 0
+        d['farmer_next_tick'] += FARM_FARMER_CYCLE_SECONDS
 
-def farm_buy_seed(user_id):
-    price = FARM_SEED_PRICE
-    balance = get_aura(user_id)
-    if balance < price:
-        return {'ok': False, 'reason': f'❌ Không đủ Aura! Cần **{price}**, bạn có **{balance}**.'}
-    add_aura(user_id, -price)
-    _apply_purchase_tax(price)
-    d = _farm_get(user_id)
-    d['seeds'] += 1
-    _farm_save(user_id)
-    return {'ok': True, 'seeds': d['seeds']}
-
-def farm_plant(user_id):
+def farm_status(user_id):
     d = _farm_get(user_id)
     _farm_settle_farmer(d, user_id)
-    if d['planted']:
-        return {'ok': False, 'reason': '❌ Đất của bạn đang có cây trồng rồi, thu hoạch trước đã!'}
-    if d['seeds'] <= 0:
-        return {'ok': False, 'reason': '❌ Bạn chưa có hạt giống nào! Mua bằng `/muahatgiong`.'}
-    d['seeds'] -= 1
-    d['planted'] = True
-    d['waterings'] = 0
-    d['last_water'] = 0
     _farm_save(user_id)
-    return {'ok': True}
+    return dict(d)
+
+def farm_buy_seed(user_id, seed_key):
+    seed = FARM_SEEDS.get(seed_key)
+    if seed is None:
+        return {'ok': False, 'reason': '❌ Hạt giống không tồn tại.'}
+    price = seed['price']
+    balance = get_aura_plus(user_id)
+    if balance < price:
+        return {'ok': False, 'reason': f"❌ Không đủ Aura+! Cần **{price}** Aura+, bạn có **{balance}** Aura+."}
+    add_aura_plus(user_id, -price)
+    d = _farm_get(user_id)
+    d['seeds'][seed_key] = d['seeds'].get(seed_key, 0) + 1
+    _farm_save(user_id)
+    return {'ok': True, 'seed': seed, 'count': d['seeds'][seed_key]}
+
+def farm_plant(user_id, seed_key):
+    d = _farm_get(user_id)
+    _farm_settle_farmer(d, user_id)
+    if d['plot_seed']:
+        return {'ok': False, 'reason': '❌ Đất của bạn đang có cây trồng rồi, thu hoạch trước đã!'}
+    if d['seeds'].get(seed_key, 0) <= 0:
+        return {'ok': False, 'reason': '❌ Bạn không có hạt giống này! Mua trong Shop trước.'}
+    d['seeds'][seed_key] -= 1
+    if d['seeds'][seed_key] <= 0:
+        del d['seeds'][seed_key]
+    d['plot_seed'] = seed_key
+    d['plot_waterings'] = 0
+    d['plot_last_water'] = 0
+    _farm_save(user_id)
+    return {'ok': True, 'seed': FARM_SEEDS[seed_key]}
 
 def farm_water(user_id):
     d = _farm_get(user_id)
     _farm_settle_farmer(d, user_id)
-    if not d['planted']:
-        return {'ok': False, 'reason': '❌ Bạn chưa trồng cây nào! Trồng bằng `/trong`.'}
-    if d['waterings'] >= FARM_WATERINGS_NEEDED:
-        return {'ok': False, 'reason': '✅ Cây đã đủ nước rồi, thu hoạch bằng `/thuhoach`!'}
+    if not d['plot_seed']:
+        return {'ok': False, 'reason': '❌ Bạn chưa trồng cây nào!'}
+    if d['plot_waterings'] >= FARM_WATERINGS_NEEDED:
+        return {'ok': False, 'reason': '✅ Cây đã đủ nước rồi, thu hoạch thôi!'}
     now = time.time()
-    remain = d['last_water'] + FARM_WATER_COOLDOWN - now
+    remain = d['plot_last_water'] + FARM_WATER_COOLDOWN - now
     if remain > 0:
         return {'ok': False, 'reason': f'⏳ Chưa tới giờ tưới tiếp — còn **{int(remain // 3600)}h{int((remain % 3600) // 60)}p**.'}
-    d['waterings'] += 1
-    d['last_water'] = now
+    d['plot_waterings'] += 1
+    d['plot_last_water'] = now
     _farm_save(user_id)
-    return {'ok': True, 'waterings': d['waterings']}
+    return {'ok': True, 'waterings': d['plot_waterings']}
 
 def farm_harvest(user_id):
     d = _farm_get(user_id)
     _farm_settle_farmer(d, user_id)
-    if not d['planted']:
+    seed_key = d['plot_seed']
+    if not seed_key:
         return {'ok': False, 'reason': '❌ Bạn chưa trồng cây nào!'}
-    if d['waterings'] < FARM_WATERINGS_NEEDED:
-        return {'ok': False, 'reason': f"⏳ Cây chưa đủ nước ({d['waterings']}/{FARM_WATERINGS_NEEDED}), tưới thêm bằng `/tuoinuoc`."}
-    d['planted'] = False
-    d['waterings'] = 0
-    d['last_water'] = 0
+    if d['plot_waterings'] < FARM_WATERINGS_NEEDED:
+        return {'ok': False, 'reason': f"⏳ Cây chưa đủ nước ({d['plot_waterings']}/{FARM_WATERINGS_NEEDED})."}
+    seed = FARM_SEEDS[seed_key]
+    d['fruits'][seed_key] = d['fruits'].get(seed_key, 0) + 1
+    if seed['reusable']:
+        d['plot_waterings'] = 0
+        d['plot_last_water'] = 0
+    else:
+        d['plot_seed'] = None
+        d['plot_waterings'] = 0
+        d['plot_last_water'] = 0
     _farm_save(user_id)
-    new_balance = add_aura(user_id, FARM_HARVEST_REWARD)
-    return {'ok': True, 'reward': FARM_HARVEST_REWARD, 'balance': new_balance}
+    return {'ok': True, 'seed': seed, 'fruit_count': d['fruits'][seed_key]}
 
 def farm_hire_farmer(user_id):
     d = _farm_get(user_id)
@@ -1518,14 +1575,30 @@ def farm_hire_farmer(user_id):
     add_aura(user_id, -FARM_FARMER_DAILY_COST)
     d['farmer'] = True
     d['farmer_next_charge'] = time.time() + 86400
+    d['farmer_next_tick'] = time.time() + FARM_FARMER_CYCLE_SECONDS
     _farm_save(user_id)
     return {'ok': True}
 
-def farm_status(user_id):
+def farm_sell(user_id, seed_keys=None):
     d = _farm_get(user_id)
-    _farm_settle_farmer(d, user_id)
+    keys = list(d['fruits'].keys()) if seed_keys is None else [k for k in seed_keys if d['fruits'].get(k, 0) > 0]
+    if not keys:
+        return {'ok': False, 'reason': '❌ Không có trái nào để bán.'}
+    total_aura, total_aura_plus, sold = 0, 0.0, []
+    for k in keys:
+        qty = d['fruits'].pop(k, 0)
+        if qty <= 0:
+            continue
+        seed = FARM_SEEDS[k]
+        total_aura += seed['yield_aura'] * qty
+        total_aura_plus = round(total_aura_plus + seed['yield_aura_plus'] * qty, 2)
+        sold.append((seed['name'], qty))
     _farm_save(user_id)
-    return dict(d)
+    if total_aura:
+        add_aura(user_id, int(round(total_aura)))
+    if total_aura_plus:
+        add_aura_plus(user_id, total_aura_plus)
+    return {'ok': True, 'sold': sold, 'aura': int(round(total_aura)), 'aura_plus': total_aura_plus}
 
 _FARM_PX_W, _FARM_PX_H, _FARM_SCALE = 40, 30, 10
 _FARM_SKY = (142, 207, 242)
@@ -1566,11 +1639,11 @@ def farm_render_image(user_id):
             _farm_set(px, x, base_y - 8, (255, 224, 189))
         for x in range(fx - 1, fx + 3):
             _farm_set(px, x, base_y - 9, (139, 69, 19))
-    if not d['planted']:
+    if not d['plot_seed']:
         _farm_set(px, cx, base_y, _FARM_HOLE)
         _farm_set(px, cx - 1, base_y, _FARM_HOLE)
     else:
-        w = d['waterings']
+        w = d['plot_waterings']
         stem_top = base_y - (2 if w == 0 else 5 if w == 1 else 8 if w == 2 else 11)
         for y in range(stem_top, base_y + 1):
             _farm_set(px, cx, y, _FARM_STEM)
@@ -1591,3 +1664,36 @@ def farm_render_image(user_id):
     img.save(buf, format='PNG')
     buf.seek(0)
     return buf
+
+REDEEM_FILE = 'redeem_data.json'
+REDEEM_CODES = {
+    'ChaoNgayMoiVuiVe': {'aura': 50, 'aura_plus': 0.9},
+    'DeltaMickLaConCho': {'aura': 190, 'aura_plus': 5},
+    'PleaseFruit': {'seed': 'folkvalley', 'seed_qty': 1},
+}
+_redeem_cache = {int(uid): d for uid, d in _firestore_load_collection('redeem_codes', REDEEM_FILE).items()}
+
+def redeem_code(user_id, code):
+    code = code.strip()
+    entry = REDEEM_CODES.get(code)
+    if entry is None:
+        return {'ok': False, 'reason': '❌ Code không tồn tại hoặc đã hết hạn.'}
+    used = _redeem_cache.setdefault(user_id, {'codes': []})
+    if code in used['codes']:
+        return {'ok': False, 'reason': '❌ Bạn đã nhập code này rồi!'}
+    reward_lines = []
+    if 'aura' in entry:
+        add_aura(user_id, entry['aura'])
+        reward_lines.append(f"{AURA_ICON} +{entry['aura']} Aura")
+    if 'aura_plus' in entry:
+        add_aura_plus(user_id, entry['aura_plus'])
+        reward_lines.append(f"+{entry['aura_plus']} Aura+")
+    if 'seed' in entry:
+        d = _farm_get(user_id)
+        qty = entry.get('seed_qty', 1)
+        d['seeds'][entry['seed']] = d['seeds'].get(entry['seed'], 0) + qty
+        _farm_save(user_id)
+        reward_lines.append(f"+{qty} 🌱 {FARM_SEEDS[entry['seed']]['name']}")
+    used['codes'].append(code)
+    _firestore_save_doc('redeem_codes', user_id, used)
+    return {'ok': True, 'reward_lines': reward_lines}
