@@ -1296,5 +1296,14 @@ async def nhapcode_slash(interaction: discord.Interaction, code: str):
         return
     await interaction.response.send_message(f"🎁 Nhập code thành công! Nhận được: {' , '.join(result['reward_lines'])}", ephemeral=True)
 
+@bot.tree.command(name='admin_congaura', description='👑 [Chủ bot] Cộng Aura cho bất kỳ ai (số âm để trừ)')
+@app_commands.describe(nguoi='Người nhận', so_luong='Số Aura muốn cộng (âm để trừ)')
+async def admin_congaura_slash(interaction: discord.Interaction, nguoi: discord.Member, so_luong: int):
+    if interaction.user.id != games.BOT_OWNER_ID:
+        await interaction.response.send_message('❌ Lệnh này chỉ dành cho chủ bot.', ephemeral=True)
+        return
+    new_balance = games.add_aura(nguoi.id, so_luong)
+    await interaction.response.send_message(f"👑 Đã cộng **{so_luong}** Aura cho {nguoi.mention}. Số dư hiện tại: **{new_balance}**.", ephemeral=True)
+
 web_server.keep_alive()
 bot.run(os.environ['DISCORD_KEY'])
