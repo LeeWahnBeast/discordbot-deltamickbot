@@ -1092,7 +1092,7 @@ def _seed_option_desc(seed_key):
     dung = 'nhiều lần' if seed['reusable'] else '1 lần'
     return f"{games.FARM_RARITY_LABELS[seed['rarity']]} • Giá {seed['price']} Aura+ • Thu {seed['yield_aura']} Aura+{seed['yield_aura_plus']} Aura+ ({dung})"
 
-class ShopSelect(discord.ui.Select):
+class SeedShopSelect(discord.ui.Select):
     def __init__(self, owner_id):
         self.owner_id = owner_id
         options = [discord.SelectOption(label=seed['name'], value=key, description=_seed_option_desc(key)[:100]) for key, seed in games.FARM_SEEDS.items()]
@@ -1105,12 +1105,12 @@ class ShopSelect(discord.ui.Select):
             return
         await interaction.response.send_message(f"✅ Đã mua **{result['seed']['name']}**! Bạn hiện có **{result['count']}** hạt loại này. Trồng bằng nút 🌱 Trồng trong `/vuon`.", ephemeral=True)
 
-class ShopView(discord.ui.View):
+class SeedShopView(discord.ui.View):
     def __init__(self, owner_id):
         super().__init__(timeout=120)
-        self.add_item(ShopSelect(owner_id))
+        self.add_item(SeedShopSelect(owner_id))
 
-def _shop_embed():
+def _seed_shop_embed():
     embed = discord.Embed(title='🛒 Shop Hạt Giống', description='Giá tính bằng **Aura+** — chọn trong danh sách bên dưới để mua 1 hạt.', color=15277667)
     for rarity, label in games.FARM_RARITY_LABELS.items():
         seeds = [s for s in games.FARM_SEEDS.values() if s['rarity'] == rarity]
@@ -1210,7 +1210,7 @@ class GardenView(discord.ui.View):
 
     @discord.ui.button(label='🛒 Shop', style=discord.ButtonStyle.primary)
     async def shop_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await interaction.response.send_message(embed=_shop_embed(), view=ShopView(self.owner_id), ephemeral=True)
+        await interaction.response.send_message(embed=_seed_shop_embed(), view=SeedShopView(self.owner_id), ephemeral=True)
 
     @discord.ui.button(label='🌱 Trồng', style=discord.ButtonStyle.success)
     async def plant_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
