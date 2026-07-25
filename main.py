@@ -1,1279 +1,1719 @@
-import discord
-import os
-import time
 import random
-import asyncio
-import web_server
-import games
-from discord.ext import commands
-from discord import app_commands
-intents = discord.Intents.default()
-intents.message_content = True
-bot = commands.Bot(command_prefix='!', intents=intents)
+import io
+import time
+import os
+import base64
+import collections
+import re
+import unicodedata
+from piece_sprites_data import _BUILTIN_PIECE_SPRITES_B64
+import urllib.request
+import urllib.parse
+import json
+import chess
+from PIL import Image, ImageDraw, ImageFont
+_firestore_db = None
+try:
+    import firebase_admin
+    from firebase_admin import credentials, firestore
+    _cred_json = os.environ.get('FIREBASE_CREDENTIALS')
+    if _cred_json:
+        cred = credentials.Certificate(json.loads(_cred_json))
+        firebase_admin.initialize_app(cred)
+        _firestore_db = firestore.client()
+        print('[firestore] Đã kết nối Firestore thành công.')
+    else:
+        print('[firestore] Chưa có biến môi trường FIREBASE_CREDENTIALS — dùng RAM/file JSON tạm thời.')
+except Exception as e:
+    print(f'[firestore] Không kết nối được Firestore, dùng RAM/file JSON tạm thời: {e!r}')
 
-@bot.event
-async def on_ready():
+def _firestore_load_collection(collection_name, fallback_file):
+    if _firestore_db is not None:
+        try:
+            docs = _firestore_db.collection(collection_name).stream()
+            return {int(doc.id): doc.to_dict() for doc in docs}
+        except Exception as e:
+            print(f"[firestore] Lỗi đọc collection '{collection_name}': {e!r}")
     try:
-        synced = await bot.tree.sync()
-        print(f'✅ Đã đồng bộ {len(synced)} slash command(s)')
+        with open(fallback_file, 'r', encoding='utf-8') as f:
+            raw = json.load(f)
+        return {int(k): v for k, v in raw.items()}
+    except (FileNotFoundError, json.JSONDecodeError):
+        return {}
+
+def _firestore_save_doc(collection_name, user_id, data):
+    if _firestore_db is None:
+        return
+    try:
+        _firestore_db.collection(collection_name).document(str(user_id)).set(data)
     except Exception as e:
-        print(f'⚠️ Lỗi đồng bộ slash command: {e}')
-    print(f'✅ Bot đã đăng nhập với tên {bot.user}')
+        print(f"[firestore] Lỗi ghi '{collection_name}/{user_id}': {e!r}")
 
-@bot.event
-async def on_command_error(ctx, error):
-    if isinstance(error, commands.CommandNotFound):
+def _firestore_delete_doc(collection_name, doc_id):
+    if _firestore_db is None:
         return
-    raise error
-
-@bot.event
-async def on_message(message):
-    if message.author.bot:
-        return
-    cid = message.channel.id
-    content = message.content.strip()
-    if not content.startswith('!') and (not content.startswith('/')):
-        try:
-            if games.wordle_active(cid):
-                word = content.lower()
-                if len(word) == 5 and word.isalpha():
-                    result, correct, done = games.wordle_check(cid, word)
-                    await message.channel.send(f'`{word.upper()}`\n{result}')
-                    if correct:
-                        new_aura = games.add_aura(message.author.id, 10)
-                        new_aura_plus = games.award_game_completion_aura_plus(message.author.id)
-                        await message.channel.send(f'🎉 Chính xác! {message.author.mention} đã đoán đúng!\n{games.AURA_ICON} +10 Aura (số dư: {new_aura}) và +{games.AURA_PLUS_PER_GAME} Aura+ (số dư: {new_aura_plus}).')
-                        games.wordle_end(cid)
-                    elif done:
-                        new_aura_plus = games.award_game_completion_aura_plus(message.author.id)
-                        await message.channel.send(f'💀 Hết lượt! Từ đúng là: **{games.wordle_word(cid).upper()}**\n{games.AURA_PLUS_ICON} +{games.AURA_PLUS_PER_GAME} Aura+ (số dư: {new_aura_plus}) vì đã chơi hết ván.')
-                        games.wordle_end(cid)
-                return
-            if games.flag_active(cid):
-                await _handle_flag_round(message, content)
-                return
-            if games.meme_active(cid):
-                await _handle_meme_round(message, content)
-                return
-        except Exception as e:
-            print(f'⚠️ Lỗi xử lý round game (channel {cid}): {e!r}')
-            await message.channel.send(f'⚠️ Lỗi khi xử lý câu trả lời: `{e}`\nVán đã bị hủy, dùng lệnh game để bắt đầu lại.')
-            games.wordle_end(cid)
-            games.flag_end(cid)
-            games.meme_end(cid)
-            return
-    await bot.process_commands(message)
-
-async def _get_display_name_no_ping(user_id):
-    user = bot.get_user(user_id)
-    if user is None:
-        try:
-            user = await bot.fetch_user(user_id)
-        except discord.HTTPException:
-            return 'Ẩn danh'
-    return user.display_name
-
-async def _handle_meme_round(message, guess_text):
-    cid = message.channel.id
-    result, has_next = games.meme_check(cid, message.author.id, guess_text)
-    if result == 'not_owner':
-        return
-    correct = result
-    answer = games.meme_answer(cid)
-    round_num, total, score = games.meme_progress(cid)
-    if correct:
-        new_aura = games.add_aura(message.author.id, games.MEME_AURA_REWARD)
-        await message.channel.send(f'✅ Chính xác! Đó là **{answer}**! (Điểm: {score}/{round_num})\n{games.AURA_ICON} +{games.MEME_AURA_REWARD} Aura (số dư: {new_aura}).')
-    else:
-        await message.channel.send(f'❌ Sai rồi! Đáp án là **{answer}**! (Điểm: {score}/{round_num})')
-    if has_next:
-        url = games.meme_next(cid)
-        submitter_name = await _get_display_name_no_ping(games.meme_current_submitter_id(cid))
-        embed = discord.Embed(title=f'🎭 Vòng tiếp theo ({round_num + 1}/{total})', description=f'Chat thẳng tên meme để đoán! (chỉ người mở ván mới được tính điểm)\n📤 Gửi bởi: **{submitter_name}**', color=15277667)
-        embed.set_image(url=url)
-        await message.channel.send(embed=embed, view=EndGameView(cid, 'meme'))
-    else:
-        games.meme_end(cid)
-        new_aura_plus = games.award_game_completion_aura_plus(message.author.id)
-        embed = discord.Embed(title='🎭 TỔNG KẾT ĐOÁN MEME 🎭', description=f'**Điểm số: {score}/{total}**\n{games.AURA_PLUS_ICON} +{games.AURA_PLUS_PER_GAME} Aura+ vì đã hoàn thành ván (số dư: {new_aura_plus}).', color=15277667)
-        await message.channel.send(embed=embed)
-
-async def _deny_unless(interaction: discord.Interaction, allowed: bool, msg='❌ Đây không phải ván của bạn!'):
-    if not allowed:
-        await interaction.response.send_message(msg, ephemeral=True)
-        return True
-    return False
-
-async def _handle_flag_round(message, guess_text):
-    cid = message.channel.id
-    result, has_next = games.flag_check(cid, message.author.id, guess_text)
-    if result == 'not_owner':
-        return
-    correct = result
-    answer = games.flag_answer(cid)
-    round_num, total, score = games.flag_progress(cid)
-    if correct:
-        reward = games.flag_aura_reward(cid)
-        new_aura = games.add_aura(message.author.id, reward)
-        await message.channel.send(f'✅ Chính xác! Đó là **{answer.title()}**! (Điểm: {score}/{round_num})\n{games.AURA_ICON} +{reward} Aura (số dư: {new_aura}).')
-    else:
-        await message.channel.send(f'❌ Sai rồi! Đáp án là **{answer.title()}**! (Điểm: {score}/{round_num})')
-    if has_next:
-        url = games.flag_next(cid)
-        embed = discord.Embed(title=f'🏳️ Vòng tiếp theo ({round_num + 1}/{total})', description='Chat thẳng tên quốc gia (tiếng Anh) để đoán! (chỉ người mở ván mới được tính điểm)', color=4160800)
-        embed.set_image(url=url)
-        await message.channel.send(embed=embed, view=EndGameView(cid, 'flag'))
-    else:
-        tier, flavor, rank_color = games.folk_valley_rank(score, total)
-        games.flag_end(cid)
-        new_aura_plus = games.award_game_completion_aura_plus(message.author.id)
-        embed = discord.Embed(title='🌾 TỔNG KẾT — FOLK VALLEY 🌾', description=f'**Điểm số: {score}/{total}**\n\n{flavor}\n\n{games.AURA_PLUS_ICON} +{games.AURA_PLUS_PER_GAME} Aura+ vì đã hoàn thành ván (số dư: {new_aura_plus}).', color=rank_color)
-        embed.add_field(name='Xếp loại', value=f'## {tier}')
-        embed.set_footer(text='Folk Valley thì thầm: hẹn gặp lại ở vòng đoán sau...')
-        await message.channel.send(embed=embed)
-MOVE_ANNOTATION_TEXT = {'!!': '✨ **!!** Nước đi thiên tài!', '??': '🤦 **??** Nước đi ngớ ngẩn!'}
-GAME_CONFIG = {'wordle': {'active': games.wordle_active, 'end': games.wordle_end, 'label': 'Wordle', 'reveal': lambda cid: f'Từ đúng là **{games.wordle_word(cid).upper()}**'}, 'flag': {'active': games.flag_active, 'end': games.flag_end, 'label': 'Đoán cờ', 'reveal': lambda cid: f'Đáp án là **{games.flag_answer(cid).title()}**'}, 'meme': {'active': games.meme_active, 'end': games.meme_end, 'label': 'Đoán meme', 'reveal': lambda cid: f'Đáp án là **{games.meme_answer(cid)}**'}, 'chess': {'active': games.chess_active, 'end': games.chess_end, 'label': 'Cờ vua', 'reveal': lambda cid: 'Ván đấu đã dừng.'}}
-
-def make_end_button(cid, kind, row=None):
-    cfg = GAME_CONFIG[kind]
-    button = discord.ui.Button(label='🛑 Kết thúc', style=discord.ButtonStyle.danger, row=row)
-
-    async def callback(interaction: discord.Interaction):
-        try:
-            if not cfg['active'](cid):
-                await interaction.response.send_message(f'❌ Ván {cfg['label']} đã kết thúc rồi.', ephemeral=True)
-                return
-            if kind == 'chess' and games.chess_is_pvp(cid):
-                await _handle_chess_end_request(interaction, cid)
-                return
-            text = f'🛑 Đã kết thúc ván {cfg['label']}. {cfg['reveal'](cid)}'
-            cfg['end'](cid)
-            await interaction.response.edit_message(content=text, embed=None, view=None)
-        except Exception as e:
-            print(f'[chess] Lỗi nút Kết thúc ({kind}): {e!r}')
-            if not interaction.response.is_done():
-                await interaction.response.send_message('⚠️ Có lỗi khi kết thúc ván, thử lại nhé.', ephemeral=True)
-    button.callback = callback
-    return button
-
-async def _handle_chess_end_request(interaction: discord.Interaction, cid):
-    game = games._chess_games[cid]
-    white_id, black_id = (game['white_id'], game['black_id'])
-    if interaction.user.id not in (white_id, black_id):
-        await interaction.response.send_message('❌ Bạn không phải người chơi trong ván này!', ephemeral=True)
-        return
-    existing_offer = games.chess_get_draw_offer(cid)
-    if existing_offer is None:
-        games.chess_offer_draw(cid, interaction.user.id)
-        opponent_id = black_id if interaction.user.id == white_id else white_id
-        await interaction.response.send_message(f'🛑 <@{interaction.user.id}> đề nghị **kết thúc ván cờ** (hòa, không tính Elo).\n👉 <@{opponent_id}> bấm **🛑 Kết thúc** lần nữa để đồng ý, hoặc cứ tiếp tục đi cờ để từ chối.')
-        return
-    if existing_offer == interaction.user.id:
-        await interaction.response.send_message('⏳ Bạn đã đề nghị rồi, đang chờ đối thủ đồng ý.', ephemeral=True)
-        return
-    names = _chess_display_names(cid)
-    text = games.chess_accept_draw_text(cid, names)
-    games.chess_clear_draw_offer(cid)
-    games.chess_end(cid)
-    embed = discord.Embed(description=text, color=2899536)
-    await interaction.response.edit_message(content=None, embed=embed, attachments=[], view=None)
-
-class EndGameView(discord.ui.View):
-
-    def __init__(self, cid, kind, timeout=180):
-        super().__init__(timeout=timeout)
-        self.add_item(make_end_button(cid, kind))
-
-class DifficultyView(discord.ui.View):
-
-    def __init__(self, cid, owner_id):
-        super().__init__(timeout=30)
-        self.cid = cid
-        self.owner_id = owner_id
-        if games.flag_mythic_unlocked(owner_id):
-            self.add_item(self._make_mythic_button())
-
-    def _make_mythic_button(self):
-        button = discord.ui.Button(label='🌌 Mythic', style=discord.ButtonStyle.secondary, row=1)
-
-        async def callback(interaction):
-            await self.start_with(interaction, 'mythic', '🌌 Mythic')
-        button.callback = callback
-        return button
-
-    async def start_with(self, interaction, difficulty, label):
-        if await _deny_unless(interaction, interaction.user.id == self.owner_id, '❌ Đây không phải lệnh /flag của bạn!'):
-            return
-        if games.flag_active(self.cid):
-            await interaction.response.send_message('⚠️ Đang có ván đoán cờ chưa xong!', ephemeral=True)
-            return
-        url, ok = games.flag_start(self.cid, self.owner_id, difficulty)
-        if not ok:
-            if difficulty == 'mythic':
-                await interaction.response.send_message(f'❌ Chưa mở khóa Mythic! Cần tích lũy **{games.FLAG_UNLOCK_SCORE_MYTHIC}** điểm đoán đúng (hiện có: {games.flag_lifetime_score(self.owner_id)}).', ephemeral=True)
-            else:
-                await interaction.response.send_message('❌ Bạn đã hết lượt chơi `/flag` hôm nay! Mua thêm 🎟️ Slot Vé Game ở `/shop` hoặc chờ mai nhé.', ephemeral=True)
-            return
-        left = games.flag_games_left_today(self.owner_id)
-        reward = games.FLAG_AURA_PER_DIFFICULTY[difficulty]
-        embed = discord.Embed(title=f'🏳️ Đoán cờ — {label} (1/{games.ROUNDS_PER_GAME})', description=f'Chat thẳng tên quốc gia (tiếng Anh) để đoán! Mỗi câu đúng: **+{reward} Aura**.\n🎟️ Lượt chơi còn lại hôm nay: **{left}**', color=4160800)
-        embed.set_image(url=url)
-        await interaction.response.edit_message(content=None, embed=embed, view=EndGameView(self.cid, 'flag'))
-
-    @discord.ui.button(label='🌱 Dễ', style=discord.ButtonStyle.success)
-    async def easy(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await self.start_with(interaction, 'easy', '🌱 Dễ')
-
-    @discord.ui.button(label='🌾 Trung bình', style=discord.ButtonStyle.primary)
-    async def medium(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await self.start_with(interaction, 'medium', '🌾 Trung bình')
-
-    @discord.ui.button(label='🔥 Khó', style=discord.ButtonStyle.danger)
-    async def hard(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await self.start_with(interaction, 'hard', '🔥 Khó')
-
-    @discord.ui.button(label='💀 Insane', style=discord.ButtonStyle.secondary)
-    async def insane(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await self.start_with(interaction, 'insane', '💀 Insane')
-
-def _chess_current_player_id(cid):
-    if games.chess_is_pvp(cid):
-        return games.chess_current_turn_id(cid)
-    return games.chess_player_id(cid)
-
-def _chess_display_names(cid):
-    if games.chess_is_pvp(cid):
-        game = games._chess_games[cid]
-        return {True: f'<@{game['white_id']}>', False: f'<@{game['black_id']}>'}
-    game = games._chess_games[cid]
-    return {True: f'<@{game['player_id']}>', False: 'Bot'}
-
-async def _check_and_handle_chess_timeout(interaction: discord.Interaction, cid) -> bool:
-    timed_out_color = games.chess_check_timeout(cid)
-    if timed_out_color is None:
-        return False
-    names = _chess_display_names(cid)
-    text = games.chess_timeout_text(cid, timed_out_color, names)
-    games.chess_end(cid)
-    embed = discord.Embed(description=text, color=2899536)
     try:
-        image = games.chess_board_image(cid)
-    except Exception:
-        image = None
-    if image:
-        file = discord.File(image, filename='board.png')
-        embed.set_image(url='attachment://board.png')
-        await interaction.response.edit_message(embed=embed, attachments=[file], view=None)
+        _firestore_db.collection(collection_name).document(str(doc_id)).delete()
+    except Exception as e:
+        print(f"[firestore] Lỗi xóa '{collection_name}/{doc_id}': {e!r}")
+AURA_FILE = 'aura_data.json'
+AURA_ICON = '<:mango:1529287058072408195>'
+TAX_RATE = 0.05
+TAX_RECIPIENT_ID = 1210771747889090571
+BOT_OWNER_ID = TAX_RECIPIENT_ID
+INFINITE_AMOUNT = 999999999
+
+def _apply_purchase_tax(price):
+    tax = max(1, round(price * TAX_RATE))
+    add_aura(TAX_RECIPIENT_ID, tax)
+    return tax
+_aura_cache = {uid: d.get('balance', 0) for uid, d in _firestore_load_collection('aura', AURA_FILE).items()}
+
+def get_aura(user_id):
+    if user_id == BOT_OWNER_ID:
+        return INFINITE_AMOUNT
+    return _aura_cache.get(user_id, 0)
+
+def add_aura(user_id, amount):
+    if user_id == BOT_OWNER_ID:
+        return INFINITE_AMOUNT
+    if amount > 0 and _has_double_aura_buff(user_id):
+        amount *= 2
+    new_balance = get_aura(user_id) + amount
+    _aura_cache[user_id] = new_balance
+    _firestore_save_doc('aura', user_id, {'balance': new_balance})
+    return new_balance
+
+AURA_PLUS_FILE = 'aura_plus_data.json'
+AURA_PLUS_ICON = AURA_ICON
+AURA_PLUS_PER_GAME = 0.1
+AURA_PLUS_EXCHANGE_RATE = 10
+AURA_PLUS_EXCHANGE_FEE = 0.8
+_aura_plus_cache = {uid: d.get('balance', 0.0) for uid, d in _firestore_load_collection('aura_plus', AURA_PLUS_FILE).items()}
+
+def get_aura_plus(user_id):
+    return round(_aura_plus_cache.get(user_id, 0.0), 2)
+
+def add_aura_plus(user_id, amount):
+    new_balance = round(get_aura_plus(user_id) + amount, 2)
+    _aura_plus_cache[user_id] = new_balance
+    _firestore_save_doc('aura_plus', user_id, {'balance': new_balance})
+    return new_balance
+
+def award_game_completion_aura_plus(user_id):
+    return add_aura_plus(user_id, AURA_PLUS_PER_GAME)
+
+def exchange_aura_plus_to_aura(user_id, aura_plus_amount):
+    if aura_plus_amount <= 0 or get_aura_plus(user_id) < aura_plus_amount:
+        return None
+    gross_aura = aura_plus_amount * AURA_PLUS_EXCHANGE_RATE
+    net_aura = gross_aura * (1 - AURA_PLUS_EXCHANGE_FEE)
+    add_aura_plus(user_id, -aura_plus_amount)
+    new_aura_balance = add_aura(user_id, net_aura)
+    return {'spent': aura_plus_amount, 'received': net_aura, 'aura_after': new_aura_balance, 'aura_plus_after': get_aura_plus(user_id)}
+
+def exchange_aura_to_aura_plus(user_id, aura_amount):
+    if aura_amount <= 0 or get_aura(user_id) < aura_amount:
+        return None
+    gross_aura_plus = aura_amount / AURA_PLUS_EXCHANGE_RATE
+    net_aura_plus = round(gross_aura_plus * (1 - AURA_PLUS_EXCHANGE_FEE), 2)
+    add_aura(user_id, -aura_amount)
+    new_aura_plus_balance = add_aura_plus(user_id, net_aura_plus)
+    return {'spent': aura_amount, 'received': net_aura_plus, 'aura_after': get_aura(user_id), 'aura_plus_after': new_aura_plus_balance}
+
+def folk_valley_rank(score, total=5):
+    if score <= 1:
+        return ('🐓 GÀ', 'Con gà mổ lúa cũng đoán giỏi hơn thế này.\n*"Gieo hạt sai mùa // rồi trách đất không màu mỡ."*', 9133628)
+    elif score == 2:
+        return ('🌽 TẬP SỰ ĐỒNG QUÊ', 'Còn non như bắp mới trổ, nhưng có tương lai.\n*"Cày chưa hết ruộng // mà đã mơ mùa gặt."*', 13934615)
+    elif score == 3:
+        return ('🌾 ỔN ÁP', 'Không tệ! Cỏ trong Folk Valley cũng gật gù đồng ý.\n*"Đo hai lần, đoán một lần // rồi hỏi con bò xem nó nhớ gì."*', 7315504)
+    elif score == 4:
+        return ('🚜 LÃO NÔNG THẦN TỐC', 'Gần chạm đỉnh! Kho thóc đang thì thầm tên bạn.\n*"Nếu chưa hỏng thì cũng nên nâng cấp phần mềm chuồng trại."*', 4160800)
     else:
-        await interaction.response.edit_message(embed=embed, view=None)
+        return ('✨ THẦN THÁNH FOLK VALLEY', 'Hoàn hảo. Đến chim trong Folk Valley cũng ngừng hót để cúi đầu.\n*"Gốc rễ vẫn nhớ // dù dữ liệu đã đổi mùa."*', 16766720)
+WORDS = ['apple', 'beach', 'chair', 'dance', 'eagle', 'flame', 'grape', 'house', 'input', 'juice', 'knife', 'lemon', 'mango', 'night', 'ocean', 'piano', 'queen', 'river', 'stone', 'table', 'unity', 'voice', 'water', 'youth', 'zebra', 'bread', 'cloud', 'dream', 'fruit', 'glass', 'heart', 'image', 'koala', 'light', 'music', 'novel', 'orbit', 'peach', 'quiet', 'robot', 'smile', 'trust', 'value', 'world', 'brave', 'crown', 'delta', 'earth', 'faith', 'giant']
+WORDLE_MAX_GUESSES = 6
+_wordle_games = {}
+
+def wordle_active(cid):
+    return cid in _wordle_games
+
+def wordle_start(cid, owner_id):
+    if daily_games_left_today('wordle', owner_id) <= 0:
+        return (None, False)
+    _consume_daily_slot('wordle', owner_id)
+    word = random.choice(WORDS)
+    _wordle_games[cid] = {'word': word, 'guesses': 0, 'owner_id': owner_id}
+    return (word, True)
+
+def wordle_word(cid):
+    return _wordle_games[cid]['word']
+
+def wordle_end(cid):
+    _wordle_games.pop(cid, None)
+
+def wordle_check(cid, guess):
+    game = _wordle_games[cid]
+    word = game['word']
+    guess = guess.lower()
+    result = []
+    chars = list(word)
+    for i, ch in enumerate(guess):
+        if ch == word[i]:
+            result.append('🟩')
+            chars[i] = None
+        else:
+            result.append(None)
+    for i, ch in enumerate(guess):
+        if result[i] is not None:
+            continue
+        if ch in chars:
+            result[i] = '🟨'
+            chars[chars.index(ch)] = None
+        else:
+            result[i] = '⬜'
+    game['guesses'] += 1
+    correct = guess == word
+    done = game['guesses'] >= WORDLE_MAX_GUESSES
+    return (''.join(result), correct, done)
+FLAG_EASY = {'vietnam': 'vn', 'japan': 'jp', 'china': 'cn', 'usa': 'us', 'united states': 'us', 'france': 'fr', 'germany': 'de', 'italy': 'it', 'spain': 'es', 'uk': 'gb', 'united kingdom': 'gb', 'brazil': 'br', 'canada': 'ca', 'russia': 'ru', 'india': 'in', 'korea': 'kr', 'australia': 'au', 'mexico': 'mx', 'egypt': 'eg', 'thailand': 'th'}
+FLAG_MEDIUM = {'portugal': 'pt', 'netherlands': 'nl', 'belgium': 'be', 'switzerland': 'ch', 'sweden': 'se', 'norway': 'no', 'poland': 'pl', 'greece': 'gr', 'turkey': 'tr', 'indonesia': 'id', 'malaysia': 'my', 'philippines': 'ph', 'singapore': 'sg', 'argentina': 'ar', 'chile': 'cl', 'colombia': 'co', 'saudi arabia': 'sa', 'south africa': 'za', 'new zealand': 'nz', 'ukraine': 'ua'}
+FLAG_HARD = {'finland': 'fi', 'denmark': 'dk', 'austria': 'at', 'czech republic': 'cz', 'hungary': 'hu', 'romania': 'ro', 'iceland': 'is', 'peru': 'pe', 'cuba': 'cu', 'nigeria': 'ng', 'pakistan': 'pk', 'bangladesh': 'bd', 'iran': 'ir', 'iraq': 'iq', 'israel': 'il', 'uae': 'ae', 'morocco': 'ma', 'kenya': 'ke', 'ethiopia': 'et', 'myanmar': 'mm'}
+FLAG_INSANE = {'bhutan': 'bt', 'brunei': 'bn', 'eswatini': 'sz', 'lesotho': 'ls', 'tuvalu': 'tv', 'nauru': 'nr', 'kiribati': 'ki', 'palau': 'pw', 'andorra': 'ad', 'liechtenstein': 'li', 'san marino': 'sm', 'monaco': 'mc', 'moldova': 'md', 'tajikistan': 'tj', 'kyrgyzstan': 'kg', 'turkmenistan': 'tm', 'djibouti': 'dj', 'comoros': 'km', 'suriname': 'sr', 'guyana': 'gy'}
+FLAG_MYTHIC = {'tonga': 'to', 'micronesia': 'fm', 'marshall islands': 'mh', 'sao tome and principe': 'st', 'vanuatu': 'vu', 'solomon islands': 'sb', 'niue': 'nu', 'cook islands': 'ck', 'transnistria': 'md', 'abkhazia': 'ge', 'somaliland': 'so', 'western sahara': 'eh'}
+FLAG_POOLS = {'easy': FLAG_EASY, 'medium': FLAG_MEDIUM, 'hard': FLAG_HARD, 'insane': FLAG_INSANE, 'mythic': FLAG_MYTHIC}
+FLAG_AURA_PER_DIFFICULTY = {'easy': 6, 'medium': 10, 'hard': 14, 'insane': 20, 'mythic': 28}
+FLAG_UNLOCK_SCORE_MYTHIC = 500
+ROUNDS_PER_GAME = 5
+DAILY_FREE_GAMES = {'flag': 5, 'meme': 5, 'chess_bot': 5, 'wordle': 5}
+_flag_games = {}
+_daily_usage = {}
+_flag_lifetime_score = {}
+
+def _today_key():
+    return time.strftime('%Y-%m-%d', time.gmtime())
+
+def flag_lifetime_score(user_id):
+    return _flag_lifetime_score.get(user_id, 0)
+
+def flag_mythic_unlocked(user_id):
+    return flag_lifetime_score(user_id) >= FLAG_UNLOCK_SCORE_MYTHIC
+
+def _get_daily_usage(game_type, user_id):
+    day = _today_key()
+    usage = _daily_usage.setdefault(game_type, {}).setdefault(user_id, {'day': day, 'count': 0, 'extra_slots': 0})
+    if usage['day'] != day:
+        usage['day'] = day
+        usage['count'] = 0
+        usage['extra_slots'] = 0
+    return usage
+
+def daily_games_played_today(game_type, user_id):
+    return _get_daily_usage(game_type, user_id)['count']
+
+def daily_games_left_today(game_type, user_id):
+    usage = _get_daily_usage(game_type, user_id)
+    limit = DAILY_FREE_GAMES[game_type] + usage['extra_slots']
+    return max(0, limit - usage['count'])
+
+def daily_add_slot(game_type, user_id):
+    _get_daily_usage(game_type, user_id)['extra_slots'] += 1
+
+def _consume_daily_slot(game_type, user_id):
+    _get_daily_usage(game_type, user_id)['count'] += 1
+
+def flag_games_played_today(user_id):
+    return daily_games_played_today('flag', user_id)
+
+def flag_games_left_today(user_id):
+    return daily_games_left_today('flag', user_id)
+
+def flag_add_daily_slot(user_id):
+    daily_add_slot('flag', user_id)
+
+def flag_active(cid):
+    return cid in _flag_games
+
+def flag_start(cid, owner_id, difficulty):
+    if difficulty == 'mythic' and (not flag_mythic_unlocked(owner_id)):
+        return (None, False)
+    if daily_games_left_today('flag', owner_id) <= 0:
+        return (None, False)
+    _consume_daily_slot('flag', owner_id)
+    _flag_games[cid] = {'pool': FLAG_POOLS[difficulty], 'round': 0, 'score': 0, 'country': None, 'owner_id': owner_id, 'difficulty': difficulty}
+    return (flag_next(cid), True)
+
+def flag_next(cid):
+    game = _flag_games[cid]
+    if game['round'] >= ROUNDS_PER_GAME:
+        return None
+    country = random.choice(list(game['pool'].keys()))
+    game['country'] = country
+    game['round'] += 1
+    return f'https://flagcdn.com/w320/{game['pool'][country]}.png'
+
+def flag_check(cid, guesser_id, guess):
+    game = _flag_games[cid]
+    if guesser_id != game['owner_id']:
+        return ('not_owner', game['round'] < ROUNDS_PER_GAME)
+    correct = guess.strip().lower() == game['country']
+    if correct:
+        game['score'] += 1
+        _flag_lifetime_score[guesser_id] = _flag_lifetime_score.get(guesser_id, 0) + 1
+    return (correct, game['round'] < ROUNDS_PER_GAME)
+
+def flag_aura_reward(cid):
+    return FLAG_AURA_PER_DIFFICULTY[_flag_games[cid]['difficulty']]
+
+def flag_answer(cid):
+    return _flag_games[cid]['country']
+
+def flag_progress(cid):
+    g = _flag_games[cid]
+    return (g['round'], ROUNDS_PER_GAME, g['score'])
+
+def flag_owner(cid):
+    return _flag_games[cid]['owner_id']
+
+def flag_end(cid):
+    _flag_games.pop(cid, None)
+
+MEME_ROUNDS_PER_GAME = 5
+MEME_AURA_REWARD = 12
+
+def _meme_normalize(text):
+    text = text.strip().lower()
+    text = unicodedata.normalize('NFD', text)
+    text = ''.join(ch for ch in text if unicodedata.category(ch) != 'Mn')
+    text = text.replace('đ', 'd')
+    text = re.sub(r'[^a-z0-9\s]', '', text)
+    text = re.sub(r'\s+', ' ', text).strip()
+    return text
+MEME_PENDING_FILE = 'meme_pending.json'
+MEME_APPROVED_FILE = 'meme_approved.json'
+
+def _meme_repair_entry(meme):
+    changed = False
+    if 'names' not in meme or not meme['names']:
+        fallback = meme.get('name') or meme.get('answer') or meme.get('display_name') or 'unknown'
+        meme['names'] = [str(fallback).strip().lower()]
+        changed = True
+    if 'display_names' not in meme or not meme['display_names']:
+        meme['display_names'] = [n for n in meme['names']]
+        changed = True
+    return (meme, changed)
+
+def _meme_load_and_repair(collection_name, fallback_file):
+    raw = _firestore_load_collection(collection_name, fallback_file)
+    fixed = {}
+    for mid, m in raw.items():
+        meme, changed = _meme_repair_entry(m)
+        if changed:
+            _firestore_save_doc(collection_name, mid, meme)
+            print(f'🔧 Đã vá meme #{mid} trong {collection_name} (thiếu names/display_names).')
+        fixed[mid] = meme
+    return fixed
+
+_meme_pending = _meme_load_and_repair('meme_pending', MEME_PENDING_FILE)
+_meme_approved = _meme_load_and_repair('meme_approved', MEME_APPROVED_FILE)
+_meme_games = {}
+
+def _meme_next_id():
+    existing_ids = list(_meme_pending.keys()) + list(_meme_approved.keys())
+    return max(existing_ids, default=0) + 1
+
+def _meme_find_by_url(image_url):
+    for meme in _meme_pending.values():
+        if meme['image_url'] == image_url:
+            return ('pending', meme)
+    for meme in _meme_approved.values():
+        if meme['image_url'] == image_url:
+            return ('approved', meme)
+    return (None, None)
+
+def meme_submit(image_url, name, submitter_id):
+    clean_name = name.strip()
+    where, existing = _meme_find_by_url(image_url)
+    if existing is not None:
+        if clean_name.lower() not in existing['names']:
+            existing['names'].append(clean_name.lower())
+            existing['display_names'].append(clean_name)
+            _firestore_save_doc(f'meme_{where}', existing['id'], existing)
+        return existing['id']
+    meme_id = _meme_next_id()
+    entry = {'id': meme_id, 'image_url': image_url, 'names': [clean_name.lower()], 'display_names': [clean_name], 'submitter_id': submitter_id, 'submitted_at': time.time()}
+    _meme_pending[meme_id] = entry
+    _firestore_save_doc('meme_pending', meme_id, entry)
+    return meme_id
+
+def meme_pending_list():
+    return list(_meme_pending.values())
+
+def meme_pending_get(meme_id):
+    return _meme_pending.get(meme_id)
+
+def meme_approve(meme_id, reviewer_id):
+    meme = _meme_pending.pop(meme_id, None)
+    if meme is None:
+        return False
+    meme, _ = _meme_repair_entry(meme)
+    meme['approved_by'] = reviewer_id
+    meme['approved_at'] = time.time()
+    _meme_approved[meme_id] = meme
+    _firestore_save_doc('meme_approved', meme_id, meme)
+    _firestore_delete_doc('meme_pending', meme_id)
     return True
 
-def _add_chess_action_buttons(view, cid):
-    resign_btn = discord.ui.Button(label='🏳️ Đầu hàng', style=discord.ButtonStyle.danger, row=4)
-
-    async def on_resign(interaction: discord.Interaction):
-        try:
-            if not games.chess_active(cid):
-                await interaction.response.send_message('❌ Ván cờ đã kết thúc rồi.', ephemeral=True)
-                return
-            games.chess_touch(cid)
-            if games.chess_is_pvp(cid):
-                game = games._chess_games[cid]
-                is_participant = interaction.user.id in (game['white_id'], game['black_id'])
-            else:
-                is_participant = interaction.user.id == games.chess_player_id(cid)
-            if await _deny_unless(interaction, is_participant):
-                return
-            names = _chess_display_names(cid)
-            text = games.chess_resign_text(cid, interaction.user.id, names)
-            games.chess_end(cid)
-            embed = discord.Embed(description=text, color=2899536)
-            await interaction.response.edit_message(embed=embed, attachments=[], view=None)
-        except Exception as e:
-            print(f'[chess] Lỗi nút Đầu hàng: {e!r}')
-            if not interaction.response.is_done():
-                await interaction.response.send_message('⚠️ Có lỗi khi đầu hàng, thử /chess_reset nếu ván bị kẹt.', ephemeral=True)
-    resign_btn.callback = on_resign
-    view.add_item(resign_btn)
-    hint_btn = discord.ui.Button(label=f'💡 Gợi ý (-{games.HINT_ELO_PENALTY} Elo)', style=discord.ButtonStyle.secondary, row=4)
-
-    async def on_hint(interaction: discord.Interaction):
-        try:
-            if not games.chess_active(cid):
-                await interaction.response.send_message('❌ Ván cờ đã kết thúc rồi.', ephemeral=True)
-                return
-            games.chess_touch(cid)
-            allowed = interaction.user.id == _chess_current_player_id(cid)
-            if await _deny_unless(interaction, allowed, '❌ Chỉ người đến lượt mới xin gợi ý được!'):
-                return
-            hint_text, new_elo = games.chess_hint(cid, interaction.user.id)
-            await interaction.response.send_message(f'{hint_text}\n(Elo của bạn giờ còn **{new_elo}**)', ephemeral=True)
-        except Exception as e:
-            print(f'[chess] Lỗi nút Gợi ý: {e!r}')
-            if not interaction.response.is_done():
-                await interaction.response.send_message('⚠️ Có lỗi khi lấy gợi ý, thử lại nhé.', ephemeral=True)
-    hint_btn.callback = on_hint
-    view.add_item(hint_btn)
-    guide_btn = discord.ui.Button(label='📖 Hướng dẫn', style=discord.ButtonStyle.secondary, row=4)
-
-    async def on_guide(interaction: discord.Interaction):
-        is_pvp = games.chess_active(cid) and games.chess_is_pvp(cid)
-        if games.chess_active(cid):
-            games.chess_touch(cid)
-        end_line = '**🛑 Kết thúc** — đề nghị kết thúc ván hòa. Cần **cả 2 người** cùng bấm mới thực sự kết thúc (bấm lần 1 là đề nghị, đối thủ bấm lần 2 là đồng ý). Elo không đổi.\n' if is_pvp else '**🛑 Kết thúc** — dừng ván ngay lập tức.\n'
-        text = f'**📖 CÁCH CHƠI CỜ VUA**\n\n1️⃣ Chọn **quân** muốn đi ở menu thả xuống đầu tiên.\n2️⃣ Chọn **ô đích** muốn đi tới ở menu tiếp theo (phong cấp luôn tự thành Hậu).\n3️⃣ **🔙 Chọn lại** — quay lại bước chọn quân nếu bấm nhầm.\n\n**Các nút hành động:**\n🏳️ **Đầu hàng** — tự nhận thua ngay, không cần đối thủ đồng ý (khác với nút Kết thúc).\n💡 **Gợi ý** — bot mách nước đi tốt nhất, nhưng bị trừ **{games.HINT_ELO_PENALTY} Elo** mỗi lần dùng.\n{end_line}\n**Ký hiệu đánh giá nước đi:**\n✨ **!!** — Nước đi thiên tài (rõ ràng tốt hơn hẳn các lựa chọn khác).\n🤦 **??** — Nước đi hớ nặng (bỏ lỡ nước tốt hơn nhiều, hoặc để hở quân lớn cho đối phương ăn free).\n\nTrong bàn cờ còn hiện dòng **quân đã ăn được** của mỗi bên, để dễ theo dõi ai đang lợi thế.\n\n**🎨 Đổi hình quân cờ:** `/custom_chess` — chọn 1 quân ở menu thả xuống rồi dán link ảnh riêng cho quân đó, làm dần từng quân một cũng được. Xem lại bằng `/custom_chess_xem`, xóa bằng `/custom_chess_xoa`.'
-        await interaction.response.send_message(text, ephemeral=True)
-    guide_btn.callback = on_guide
-    view.add_item(guide_btn)
-
-def _chess_board_embed(cid, extra_line=None):
-    names = _chess_display_names(cid)
-    header = games.chess_header_text(cid, names)
-    parts = [header]
-    captured = games.chess_captured_text(cid)
-    if captured:
-        parts.append(captured)
-    if extra_line:
-        parts.append(extra_line)
-    embed = discord.Embed(description='\n\n'.join(parts), color=2899536)
-    embed.set_image(url='attachment://board.png')
-    return embed
-
-class ChessTimeoutView(discord.ui.View):
-    BOT_TIMEOUT = 180
-    SAFETY_MARGIN = 120
-
-    def __init__(self, cid, timeout=None):
-        if timeout is None:
-            if games.chess_is_pvp(cid):
-                remaining = games.chess_remaining_seconds(cid, games._chess_games[cid]['board'].turn)
-                timeout = (remaining or self.BOT_TIMEOUT) + self.SAFETY_MARGIN
-            else:
-                timeout = self.BOT_TIMEOUT
-        super().__init__(timeout=timeout)
-        self.cid = cid
-
-    async def on_timeout(self):
-        if not games.chess_active(self.cid):
-            return
-        timed_out_color = games.chess_check_timeout(self.cid)
-        if timed_out_color is not None:
-            from_pvp = games.chess_is_pvp(self.cid)
-            names = None
-            if from_pvp:
-                game = games._chess_games[self.cid]
-                names = {True: f'<@{game['white_id']}>', False: f'<@{game['black_id']}>'}
-            text = games.chess_timeout_text(self.cid, timed_out_color, names)
-            games.chess_end(self.cid)
-            if self.message:
-                try:
-                    await self.message.edit(content=text, embed=None, view=None)
-                except discord.HTTPException:
-                    pass
-            return
-        games.chess_end(self.cid)
-        if self.message:
-            try:
-                await self.message.edit(content='⌛ Ván cờ đã tự hủy do quá lâu không có nước đi.', view=None)
-            except discord.HTTPException:
-                pass
-
-class ChessFromView(ChessTimeoutView):
-
-    def __init__(self, cid):
-        super().__init__(cid)
-        options = games.chess_from_options(cid)[:25]
-        select = discord.ui.Select(placeholder='♟️ Chọn quân muốn đi...', options=[discord.SelectOption(label=label, value=val) for val, label in options])
-        select.callback = self.on_select
-        self.add_item(select)
-        self.add_item(make_end_button(cid, 'chess'))
-        _add_chess_action_buttons(self, cid)
-
-    async def on_select(self, interaction: discord.Interaction):
-        try:
-            if not games.chess_active(self.cid):
-                await interaction.response.send_message('❌ Ván cờ đã kết thúc rồi.', ephemeral=True)
-                return
-            if await _check_and_handle_chess_timeout(interaction, self.cid):
-                return
-            games.chess_touch(self.cid)
-            if await _deny_unless(interaction, interaction.user.id == _chess_current_player_id(self.cid), '❌ Chưa đến lượt bạn!'):
-                return
-            from_sq = interaction.data['values'][0]
-            new_view = ChessToView(self.cid, interaction.user.id, from_sq)
-            await interaction.response.edit_message(view=new_view)
-            new_view.message = await interaction.original_response()
-        except Exception as e:
-            print(f'[chess] Lỗi chọn quân: {e!r}')
-            if not interaction.response.is_done():
-                await interaction.response.send_message('⚠️ Có lỗi khi chọn quân, thử lại nhé.', ephemeral=True)
-
-class ChessToView(ChessTimeoutView):
-
-    def __init__(self, cid, player_id, from_sq):
-        super().__init__(cid)
-        self.player_id = player_id
-        self.from_sq = from_sq
-        options = games.chess_to_options(cid, from_sq)[:25]
-        select = discord.ui.Select(placeholder=f'👉 Đi quân ở {from_sq} đến đâu?', options=[discord.SelectOption(label=label, value=val) for val, label in options])
-        select.callback = self.on_select
-        self.add_item(select)
-        back = discord.ui.Button(label='🔙 Chọn lại', style=discord.ButtonStyle.secondary)
-        back.callback = self.on_back
-        self.add_item(back)
-        self.add_item(make_end_button(cid, 'chess'))
-        _add_chess_action_buttons(self, cid)
-
-    async def on_back(self, interaction: discord.Interaction):
-        try:
-            if await _deny_unless(interaction, interaction.user.id == self.player_id):
-                return
-            if games.chess_active(self.cid):
-                games.chess_touch(self.cid)
-            new_view = ChessFromView(self.cid)
-            await interaction.response.edit_message(view=new_view)
-            new_view.message = await interaction.original_response()
-        except Exception as e:
-            print(f'[chess] Lỗi Chọn lại: {e!r}')
-            if not interaction.response.is_done():
-                await interaction.response.send_message('⚠️ Có lỗi, thử lại nhé.', ephemeral=True)
-
-    async def on_select(self, interaction: discord.Interaction):
-        try:
-            if not games.chess_active(self.cid):
-                await interaction.response.send_message('❌ Ván cờ đã kết thúc rồi.', ephemeral=True)
-                return
-            if await _check_and_handle_chess_timeout(interaction, self.cid):
-                return
-            if await _deny_unless(interaction, interaction.user.id == self.player_id):
-                return
-            to_sq = interaction.data['values'][0]
-            ok, outcome, annotation = games.chess_make_move(self.cid, self.from_sq, to_sq)
-            if not ok:
-                await interaction.response.send_message('⚠️ Nước đi này không còn hợp lệ, hãy chọn lại!', ephemeral=True)
-                return
-            games.chess_clear_draw_offer(self.cid)
-            player_annotation = annotation
-            bot_annotation = None
-            if outcome is None and (not games.chess_is_pvp(self.cid)):
-                outcome, bot_annotation = games.chess_bot_move(self.cid)
-            image = games.chess_board_image(self.cid)
-            file = discord.File(image, filename='board.png')
-            player_line = MOVE_ANNOTATION_TEXT.get(player_annotation)
-            bot_line = MOVE_ANNOTATION_TEXT.get(bot_annotation)
-            if bot_line:
-                bot_line = f'🤖 {bot_line}'
-            annotation_line = '\n'.join((l for l in (player_line, bot_line) if l)) or None
-            if outcome is not None:
-                names = _chess_display_names(self.cid)
-                text = games.chess_outcome_text(self.cid, outcome, names)
-                if annotation_line:
-                    text += f'\n\n{annotation_line}'
-                games.chess_end(self.cid)
-                embed = discord.Embed(description=text, color=2899536)
-                embed.set_image(url='attachment://board.png')
-                await interaction.response.edit_message(embed=embed, attachments=[file], view=None)
-            else:
-                extra = f'👉 Đến lượt <@{games.chess_current_turn_id(self.cid)}>!' if games.chess_is_pvp(self.cid) else None
-                if annotation_line:
-                    extra = f'{extra}\n{annotation_line}' if extra else annotation_line
-                embed = _chess_board_embed(self.cid, extra)
-                new_view = ChessFromView(self.cid)
-                await interaction.response.edit_message(embed=embed, attachments=[file], view=new_view)
-                new_view.message = await interaction.original_response()
-        except Exception as e:
-            print(f'[chess] Lỗi khi đi nước: {e!r}')
-            if not interaction.response.is_done():
-                await interaction.response.send_message('⚠️ Có lỗi khi đi nước, thử /chess_reset nếu ván bị kẹt.', ephemeral=True)
-
-@bot.tree.command(name='ping', description='Kiểm tra độ trễ của bot')
-async def ping_slash(interaction: discord.Interaction):
-    await interaction.response.send_message(f'🏓 Pong! ({round(bot.latency * 1000)}ms)')
-
-@bot.tree.command(name='about', description='Thông tin về bot')
-async def about_slash(interaction: discord.Interaction):
-    embed = discord.Embed(title='🤖 About Bot', description='Bot mini-game vui nhộn cho server: đoán chữ, đoán cờ, cờ vua, Delta Shop và bói vui.', color=5793266)
-    embed.add_field(name='🎮 Các lệnh', value='`/wordle` — đoán từ 5 chữ\n`/flag` — đoán cờ các nước\n`/meme` — đoán meme TikTok\n`/addmeme` — đóng góp meme mới\n`/chess` — cờ vua vs bot\n`/chess_invite @ai_đó` — mời PvP cờ vua\n`/chess_reset` — xóa ván cờ bị kẹt (nếu bot báo lỗi)\n`/whatuinto` — bói vui\n`/wiki <từ khóa>` — tra bách khoa toàn thư\n`/aura` — xem số dư Aura\n`/shop` — mở Delta Shop 🛒\n`/kho` — xem vật phẩm/buff đang có\n`/hoadon` — xem hóa đơn Delta Shop\n`/ping` — kiểm tra độ trễ', inline=False)
-    embed.set_footer(text='Made by TVPixel')
-    await interaction.response.send_message(embed=embed)
-
-@bot.tree.command(name='wordle', description='Bắt đầu ván Wordle — chat thẳng 5 chữ để đoán')
-async def wordle_slash(interaction: discord.Interaction):
-    cid = interaction.channel_id
-    if games.wordle_active(cid):
-        await interaction.response.send_message('⚠️ Đang có ván Wordle chưa xong!', ephemeral=True)
-        return
-    word, ok = games.wordle_start(cid, interaction.user.id)
-    if not ok:
-        await interaction.response.send_message('❌ Bạn đã hết lượt chơi `/wordle` hôm nay! Mua thêm 🎟️ Slot Vé Game ở `/shop` hoặc chờ mai nhé.', ephemeral=True)
-        return
-    left = games.daily_games_left_today('wordle', interaction.user.id)
-    embed = discord.Embed(title='🎮 Wordle bắt đầu!', description=f'Chat thẳng một từ **5 chữ cái** để đoán (không cần lệnh).\nTối đa **{games.WORDLE_MAX_GUESSES} lượt**.\n🎟️ Lượt chơi còn lại hôm nay: **{left}**\n\n🟩 đúng vị trí ・ 🟨 đúng chữ sai vị trí ・ ⬜ sai', color=3066993)
-    await interaction.response.send_message(embed=embed, view=EndGameView(cid, 'wordle'))
-
-@bot.tree.command(name='flag', description='Đoán cờ các nước — chọn độ khó trước khi bắt đầu')
-async def flag_slash(interaction: discord.Interaction):
-    cid = interaction.channel_id
-    if games.flag_active(cid):
-        await interaction.response.send_message('⚠️ Đang có ván đoán cờ chưa xong!', ephemeral=True)
-        return
-    left = games.flag_games_left_today(interaction.user.id)
-    if left <= 0:
-        await interaction.response.send_message('❌ Bạn đã hết lượt chơi `/flag` hôm nay! Mua thêm 🎟️ Slot Vé Game ở `/shop` hoặc chờ mai nhé.', ephemeral=True)
-        return
-    view = DifficultyView(cid, interaction.user.id)
-    desc = f'🌱 **Dễ** (+{games.FLAG_AURA_PER_DIFFICULTY["easy"]} Aura/câu) — các nước nổi tiếng\n🌾 **Trung bình** (+{games.FLAG_AURA_PER_DIFFICULTY["medium"]} Aura/câu) — các nước quen thuộc vừa phải\n🔥 **Khó** (+{games.FLAG_AURA_PER_DIFFICULTY["hard"]} Aura/câu) — các nước ít gặp hơn\n💀 **Insane** (+{games.FLAG_AURA_PER_DIFFICULTY["insane"]} Aura/câu) — các nước siêu hiếm!'
-    if games.flag_mythic_unlocked(interaction.user.id):
-        desc += f'\n🌌 **Mythic** (+{games.FLAG_AURA_PER_DIFFICULTY["mythic"]} Aura/câu) — đã mở khóa, chỉ dành cho huyền thoại!'
-    else:
-        desc += f'\n🔒 Mythic mở khóa ở **{games.FLAG_UNLOCK_SCORE_MYTHIC}** điểm tích lũy (hiện có: {games.flag_lifetime_score(interaction.user.id)})'
-    desc += f'\n\n🎟️ Lượt chơi còn lại hôm nay: **{left}**'
-    embed = discord.Embed(title='🏳️ Chọn độ khó', description=desc, color=4160800)
-    await interaction.response.send_message(embed=embed, view=view)
-
-@bot.tree.command(name='whatuinto', description="Bói vui xem bạn 'thích' thể loại gì 👀")
-async def whatuinto_slash(interaction: discord.Interaction):
-    label, caption, percent = games.whatuinto_roll()
-    embed = discord.Embed(title=f'🔮 Kết quả bói cho {interaction.user.display_name}', description=f'## {percent}% **{label}**\n\n{caption}', color=14702333)
-    embed.set_footer(text='Kết quả 100% chính xác khoa học (không có căn cứ gì cả) 😌')
-    await interaction.response.send_message(embed=embed)
-
-class ChessDifficultyView(discord.ui.View):
-
-    def __init__(self, cid, player_id):
-        super().__init__(timeout=30)
-        self.cid = cid
-        self.player_id = player_id
-
-    async def _start(self, interaction, bot_elo):
-        if await _deny_unless(interaction, interaction.user.id == self.player_id):
-            return
-        if games.chess_active(self.cid):
-            await interaction.response.send_message('⚠️ Đang có ván cờ vua chưa xong trong kênh này!', ephemeral=True)
-            return
-        _, ok = games.chess_start(self.cid, self.player_id, bot_elo)
-        if not ok:
-            await interaction.response.send_message('❌ Bạn đã hết lượt chơi cờ vs Bot hôm nay! Mua thêm 🎟️ Slot ở `/shop` hoặc chờ mai nhé.', ephemeral=True)
-            return
-        image = games.chess_board_image(self.cid)
-        file = discord.File(image, filename='board.png')
-        embed = _chess_board_embed(self.cid, 'Chọn **quân** rồi chọn **ô muốn đi tới** bằng menu bên dưới.')
-        new_view = ChessFromView(self.cid)
-        await interaction.response.edit_message(content=None, embed=embed, attachments=[file], view=new_view)
-        new_view.message = await interaction.original_response()
-
-    @discord.ui.button(label='🟢 Dễ (800 Elo)', style=discord.ButtonStyle.success)
-    async def easy(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await self._start(interaction, 800)
-
-    @discord.ui.button(label='🟡 Vừa (1200 Elo)', style=discord.ButtonStyle.primary)
-    async def medium(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await self._start(interaction, 1200)
-
-    @discord.ui.button(label='🔴 Khó (1600 Elo)', style=discord.ButtonStyle.danger)
-    async def hard(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await self._start(interaction, 1600)
-
-@bot.tree.command(name='chess', description='Chơi cờ vua với bot (bạn cầm quân Trắng)')
-async def chess_slash(interaction: discord.Interaction):
-    cid = interaction.channel_id
-    if games.chess_active(cid):
-        await interaction.response.send_message('⚠️ Đang có ván cờ vua chưa xong trong kênh này!', ephemeral=True)
-        return
-    view = ChessDifficultyView(cid, interaction.user.id)
-    await interaction.response.send_message('♟️ Chọn độ khó cho bot:', view=view)
-
-@bot.tree.command(name='chess_reset', description='Xóa cưỡng bức trạng thái ván cờ bị kẹt trong kênh này')
-async def chess_reset_slash(interaction: discord.Interaction):
-    cid = interaction.channel_id
-    existed = games.chess_force_reset(cid)
+def meme_reject(meme_id, reviewer_id):
+    existed = _meme_pending.pop(meme_id, None) is not None
     if existed:
-        await interaction.response.send_message('🧹 Đã xóa trạng thái ván cờ cũ. Giờ có thể dùng `/chess` hoặc `/chess_invite` lại bình thường.')
+        _firestore_delete_doc('meme_pending', meme_id)
+    return existed
+
+def meme_pool_size():
+    return len(_meme_approved)
+
+def meme_active(cid):
+    return cid in _meme_games
+
+def meme_start(cid, owner_id):
+    if len(_meme_approved) < 3:
+        return (None, False)
+    if daily_games_left_today('meme', owner_id) <= 0:
+        return (None, False)
+    _consume_daily_slot('meme', owner_id)
+    _meme_games[cid] = {'round': 0, 'score': 0, 'current': None, 'owner_id': owner_id, 'used_ids': set()}
+    return (meme_next(cid), True)
+
+def meme_next(cid):
+    game = _meme_games[cid]
+    if game['round'] >= MEME_ROUNDS_PER_GAME:
+        return None
+    pool = [m for mid, m in _meme_approved.items() if mid not in game['used_ids']]
+    if not pool:
+        pool = list(_meme_approved.values())
+        game['used_ids'] = set()
+    meme = random.choice(pool)
+    meme, _ = _meme_repair_entry(meme)
+    game['used_ids'].add(meme['id'])
+    game['current'] = meme
+    game['round'] += 1
+    return meme['image_url']
+
+def meme_check(cid, guesser_id, guess):
+    game = _meme_games[cid]
+    if guesser_id != game['owner_id']:
+        return ('not_owner', game['round'] < MEME_ROUNDS_PER_GAME)
+    if game['current'] is None:
+        return (False, game['round'] < MEME_ROUNDS_PER_GAME)
+    guess_norm = _meme_normalize(guess)
+    correct = guess_norm != '' and guess_norm in {_meme_normalize(n) for n in game['current']['names']}
+    if correct:
+        game['score'] += 1
+    return (correct, game['round'] < MEME_ROUNDS_PER_GAME)
+
+def meme_answer(cid):
+    return ' / '.join(_meme_games[cid]['current']['display_names'])
+
+def meme_current_submitter_id(cid):
+    return _meme_games[cid]['current']['submitter_id']
+
+def meme_progress(cid):
+    g = _meme_games[cid]
+    return (g['round'], MEME_ROUNDS_PER_GAME, g['score'])
+
+def meme_end(cid):
+    _meme_games.pop(cid, None)
+
+LOTTERY_PROVINCES = ['Folk Valley', 'Ohio', 'Thành phố Delta', 'Shess Cex', 'Larp', 'Oliver Mango', 'Penaldo Pasta', 'Tỉnh Beast', 'Sinecraft Mex', 'Meow Meow']
+LOTTERY_WEEKDAY_LABELS = ['Thứ hai', 'Thứ ba', 'Thứ tư', 'Thứ năm', 'Thứ sáu', 'Thứ bảy', 'Chủ nhật']
+LOTTERY_WEEKDAY_PROVINCES = {
+    0: ['Folk Valley', 'Ohio', 'Thành phố Delta'],
+    1: ['Shess Cex', 'Larp', 'Oliver Mango'],
+    2: ['Penaldo Pasta', 'Tỉnh Beast', 'Sinecraft Mex'],
+    3: ['Meow Meow', 'Folk Valley', 'Ohio'],
+    4: ['Thành phố Delta', 'Shess Cex', 'Larp'],
+    5: ['Oliver Mango', 'Penaldo Pasta', 'Tỉnh Beast'],
+    6: ['Sinecraft Mex', 'Meow Meow', 'Folk Valley'],
+}
+LOTTERY_TICKET_PRICE = 10
+LOTTERY_CHECK_PRICE = 50
+LOTTERY_STOCK_TOTAL = 150
+LOTTERY_SALE_CLOSE_HOUR = 16
+LOTTERY_WIN_CHANCE = 0.02
+LOTTERY_PRIZES = [
+    ('dac_biet', 'Giải Đặc Biệt', 50000),
+    ('nhat', 'Giải Nhất', 10000),
+    ('nhi', 'Giải Nhì', 5000),
+    ('ba', 'Giải Ba', 1000),
+    ('bon', 'Giải Bốn', 500),
+    ('nam', 'Giải Năm', 20),
+]
+LOTTERY_BOARD_STRUCTURE = [
+    ('Giải tám', 1, 2), ('Giải bảy', 1, 3), ('Giải sáu', 3, 4), ('Giải năm', 1, 4),
+    ('Giải tư', 7, 5), ('Giải ba', 2, 5), ('Giải nhì', 1, 5), ('Giải nhất', 1, 5),
+    ('Giải Đặc Biệt', 1, 6),
+]
+LOTTERY_TICKETS_FILE = 'lottery_tickets.json'
+LOTTERY_STOCK_FILE = 'lottery_stock.json'
+_lottery_tickets = _firestore_load_collection('lottery_tickets', LOTTERY_TICKETS_FILE)
+_lottery_stock_state = _firestore_load_collection('lottery_stock', LOTTERY_STOCK_FILE)
+_lottery_next_ticket_id = max(_lottery_tickets.keys(), default=0) + 1
+
+def _vn_today_key():
+    return time.strftime('%Y-%m-%d', time.gmtime(time.time() + 7 * 3600))
+
+def _vn_now():
+    return time.gmtime(time.time() + 7 * 3600)
+
+def lottery_today_provinces():
+    return LOTTERY_WEEKDAY_PROVINCES[_vn_now().tm_wday]
+
+def lottery_today_label():
+    now = _vn_now()
+    weekday = LOTTERY_WEEKDAY_LABELS[now.tm_wday]
+    date_str = time.strftime('%d/%m/%Y', now)
+    return (weekday, date_str)
+
+def lottery_sale_open():
+    return _vn_now().tm_hour < LOTTERY_SALE_CLOSE_HOUR
+
+def lottery_seconds_until_sale_change():
+    now_vn = time.time() + 7 * 3600
+    day_start_vn = now_vn - (now_vn % 86400)
+    close_ts_vn = day_start_vn + LOTTERY_SALE_CLOSE_HOUR * 3600
+    if now_vn < close_ts_vn:
+        target = close_ts_vn
     else:
-        await interaction.response.send_message('ℹ️ Không có ván cờ nào được lưu trong kênh này để xóa.')
-
-class ChessInviteView(discord.ui.View):
-
-    def __init__(self, cid, inviter_id, invitee_id, time_mode):
-        super().__init__(timeout=120)
-        self.cid = cid
-        self.inviter_id = inviter_id
-        self.invitee_id = invitee_id
-        self.time_mode = time_mode
-
-    @discord.ui.button(label='✅ Chấp nhận', style=discord.ButtonStyle.success)
-    async def accept(self, interaction: discord.Interaction, button: discord.ui.Button):
-        if await _deny_unless(interaction, interaction.user.id == self.invitee_id, '❌ Lời mời này không dành cho bạn!'):
-            return
-        if games.chess_get_invite(self.cid) is None:
-            await interaction.response.send_message('❌ Lời mời đã hết hạn hoặc bị hủy.', ephemeral=True)
-            return
-        if games.chess_active(self.cid):
-            await interaction.response.send_message('⚠️ Đang có ván cờ vua khác chưa xong trong kênh này!', ephemeral=True)
-            return
-        games.chess_clear_invite(self.cid)
-        games.chess_start_pvp(self.cid, self.inviter_id, self.invitee_id, self.time_mode)
-        image = games.chess_board_image(self.cid)
-        file = discord.File(image, filename='board.png')
-        embed = _chess_board_embed(self.cid, f'👉 Đến lượt <@{self.inviter_id}>!')
-        new_view = ChessFromView(self.cid)
-        await interaction.response.edit_message(content=None, embed=embed, attachments=[file], view=new_view)
-        new_view.message = await interaction.original_response()
-
-    @discord.ui.button(label='❌ Từ chối', style=discord.ButtonStyle.danger)
-    async def decline(self, interaction: discord.Interaction, button: discord.ui.Button):
-        if await _deny_unless(interaction, interaction.user.id == self.invitee_id, '❌ Lời mời này không dành cho bạn!'):
-            return
-        games.chess_clear_invite(self.cid)
-        await interaction.response.edit_message(content='❌ Đã từ chối lời mời chơi cờ vua.', embed=None, view=None)
-_CHESS_TIME_MODE_CHOICES = [app_commands.Choice(name=cfg['label'], value=key) for key, cfg in games.CHESS_TIME_MODES.items()]
-
-@bot.tree.command(name='chess_invite', description='Mời người khác chơi cờ vua PvP (bạn cầm Trắng)')
-@app_commands.describe(doi_thu='Người bạn muốn mời chơi', che_do='Chế độ thời gian (mặc định: Cờ nhanh)')
-@app_commands.choices(che_do=_CHESS_TIME_MODE_CHOICES)
-async def chess_invite_slash(interaction: discord.Interaction, doi_thu: discord.Member, che_do: app_commands.Choice[str]=None):
-    cid = interaction.channel_id
-    time_mode = che_do.value if che_do else games.CHESS_DEFAULT_TIME_MODE
-    if games.chess_active(cid):
-        await interaction.response.send_message('⚠️ Đang có ván cờ vua chưa xong trong kênh này!', ephemeral=True)
-        return
-    if doi_thu.bot:
-        await interaction.response.send_message('❌ Không thể mời bot chơi PvP!', ephemeral=True)
-        return
-    if doi_thu.id == interaction.user.id:
-        await interaction.response.send_message('❌ Không thể tự mời chính mình!', ephemeral=True)
-        return
-    games.chess_create_invite(cid, interaction.user.id, doi_thu.id)
-    view = ChessInviteView(cid, interaction.user.id, doi_thu.id, time_mode)
-    mode_label = games.CHESS_TIME_MODES[time_mode]['label']
-    await interaction.response.send_message(content=f'♟️ {doi_thu.mention}, {interaction.user.mention} mời bạn chơi cờ vua ({interaction.user.mention} cầm ⚪ Trắng) — chế độ **{mode_label}**! Chấp nhận không?', view=view)
-_PIECE_CHOICES = [app_commands.Choice(name=label, value=key) for key, label in games.PIECE_KEY_LABELS.items()]
-
-@bot.tree.command(name='custom_chess', description='Đổi hình ảnh cho 1 quân cờ cụ thể bằng link ảnh')
-@app_commands.describe(quan='Chọn quân cờ muốn đổi ảnh', link='Link ảnh (PNG/JPG) trỏ thẳng tới file, chỉ cho quân này')
-@app_commands.choices(quan=_PIECE_CHOICES)
-async def custom_chess_slash(interaction: discord.Interaction, quan: app_commands.Choice[str], link: str):
-    await interaction.response.defer(ephemeral=True)
-    ok = games.set_piece_theme(interaction.user.id, quan.value, link)
-    if not ok:
-        await interaction.followup.send('❌ Không tải/đọc được ảnh từ link này. Kiểm tra lại: link phải trỏ thẳng tới file ảnh (PNG/JPG) và còn truy cập được (lưu ý: link CDN Discord có thể hết hạn sau vài giờ, hãy dùng link ảnh cố định như Imgur).')
-        return
-    preview = games.piece_theme_preview_image(interaction.user.id)
-    file = discord.File(preview, filename='piece_theme.png')
-    await interaction.followup.send(content=f'✅ Đã đổi ảnh cho **{quan.name}**! Đây là toàn bộ bộ quân cờ hiện tại của bạn:', file=file)
-
-@bot.tree.command(name='custom_chess_xoa', description='Xóa ảnh custom của 1 quân cờ (bỏ trống = xóa toàn bộ)')
-@app_commands.describe(quan='Quân muốn xóa ảnh custom — bỏ trống để xóa hết cả bộ')
-@app_commands.choices(quan=_PIECE_CHOICES)
-async def custom_chess_xoa_slash(interaction: discord.Interaction, quan: app_commands.Choice[str]=None):
-    key = quan.value if quan else None
-    existed = games.clear_piece_theme(interaction.user.id, key)
-    if not existed:
-        await interaction.response.send_message('ℹ️ Không có ảnh custom nào để xóa.', ephemeral=True)
-        return
-    label = quan.name if quan else 'toàn bộ bộ quân'
-    await interaction.response.send_message(f'🧹 Đã xóa ảnh custom cho **{label}**, quay về mặc định.', ephemeral=True)
-
-@bot.tree.command(name='custom_chess_xem', description='Xem bộ quân cờ custom hiện tại của bạn')
-async def custom_chess_xem_slash(interaction: discord.Interaction):
-    preview = games.piece_theme_preview_image(interaction.user.id)
-    file = discord.File(preview, filename='piece_theme.png')
-    await interaction.response.send_message(content='🎨 Bộ quân cờ hiện tại của bạn:', file=file)
-
-@bot.tree.command(name='wiki', description='Tra cứu bách khoa toàn thư (Wikipedia tiếng Việt)')
-@app_commands.describe(tu_khoa='Từ khóa cần tra cứu')
-async def wiki_slash(interaction: discord.Interaction, tu_khoa: str):
-    await interaction.response.defer()
-    result = games.wiki_lookup(tu_khoa)
-    if result is None:
-        await interaction.followup.send(f'❌ Không tìm thấy thông tin cho **"{tu_khoa}"**.')
-        return
-    title, summary, thumbnail, url = result
-    embed = discord.Embed(title=f'📖 {title}', description=summary, url=url, color=3589616)
-    if thumbnail:
-        embed.set_thumbnail(url=thumbnail)
-    embed.set_footer(text='Nguồn: Wikipedia tiếng Việt')
-    await interaction.followup.send(embed=embed)
-
-@bot.tree.command(name='aura', description='Xem số dư Aura')
-@app_commands.describe(member='Xem Aura của người khác (bỏ trống để xem của chính bạn)')
-async def aura_slash(interaction: discord.Interaction, member: discord.Member=None):
-    target = member or interaction.user
-    balance = games.get_aura(target.id)
-    balance_plus = games.get_aura_plus(target.id)
-    who = 'Bạn' if target.id == interaction.user.id else target.mention
-    await interaction.response.send_message(f'{games.AURA_ICON} {who} đang có **{balance} Aura** và **{balance_plus} Aura+**.')
-
-@bot.tree.command(name='chon_tiente', description='💱 Đổi qua lại giữa Aura và Aura+ (phí đổi 80%)')
-@app_commands.describe(loai='Chọn chiều đổi', so_luong='Số lượng muốn đổi')
-@app_commands.choices(loai=[app_commands.Choice(name='Aura+ ➜ Aura', value='plus_to_aura'), app_commands.Choice(name='Aura ➜ Aura+', value='aura_to_plus')])
-async def chon_tiente_slash(interaction: discord.Interaction, loai: app_commands.Choice[str], so_luong: float):
-    user_id = interaction.user.id
-    if so_luong <= 0:
-        await interaction.response.send_message('❌ Số lượng phải lớn hơn 0.', ephemeral=True)
-        return
-    if loai.value == 'plus_to_aura':
-        result = games.exchange_aura_plus_to_aura(user_id, so_luong)
-        if result is None:
-            await interaction.response.send_message(f'❌ Không đủ Aura+! Bạn hiện có **{games.get_aura_plus(user_id)} Aura+**.', ephemeral=True)
-            return
-        await interaction.response.send_message(f"💱 Đã đổi **{result['spent']} Aura+** ➜ **{result['received']:.1f} Aura** (phí đổi 80%).\n{games.AURA_ICON} Số dư: **{result['aura_after']} Aura**, **{result['aura_plus_after']} Aura+**.")
-    else:
-        result = games.exchange_aura_to_aura_plus(user_id, so_luong)
-        if result is None:
-            await interaction.response.send_message(f'❌ Không đủ Aura! Bạn hiện có **{games.get_aura(user_id)} Aura**.', ephemeral=True)
-            return
-        await interaction.response.send_message(f"💱 Đã đổi **{result['spent']} Aura** ➜ **{result['received']} Aura+** (phí đổi 80%).\n{games.AURA_ICON} Số dư: **{result['aura_after']} Aura**, **{result['aura_plus_after']} Aura+**.")
-
-def _format_receipt(target_name, r):
-    ts = time.strftime('%d/%m/%Y %H:%M', time.localtime(r['time']))
-    currency_label = 'Aura' if r['currency'] == 'aura' else 'Elo'
-    lines = [
-        '```',
-        '======= HÓA ĐƠN DELTA SHOP 🧾 =======',
-        f'Khách hàng : {target_name}',
-        f'Thời gian  : {ts}',
-        '--------------------------------------',
-        f"{r['emoji']} {r['item_name']}",
-        f"  -{r['cost']} {currency_label}",
-        '--------------------------------------',
-        f'Số dư sau  : {r["balance_after"]} {currency_label}',
-        '======= Cảm ơn đã ủng hộ Delta =======',
-        '```',
-    ]
-    return '\n'.join(lines)
-
-@bot.tree.command(name='hoadon', description='🧾 Xem hóa đơn các lần mua ở Delta Shop')
-@app_commands.describe(member='Xem hóa đơn của người khác (bỏ trống để xem của chính bạn)')
-async def hoadon_slash(interaction: discord.Interaction, member: discord.Member=None):
-    target = member or interaction.user
-    receipts = games.get_receipts(target.id)
-    who = 'Bạn' if target.id == interaction.user.id else target.mention
-    if not receipts:
-        await interaction.response.send_message(f'🧾 {who} chưa mua gì ở Delta Shop cả. Sạch sẽ, minh bạch 😇', ephemeral=member is None)
-        return
-    lines = ['```', '===== LỊCH SỬ MUA HÀNG DELTA SHOP =====', f'Khách hàng: {target.display_name}', '-----------------------------------------']
-    for i, r in enumerate(receipts[:15], start=1):
-        ts = time.strftime('%d/%m/%Y %H:%M', time.localtime(r['time']))
-        currency_label = 'Aura' if r['currency'] == 'aura' else 'Elo'
-        lines.append(f"#{i:02d} [{ts}] {r['emoji']} {r['item_name']}  -{r['cost']} {currency_label}")
-    lines.append('-----------------------------------------')
-    if len(receipts) > 15:
-        lines.append(f'(...còn {len(receipts) - 15} hóa đơn cũ hơn không hiện)')
-    lines.append('=========================================')
-    lines.append('```')
-    await interaction.response.send_message(f'🧾 Hóa đơn Delta Shop của {who}:\n' + '\n'.join(lines))
-GUBBY_ROLE_ID = 1528977786490978454
-
-SHOP_ITEMS_PER_PAGE = 4
-
-def _shop_page_keys(page):
-    keys = list(games.shop_list().keys())
-    start = page * SHOP_ITEMS_PER_PAGE
-    return keys[start:start + SHOP_ITEMS_PER_PAGE]
-
-def _shop_page_count():
-    total = len(games.shop_list())
-    return max(1, -(-total // SHOP_ITEMS_PER_PAGE))
-
-def _shop_embed(page=0):
-    remain = games.shop_seconds_until_restock()
-    m, s = divmod(remain, 60)
-    total_pages = _shop_page_count()
-    lines = ['> 🕒 Restock mỗi 5 phút, học hỏi tinh hoa từ Grow a Garden — nhanh tay kẻo hết, chậm tay ăn cám.', '', '╭────────────────────────────╮', '🛍️ Gian Hàng Bán Danh Dự', '╰────────────────────────────╯', '']
-    for key in _shop_page_keys(page):
-        item = games.shop_list()[key]
-        currency_label = 'Aura' if item['currency'] == 'aura' else 'Elo'
-        stock = games.shop_stock_left(key)
-        stock_line = f'📦 Còn lại: **{stock}**' if stock > 0 else '📦 **CHÁY HÀNG** (dân tình gom sạch rồi)'
-        lines.append(f"{item['emoji']} **{item['name']}**")
-        lines.append(f"> 💰 Giá: {item['price']} {currency_label}  |  {stock_line}")
-        for l in item['desc'].split('\n'):
-            lines.append(f'> {l}')
-        lines.append('')
-    lines.append(f'⏰ Restock tiếp theo sau: **{m}:{s:02d}** — ráng chờ hoặc ráng nghèo.')
-    lines.append('')
-    lines.append('*"Tiền không mua được hạnh phúc... nhưng mua được Elo, mà Elo còn đáng giá hơn hạnh phúc."* 🥕🥶')
-    embed = discord.Embed(title=f'🛒 Delta Shop (trang {page + 1}/{total_pages})', description='\n'.join(lines), color=3066993)
-    return embed
-
-class ShopView(discord.ui.View):
-
-    def __init__(self, buyer_id, page=0):
-        super().__init__(timeout=120)
-        self.buyer_id = buyer_id
-        self.page = page
-        total_pages = _shop_page_count()
-        options = []
-        for key in _shop_page_keys(page):
-            item = games.shop_list()[key]
-            stock = games.shop_stock_left(key)
-            label = f"{item['name']} — {item['price']} {('Aura' if item['currency'] == 'aura' else 'Elo')}"
-            if stock <= 0:
-                label += ' (Hết hàng)'
-            options.append(discord.SelectOption(label=label, value=key, emoji=item['emoji']))
-        select = discord.ui.Select(placeholder='🛒 Chọn vật phẩm muốn mua...', options=options, row=0)
-        select.callback = self.on_select
-        self.add_item(select)
-        prev_button = discord.ui.Button(label='◀', style=discord.ButtonStyle.secondary, disabled=page <= 0, row=1)
-        prev_button.callback = self.on_prev
-        self.add_item(prev_button)
-        page_label = discord.ui.Button(label=f'{page + 1}/{total_pages}', style=discord.ButtonStyle.secondary, disabled=True, row=1)
-        self.add_item(page_label)
-        next_button = discord.ui.Button(label='▶', style=discord.ButtonStyle.secondary, disabled=page >= total_pages - 1, row=1)
-        next_button.callback = self.on_next
-        self.add_item(next_button)
-
-    async def _goto(self, interaction, new_page):
-        if await _deny_unless(interaction, interaction.user.id == self.buyer_id, '❌ Đây không phải shop của bạn, dùng `/shop` để mở cái riêng!'):
-            return
-        embed = _shop_embed(new_page)
-        view = ShopView(self.buyer_id, new_page)
-        await interaction.response.edit_message(embed=embed, view=view)
-
-    async def on_prev(self, interaction: discord.Interaction):
-        await self._goto(interaction, self.page - 1)
-
-    async def on_next(self, interaction: discord.Interaction):
-        await self._goto(interaction, self.page + 1)
-
-    async def on_select(self, interaction: discord.Interaction):
-        if await _deny_unless(interaction, interaction.user.id == self.buyer_id, '❌ Đây không phải shop của bạn, dùng `/shop` để mở cái riêng!'):
-            return
-        item_key = interaction.data['values'][0]
-        result = games.shop_buy(interaction.user.id, item_key)
-        if not result['ok']:
-            await interaction.response.send_message(result['reason'], ephemeral=True)
-            return
-        item = result['item']
-        msg = f"{item['emoji']} Đã mua **{item['name']}**! Số dư mới: **{result['balance_after']}**."
-        if item_key == 'role_gubby':
-            role = interaction.guild.get_role(GUBBY_ROLE_ID) if interaction.guild else None
-            if role and isinstance(interaction.user, discord.Member):
-                try:
-                    await interaction.user.add_roles(role, reason='Mua Role Gubby ở Delta Shop')
-                    msg += f'\n🐹 Đã trao role {role.mention} cho bạn!'
-                except discord.Forbidden:
-                    msg += '\n⚠️ Bot không đủ quyền để trao role, nhờ admin cấp `Manage Roles` cho bot nhé.'
-            else:
-                msg += '\n⚠️ Không tìm thấy role Gubby trong server này.'
-        receipt_text = _format_receipt(interaction.user.display_name, result['receipt'])
-        await interaction.response.send_message(f'{msg}\n{receipt_text}', ephemeral=True)
-
-@bot.tree.command(name='shop', description='🛒 Mở Delta Shop — đổi Aura/Elo lấy vật phẩm & buff')
-async def shop_slash(interaction: discord.Interaction):
-    embed = _shop_embed(0)
-    view = ShopView(interaction.user.id, 0)
-    await interaction.response.send_message(embed=embed, view=view)
-
-@bot.tree.command(name='kho', description='🎒 Xem vật phẩm/buff bạn đang sở hữu từ Delta Shop')
-@app_commands.describe(member='Xem kho của người khác (bỏ trống để xem của chính bạn)')
-async def kho_slash(interaction: discord.Interaction, member: discord.Member=None):
-    target = member or interaction.user
-    who = 'Bạn' if target.id == interaction.user.id else target.mention
-    text = games.shop_inventory_text(target.id)
-    await interaction.response.send_message(f'🎒 Kho đồ của {who}:\n{text}')
-
-@bot.tree.command(name='addmeme', description='📥 Đóng góp 1 meme TikTok vào pool đoán meme (cần admin duyệt trước khi chơi được)')
-@app_commands.describe(anh='Ảnh meme (upload trực tiếp)', ten='Tên/đáp án của meme này (vd: "Ohio rizz", "Skibidi toilet"...)')
-async def addmeme_slash(interaction: discord.Interaction, anh: discord.Attachment, ten: str):
-    if not anh.content_type or not anh.content_type.startswith('image/'):
-        await interaction.response.send_message('❌ File phải là ảnh (png/jpg/webp...).', ephemeral=True)
-        return
-    if len(ten.strip()) < 2:
-        await interaction.response.send_message('❌ Tên meme quá ngắn, đặt tên rõ ràng hơn nhé.', ephemeral=True)
-        return
-    where, existing = games._meme_find_by_url(anh.url)
-    meme_id = games.meme_submit(anh.url, ten, interaction.user.id)
-    if existing is not None:
-        status = 'đã duyệt, chơi được ngay' if where == 'approved' else 'đang chờ duyệt'
-        await interaction.response.send_message(f'🔗 Ảnh này trùng với meme **#{meme_id}** ({status})! Đã thêm **"{ten}"** làm đáp án phụ cho ảnh đó — giờ đoán đúng tên nào trong số các tên cũng được tính.', ephemeral=True)
-        return
-    await interaction.response.send_message(f'📥 Đã gửi meme **#{meme_id}** ("{ten}") vào hàng chờ duyệt!\n⚠️ Ảnh sẽ được kiểm duyệt (Discord AutoMod + admin) trước khi vào pool chơi — cấm tuyệt đối nội dung 18+/khiêu dâm, gửi vi phạm có thể bị xử lý.', ephemeral=True)
-
-@bot.tree.command(name='reviewmeme', description='🛡️ [Admin] Duyệt các meme đang chờ trong hàng đợi')
-async def reviewmeme_slash(interaction: discord.Interaction):
-    if not isinstance(interaction.user, discord.Member) or not interaction.user.guild_permissions.administrator:
-        await interaction.response.send_message('❌ Lệnh này chỉ dành cho admin server.', ephemeral=True)
-        return
-    pending = games.meme_pending_list()
-    if not pending:
-        await interaction.response.send_message('✅ Không có meme nào đang chờ duyệt.', ephemeral=True)
-        return
-    meme = pending[0]
-    embed = await _meme_review_embed(meme)
-    await interaction.response.send_message(embed=embed, view=MemeReviewView(meme['id']))
-
-async def _meme_review_embed(meme):
-    pending = games.meme_pending_list()
-    names_text = ' / '.join(meme['display_names'])
-    submitter_name = await _get_display_name_no_ping(meme['submitter_id'])
-    embed = discord.Embed(title=f"🛡️ Duyệt meme #{meme['id']} ({len(pending)} đang chờ)", description=f"**Tên:** {names_text}\n**Người gửi:** {submitter_name}", color=15105570)
-    embed.set_image(url=meme['image_url'])
-    embed.set_footer(text='⚠️ Kiểm tra kỹ nội dung 18+/khiêu dâm trước khi duyệt!')
-    return embed
-
-class MemeReviewView(discord.ui.View):
-
-    def __init__(self, meme_id):
-        super().__init__(timeout=300)
-        self.meme_id = meme_id
-
-    async def _advance(self, interaction, result_line):
-        pending = games.meme_pending_list()
-        if not pending:
-            await interaction.response.edit_message(content=f'{result_line}\n✅ Hàng chờ đã hết, không còn meme nào để duyệt.', embed=None, view=None)
-            return
-        next_meme = pending[0]
-        embed = await _meme_review_embed(next_meme)
-        next_view = MemeReviewView(next_meme['id'])
-        await interaction.response.edit_message(content=result_line, embed=embed, view=next_view)
-
-    @discord.ui.button(label='✅ Duyệt', style=discord.ButtonStyle.success)
-    async def approve(self, interaction: discord.Interaction, button: discord.ui.Button):
-        if not isinstance(interaction.user, discord.Member) or not interaction.user.guild_permissions.administrator:
-            await interaction.response.send_message('❌ Chỉ admin mới duyệt được.', ephemeral=True)
-            return
-        ok = games.meme_approve(self.meme_id, interaction.user.id)
-        line = f'✅ Đã duyệt meme #{self.meme_id}!' if ok else f'⚠️ Meme #{self.meme_id} đã được xử lý rồi.'
-        await self._advance(interaction, line)
-
-    @discord.ui.button(label='❌ Từ chối', style=discord.ButtonStyle.danger)
-    async def reject(self, interaction: discord.Interaction, button: discord.ui.Button):
-        if not isinstance(interaction.user, discord.Member) or not interaction.user.guild_permissions.administrator:
-            await interaction.response.send_message('❌ Chỉ admin mới duyệt được.', ephemeral=True)
-            return
-        ok = games.meme_reject(self.meme_id, interaction.user.id)
-        line = f'❌ Đã từ chối meme #{self.meme_id}.' if ok else f'⚠️ Meme #{self.meme_id} đã được xử lý rồi.'
-        await self._advance(interaction, line)
-
-@bot.tree.command(name='meme', description='🎭 Đoán meme TikTok — chat tên meme để đoán')
-async def meme_slash(interaction: discord.Interaction):
-    cid = interaction.channel_id
-    if games.meme_active(cid):
-        await interaction.response.send_message('⚠️ Đang có ván đoán meme chưa xong!', ephemeral=True)
-        return
-    if games.meme_pool_size() < 3:
-        await interaction.response.send_message(f'❌ Pool meme chưa đủ (cần tối thiểu 3, hiện có {games.meme_pool_size()}). Dùng `/addmeme` để đóng góp thêm!', ephemeral=True)
-        return
-    url, ok = games.meme_start(cid, interaction.user.id)
-    if not ok:
-        await interaction.response.send_message('❌ Bạn đã hết lượt chơi `/meme` hôm nay! Mua thêm 🎟️ Slot Vé Game ở `/shop` hoặc chờ mai nhé.', ephemeral=True)
-        return
-    left = games.daily_games_left_today('meme', interaction.user.id)
-    submitter_name = await _get_display_name_no_ping(games.meme_current_submitter_id(cid))
-    embed = discord.Embed(title=f'🎭 Đoán Meme TikTok (1/{games.MEME_ROUNDS_PER_GAME})', description=f'Chat thẳng tên meme để đoán! Mỗi câu đúng: **+{games.MEME_AURA_REWARD} Aura**.\n🎟️ Lượt chơi còn lại hôm nay: **{left}**\n📤 Gửi bởi: **{submitter_name}**', color=15277667)
-    embed.set_image(url=url)
-    await interaction.response.send_message(embed=embed, view=EndGameView(cid, 'meme'))
-
-NITRO_LOAD_STEPS = [12, 27, 41, 58, 73, 86, 94, 100]
-
-def _nitro_bar(percent):
-    filled = round(percent / 100 * 8)
-    bar = '▰' * filled + '▱' * (8 - filled)
-    return f'{bar} `{percent}%`'
-
-def _nitro_fake_code():
-    chars = 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789'
-    return ''.join(random.choice(chars) for _ in range(16))
-
-@bot.tree.command(name='nitro_generate', description='🎁 Generate Discord Nitro')
-async def nitro_generate_slash(interaction: discord.Interaction):
-    await interaction.response.send_message(f'🎁 Đang generate Nitro...\n{_nitro_bar(0)}')
-    for percent in NITRO_LOAD_STEPS:
-        await asyncio.sleep(random.uniform(0.4, 0.9))
-        await interaction.edit_original_response(content=f'🎁 Đang generate Nitro...\n{_nitro_bar(percent)}')
-    fake_code = _nitro_fake_code()
-    await asyncio.sleep(0.3)
-    await interaction.edit_original_response(content=f'https://discord.gift/{fake_code}')
-
-def _lottery_prize_line(ticket):
-    if ticket['prize_amount'] > 0:
-        return f"🎉 **{ticket['prize_label']}**! Vé **#{ticket['id']}** (`{ticket['number']}` - {ticket['province']})\n{games.AURA_ICON} +{ticket['prize_amount']} Aura"
-    return f"😢 Vé **#{ticket['id']}** (`{ticket['number']}` - {ticket['province']}) — chúc bạn may mắn lần sau!"
-
-def _lottery_shop_embed():
-    if games.lottery_sale_open():
-        remain = games.lottery_seconds_until_sale_change()
-        status = f'🟢 Đang mở bán — đóng cửa sau **{remain // 3600}h{(remain % 3600) // 60}p** (đúng {games.LOTTERY_SALE_CLOSE_HOUR}h chiều nay).'
-    else:
-        remain = games.lottery_seconds_until_sale_change()
-        status = f'🔴 Đã đóng cửa hôm nay — mở lại sau **{remain // 3600}h{(remain % 3600) // 60}p** (0h đêm nay).'
-    stock = games.lottery_stock_remaining()
-    embed = discord.Embed(title='🏪 Đại Lý Vé Số Phonk Delta', description=f"{status}\n\n📦 Kho còn: **{stock}/{games.LOTTERY_STOCK_TOTAL}** tờ hôm nay.\n💰 Giá: **{games.LOTTERY_TICKET_PRICE} Aura/tờ**\n🎲 Đài và dãy số được random hoàn toàn, không tự chọn được (né lạm phát 😎).\n\nBấm nút bên dưới để mua 1 tờ!", color=15277667)
-    return embed
-
-class LotteryShopView(discord.ui.View):
-
-    def __init__(self):
-        super().__init__(timeout=180)
-
-    @discord.ui.button(label='🎫 Mua vé số', style=discord.ButtonStyle.success)
-    async def buy(self, interaction: discord.Interaction, button: discord.ui.Button):
-        result = games.lottery_buy(interaction.user.id)
-        if not result['ok']:
-            await interaction.response.send_message(result['reason'], ephemeral=True)
-            return
-        ticket = result['ticket']
-        embed = discord.Embed(title='🎫 Vé Số Phonk Delta', description=f'Chúc bạn may mắn, **{interaction.user.display_name}**! 🍀', color=3066993)
-        embed.add_field(name='🏙️ Tỉnh', value=ticket['province'], inline=True)
-        embed.add_field(name='🔢 Dãy số', value=f"`{ticket['number']}`", inline=True)
-        embed.add_field(name='🆔 Mã vé', value=f"#{ticket['id']}", inline=True)
-        embed.add_field(name='📦 Kho còn lại', value=f"{result['remaining']}/{games.LOTTERY_STOCK_TOTAL} tờ", inline=False)
-        embed.set_footer(text=f"Xem bảng KQXS bằng /xemveso · Kiểm tra riêng vé này bằng /kiemtra_veso {ticket['id']} sau {games.LOTTERY_SALE_CLOSE_HOUR}h chiều")
-        await interaction.response.send_message(embed=embed, ephemeral=True)
-
-@bot.tree.command(name='shop_dailyveso', description='🏪 Mở Đại Lý Vé Số Phonk Delta — bán tới 16h chiều, 10 Aura/tờ')
-async def shop_dailyveso_slash(interaction: discord.Interaction):
-    await interaction.response.send_message(embed=_lottery_shop_embed(), view=LotteryShopView())
-
-@bot.tree.command(name='xemveso', description='🔍 Xem bảng KQXS 3 tỉnh hôm nay + danh sách vé số của bạn')
-async def xemveso_slash(interaction: discord.Interaction):
-    weekday, date_str = games.lottery_today_label()
-    today_provinces = games.lottery_today_provinces()
-    day_key = games._vn_today_key()
-    embed = discord.Embed(title=f'📋 KẾT QUẢ XỔ SỐ — {weekday.upper()} - {date_str}', color=15277667)
-    if games.lottery_result_announced({'day_key': day_key}):
-        for province in today_provinces:
-            embed.add_field(name=province, value=games.lottery_board_table(province, day_key), inline=True)
-    else:
-        remain = games.lottery_seconds_until_sale_change()
-        embed.description = f'⏳ KQXS hôm nay chưa công bố — ra lúc {games.LOTTERY_SALE_CLOSE_HOUR}h chiều (còn **{remain // 3600}h{(remain % 3600) // 60}p**).\n\n**Tỉnh mở hôm nay:** {", ".join(today_provinces)}'
-    my_tickets = games.lottery_user_tickets(interaction.user.id)
-    pending = [t for t in my_tickets if not t['checked']]
-    if pending:
-        ticket_lines = [f"🎫 Vé **#{t['id']}** — `{t['number']}` ({t['province']})" for t in pending[-15:]]
-        embed.add_field(name=f'🎫 Vé chưa dò ({min(len(pending), 15)}/{len(pending)})', value='\n'.join(ticket_lines)[:1024], inline=False)
-        embed.set_footer(text=f'Tự dò số của bạn với bảng KQXS trên nhé — dò xong dùng /kiemtra_veso [mã vé] để nhận Aura nếu trúng ({games.LOTTERY_CHECK_PRICE} Aura/lần)')
-    elif my_tickets:
-        embed.set_footer(text='Bạn đã dò hết vé rồi — mua thêm vé mới bằng /shop_dailyveso')
-    else:
-        embed.set_footer(text='Bạn chưa có vé nào — mua vé bằng /shop_dailyveso')
-    await interaction.response.send_message(embed=embed)
-
-@bot.tree.command(name='kiemtra_veso', description=f'🔎 Kiểm tra 1 vé số theo mã — {games.LOTTERY_CHECK_PRICE} Aura/lần')
-@app_commands.describe(ma_ve='Mã vé số cần kiểm tra (vd: 12)')
-async def kiemtra_veso_slash(interaction: discord.Interaction, ma_ve: int):
-    result = games.lottery_check_by_id(interaction.user.id, ma_ve)
-    if not result['ok']:
-        await interaction.response.send_message(result['reason'], ephemeral=True)
-        return
-    ticket = result['ticket']
-    if ticket['prize_amount'] > 0:
-        embed = discord.Embed(title='🎉 CHÚC MỪNG TRÚNG THƯỞNG!', description=f"Vé **#{ticket['id']}** (`{ticket['number']}` - {ticket['province']})\n\n**{ticket['prize_label']}**\n{games.AURA_ICON} +{ticket['prize_amount']} Aura", color=15844367)
-    else:
-        embed = discord.Embed(title='😢 Chúc bạn may mắn lần sau', description=f"Vé **#{ticket['id']}** (`{ticket['number']}` - {ticket['province']}) không trúng gì.", color=8359053)
-    await interaction.response.send_message(embed=embed)
-
-def _garden_embed(user_id, status=None):
-    d = status or games.farm_status(user_id)
-    if not d['plot_seed']:
-        state_text = '🕳️ Đất trống — bấm **🌱 Trồng** để trồng cây.'
-    elif d['plot_waterings'] >= games.FARM_WATERINGS_NEEDED:
-        seed_name = games.FARM_SEEDS[d['plot_seed']]['name']
-        state_text = f"✅ **{seed_name}** đã chín — bấm **🧺 Thu thập**!"
-    else:
-        seed_name = games.FARM_SEEDS[d['plot_seed']]['name']
-        state_text = f"🌱 **{seed_name}** đang lớn — đã tưới **{d['plot_waterings']}/{games.FARM_WATERINGS_NEEDED}** lần"
-    embed = discord.Embed(title='🌾 Khu Vườn Của Bạn', description=state_text, color=6584896)
-    seeds_txt = ', '.join(f"{games.FARM_SEEDS[k]['name']} x{v}" for k, v in d['seeds'].items() if v > 0) or '_(trống)_'
-    fruits_txt = ', '.join(f"{games.FARM_SEEDS[k]['name']} x{v}" for k, v in d['fruits'].items() if v > 0) or '_(trống)_'
-    embed.add_field(name='🎒 Túi hạt giống', value=seeds_txt, inline=False)
-    embed.add_field(name='🧺 Kho trái (chưa bán)', value=fruits_txt, inline=False)
-    embed.add_field(name='👨‍🌾 Nông dân', value='✅ Đã thuê' if d['farmer'] else '❌ Chưa thuê', inline=True)
-    embed.set_image(url='attachment://nongtrai.png')
-    return embed
-
-def _garden_file(user_id, status=None):
-    return discord.File(games.farm_render_image(user_id, status), filename='nongtrai.png')
-
-def _seed_option_desc(seed_key):
-    seed = games.FARM_SEEDS[seed_key]
-    dung = 'nhiều lần' if seed['reusable'] else '1 lần'
-    return f"{games.FARM_RARITY_LABELS[seed['rarity']]} • Giá {seed['price']} Aura+ • Thu {seed['yield_aura']} Aura+{seed['yield_aura_plus']} Aura+ ({dung})"
-
-class SeedShopSelect(discord.ui.Select):
-    def __init__(self, owner_id):
-        self.owner_id = owner_id
-        options = [discord.SelectOption(label=seed['name'], value=key, description=_seed_option_desc(key)[:100]) for key, seed in games.FARM_SEEDS.items()]
-        super().__init__(placeholder='Chọn hạt giống để mua...', options=options)
-
-    async def callback(self, interaction: discord.Interaction):
-        result = games.farm_buy_seed(self.owner_id, self.values[0])
-        if not result['ok']:
-            await interaction.response.send_message(result['reason'], ephemeral=True)
-            return
-        await interaction.response.send_message(f"✅ Đã mua **{result['seed']['name']}**! Bạn hiện có **{result['count']}** hạt loại này. Trồng bằng nút 🌱 Trồng trong `/vuon`.", ephemeral=True)
-
-class SeedShopView(discord.ui.View):
-    def __init__(self, owner_id):
-        super().__init__(timeout=120)
-        self.add_item(SeedShopSelect(owner_id))
-
-def _seed_shop_embed():
-    embed = discord.Embed(title='🛒 Shop Hạt Giống', description='Giá tính bằng **Aura+** — chọn trong danh sách bên dưới để mua 1 hạt.', color=15277667)
-    for rarity, label in games.FARM_RARITY_LABELS.items():
-        seeds = [s for s in games.FARM_SEEDS.values() if s['rarity'] == rarity]
-        if not seeds:
-            continue
-        lines = [f"**{s['name']}** — {s['price']} Aura+ → thu {s['yield_aura']} Aura + {s['yield_aura_plus']} Aura+ ({'nhiều lần' if s['reusable'] else '1 lần'})" for s in seeds]
-        embed.add_field(name=label, value='\n'.join(lines), inline=False)
-    return embed
-
-class PlantSelect(discord.ui.Select):
-    def __init__(self, owner_id, owned):
-        self.owner_id = owner_id
-        options = [discord.SelectOption(label=f"{games.FARM_SEEDS[k]['name']} (x{v})", value=k, description=_seed_option_desc(k)[:100]) for k, v in owned.items()]
-        super().__init__(placeholder='Chọn hạt giống để trồng...', options=options)
-
-    async def callback(self, interaction: discord.Interaction):
-        result = games.farm_plant(self.owner_id, self.values[0])
-        if not result['ok']:
-            await interaction.response.send_message(result['reason'], ephemeral=True)
-            return
-        await interaction.response.send_message(f"🌾 Đã trồng **{result['seed']['name']}**! Tưới nước bằng nút 💧 trong `/vuon`, cần **{games.FARM_WATERINGS_NEEDED} lần** (mỗi 3 tiếng) để thu hoạch.", file=_garden_file(self.owner_id), ephemeral=True)
-
-class PlantSelectView(discord.ui.View):
-    def __init__(self, owner_id, owned):
-        super().__init__(timeout=120)
-        self.add_item(PlantSelect(owner_id, owned))
-
-class SellSelect(discord.ui.Select):
-    def __init__(self, owner_id, fruits):
-        self.owner_id = owner_id
-        options = [discord.SelectOption(label=f"{games.FARM_SEEDS[k]['name']} (x{v})", value=k) for k, v in fruits.items() if v > 0]
-        super().__init__(placeholder='Chọn trái muốn bán (có thể chọn nhiều)...', options=options, min_values=1, max_values=len(options))
-
-    async def callback(self, interaction: discord.Interaction):
-        result = games.farm_sell(self.owner_id, self.values)
-        if not result['ok']:
-            await interaction.response.send_message(result['reason'], ephemeral=True)
-            return
-        sold_txt = ', '.join(f'{name} x{qty}' for name, qty in result['sold'])
-        await interaction.response.send_message(f"💰 Đã bán: {sold_txt}\nNhận được: {games.AURA_ICON} +{result['aura']} Aura, +{result['aura_plus']} Aura+", ephemeral=True)
-
-class SellAllButton(discord.ui.Button):
-    def __init__(self, owner_id):
-        self.owner_id = owner_id
-        super().__init__(label='💰 Bán tất cả', style=discord.ButtonStyle.danger)
-
-    async def callback(self, interaction: discord.Interaction):
-        result = games.farm_sell(self.owner_id, None)
-        if not result['ok']:
-            await interaction.response.send_message(result['reason'], ephemeral=True)
-            return
-        sold_txt = ', '.join(f'{name} x{qty}' for name, qty in result['sold'])
-        await interaction.response.send_message(f"💰 Đã bán tất cả: {sold_txt}\nNhận được: {games.AURA_ICON} +{result['aura']} Aura, +{result['aura_plus']} Aura+", ephemeral=True)
-
-class SellView(discord.ui.View):
-    def __init__(self, owner_id, fruits):
-        super().__init__(timeout=120)
-        self.add_item(SellSelect(owner_id, fruits))
-        self.add_item(SellAllButton(owner_id))
-
-def _fruit_inventory_embed(user_id):
-    d = games.farm_status(user_id)
-    lines = [f"**{games.FARM_SEEDS[k]['name']}** x{v} → bán được {games.FARM_SEEDS[k]['yield_aura'] * v} Aura + {round(games.FARM_SEEDS[k]['yield_aura_plus'] * v, 2)} Aura+" for k, v in d['fruits'].items() if v > 0]
-    embed = discord.Embed(title='🧺 Kho Trái Của Bạn', description='\n'.join(lines) or '_(trống)_', color=15844367)
-    return embed
-
-class HarvestSelect(discord.ui.Select):
-    def __init__(self, owner_id, seed_key):
-        self.owner_id = owner_id
-        seed = games.FARM_SEEDS[seed_key]
-        options = [discord.SelectOption(label=f"Thu thập {seed['name']}", value=seed_key, description=_seed_option_desc(seed_key)[:100], emoji='🧺')]
-        super().__init__(placeholder='Xác nhận thu thập...', options=options)
-
-    async def callback(self, interaction: discord.Interaction):
-        result = games.farm_harvest(self.owner_id)
-        if not result['ok']:
-            await interaction.response.send_message(result['reason'], ephemeral=True)
-            return
-        note = ' (cây tiếp tục sống, tưới lại để thu vòng sau)' if result['seed']['reusable'] else ' (hạt đã dùng hết, trồng hạt mới nhé)'
-        await interaction.response.send_message(f"🧺 Đã thu thập **{result['seed']['name']}**! Đã có **{result['fruit_count']}** trái trong kho{note}. Bán bằng nút 💰 Bán.", file=_garden_file(self.owner_id), ephemeral=True)
-
-class HarvestView(discord.ui.View):
-    def __init__(self, owner_id, seed_key):
-        super().__init__(timeout=120)
-        self.add_item(HarvestSelect(owner_id, seed_key))
-
-class GardenView(discord.ui.View):
-    def __init__(self, owner_id):
-        super().__init__(timeout=300)
-        self.owner_id = owner_id
-
-    async def interaction_check(self, interaction: discord.Interaction):
-        if interaction.user.id != self.owner_id:
-            await interaction.response.send_message('❌ Đây không phải khu vườn của bạn! Gõ `/vuon` để mở vườn của riêng bạn.', ephemeral=True)
-            return False
+        target = day_start_vn + 86400
+    return max(0, int(target - now_vn))
+
+def _lottery_province_board(province, day_key):
+    rng = random.Random(f'{province}|{day_key}')
+    board = []
+    for label, count, digits in LOTTERY_BOARD_STRUCTURE:
+        numbers = [f'{rng.randint(0, 10 ** digits - 1):0{digits}d}' for _ in range(count)]
+        board.append((label, numbers))
+    return board
+
+def _lottery_ensure_stock_cycle():
+    day_key = _vn_today_key()
+    state = _lottery_stock_state.get(0)
+    if state is None or state.get('day_key') != day_key:
+        state = {'remaining': LOTTERY_STOCK_TOTAL, 'day_key': day_key}
+        _lottery_stock_state[0] = state
+        _firestore_save_doc('lottery_stock', 0, state)
+    return state
+
+def lottery_stock_remaining():
+    return _lottery_ensure_stock_cycle()['remaining']
+
+def lottery_seconds_until_restock():
+    return lottery_seconds_until_sale_change()
+
+def lottery_buy(user_id):
+    global _lottery_next_ticket_id
+    if not lottery_sale_open():
+        return {'ok': False, 'reason': f'❌ Đại lý vé số đã đóng cửa lúc {LOTTERY_SALE_CLOSE_HOUR}h chiều rồi! Quay lại vào **0h ngày mai** nhé. (còn **{lottery_seconds_until_sale_change() // 3600}h{(lottery_seconds_until_sale_change() % 3600) // 60}p**)'}
+    state = _lottery_ensure_stock_cycle()
+    if state['remaining'] <= 0:
+        return {'ok': False, 'reason': '❌ Hết vé số hôm nay rồi! Mai quay lại nhé.'}
+    balance = get_aura(user_id)
+    if balance < LOTTERY_TICKET_PRICE:
+        return {'ok': False, 'reason': f'❌ Không đủ Aura! Cần **{LOTTERY_TICKET_PRICE}**, bạn có **{balance}**.'}
+    add_aura(user_id, -LOTTERY_TICKET_PRICE)
+    _apply_purchase_tax(LOTTERY_TICKET_PRICE)
+    state['remaining'] -= 1
+    _firestore_save_doc('lottery_stock', 0, state)
+    province = random.choice(lottery_today_provinces())
+    number = f'{random.randint(0, 999999):06d}'
+    ticket_id = _lottery_next_ticket_id
+    _lottery_next_ticket_id += 1
+    ticket = {'id': ticket_id, 'owner_id': user_id, 'province': province, 'number': number, 'day_key': _vn_today_key(), 'bought_at': time.time(), 'checked': False, 'prize_label': None, 'prize_amount': 0}
+    _lottery_tickets[ticket_id] = ticket
+    _firestore_save_doc('lottery_tickets', ticket_id, ticket)
+    return {'ok': True, 'ticket': ticket, 'remaining': state['remaining']}
+
+def lottery_user_tickets(user_id, unchecked_only=False):
+    tickets = [t for t in _lottery_tickets.values() if t['owner_id'] == user_id]
+    if unchecked_only:
+        tickets = [t for t in tickets if not t['checked']]
+    tickets.sort(key=lambda t: t['bought_at'])
+    return tickets
+
+def lottery_get_ticket(ticket_id):
+    return _lottery_tickets.get(ticket_id)
+
+def lottery_result_announced(ticket):
+    if ticket['day_key'] != _vn_today_key():
         return True
+    return not lottery_sale_open()
 
-    @discord.ui.button(label='🛒 Shop', style=discord.ButtonStyle.primary)
-    async def shop_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await interaction.response.send_message(embed=_seed_shop_embed(), view=SeedShopView(self.owner_id), ephemeral=True)
+def lottery_board_table(province, day_key):
+    board = _lottery_province_board(province, day_key)
+    label_width = max((len(label) for label, _ in board))
+    rows = [f'{label.ljust(label_width)} : {"  ".join(numbers)}' for label, numbers in board]
+    return '```\n' + '\n'.join(rows) + '\n```'
 
-    @discord.ui.button(label='🌱 Trồng', style=discord.ButtonStyle.success)
-    async def plant_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
-        d = games.farm_status(self.owner_id)
+def lottery_check_ticket(ticket_id):
+    ticket = _lottery_tickets.get(ticket_id)
+    if ticket is None:
+        return None
+    if ticket['checked']:
+        return ticket
+    if not lottery_result_announced(ticket):
+        return None
+    rng = random.Random(f"draw|{ticket['id']}|{ticket['province']}|{ticket['day_key']}|{ticket['number']}")
+    won = rng.random() < LOTTERY_WIN_CHANCE
+    if won:
+        prize_key, label, amount = rng.choice(LOTTERY_PRIZES)
+    else:
+        label, amount = (None, 0)
+    ticket['checked'] = True
+    ticket['prize_label'] = label
+    ticket['prize_amount'] = amount
+    if amount > 0:
+        add_aura(ticket['owner_id'], amount)
+    _firestore_save_doc('lottery_tickets', ticket_id, ticket)
+    return ticket
+
+def lottery_check_all(user_id):
+    tickets = lottery_user_tickets(user_id, unchecked_only=True)
+    results = [lottery_check_ticket(t['id']) for t in tickets]
+    return [r for r in results if r is not None]
+
+def lottery_check_by_id(user_id, ticket_id):
+    ticket = _lottery_tickets.get(ticket_id)
+    if ticket is None:
+        return {'ok': False, 'reason': f'❌ Không tìm thấy vé số **#{ticket_id}**.'}
+    if ticket['owner_id'] != user_id:
+        return {'ok': False, 'reason': '❌ Đây không phải vé số của bạn!'}
+    if ticket['checked']:
+        return {'ok': False, 'reason': f"⚠️ Vé **#{ticket_id}** đã được dò rồi (kết quả: {ticket['prize_label'] or 'không trúng'})."}
+    if not lottery_result_announced(ticket):
+        remain = lottery_seconds_until_sale_change()
+        return {'ok': False, 'reason': f'⏳ Vé **#{ticket_id}** chưa có kết quả — KQXS công bố lúc {LOTTERY_SALE_CLOSE_HOUR}h chiều nay (còn **{remain // 3600}h{(remain % 3600) // 60}p**).'}
+    balance = get_aura(user_id)
+    if balance < LOTTERY_CHECK_PRICE:
+        return {'ok': False, 'reason': f'❌ Không đủ Aura để kiểm tra! Cần **{LOTTERY_CHECK_PRICE}**, bạn có **{balance}**.'}
+    add_aura(user_id, -LOTTERY_CHECK_PRICE)
+    ticket = lottery_check_ticket(ticket_id)
+    return {'ok': True, 'ticket': ticket}
+
+WHATUINTO_LABELS = [('Femboy', 'Mềm mại bên ngoài, hỗn loạn bên trong. Bạn là hiện thân của "tưởng vậy mà không phải vậy".'), ('Tomboy', 'Năng lượng xắn tay áo, không ngại dơ. Bạn chọn hành động thay vì drama.'), ('Tsundere', '"Không phải tôi thích đâu nhé!" — trong khi tay đã làm sẵn hết rồi.'), ('Mommy ASMR', 'Giọng nói của bạn có thể ru cả server ngủ. Năng lượng chăm sóc tối thượng.'), ('Yandere ASMR', 'Ngọt ngào đến đáng ngờ. Ai chọc bạn giận thì... thôi khỏi nói.'), ('Vợ hàng xóm', 'Huyền thoại khu phố, ai cũng biết tên nhưng chẳng ai dám hỏi thẳng.'), ('Folk Valley', 'Bạn thuộc về nơi cỏ cây biết nói và gà biết deploy code.'), ('Scambodia', 'Chuyên gia lừa đảo... tình cảm. Cẩn thận, coi chừng mất ví lẫn mất tim.')]
+
+def whatuinto_roll():
+    label, caption = random.choice(WHATUINTO_LABELS)
+    percent = random.randint(60, 99)
+    return (label, caption, percent)
+_chess_games = {}
+_PIECE_VALUES = {chess.PAWN: 1, chess.KNIGHT: 3, chess.BISHOP: 3, chess.ROOK: 5, chess.QUEEN: 9}
+CHESS_STALE_SECONDS = 30 * 60
+CHESS_TIME_MODES = {'bullet': {'label': '⚡ Cờ đạn (Bullet)', 'base': 2 * 60, 'increment': 1}, 'blitz': {'label': '🔥 Cờ chớp (Blitz)', 'base': 5 * 60, 'increment': 2}, 'rapid': {'label': '🚀 Cờ nhanh (Rapid)', 'base': 15 * 60, 'increment': 5}, 'classical': {'label': '🏛️ Cờ tiêu chuẩn (Classical)', 'base': 60 * 60, 'increment': 10}}
+CHESS_DEFAULT_TIME_MODE = 'rapid'
+
+def _fmt_clock(seconds):
+    seconds = max(0, int(seconds))
+    m, s = divmod(seconds, 60)
+    return f'{m}:{s:02d}'
+
+def chess_remaining_seconds(cid, color):
+    game = _chess_games[cid]
+    if not game.get('is_pvp') or 'clocks' not in game:
+        return None
+    base = game['clocks'][color]
+    if game['board'].turn == color and game.get('clock_running_since'):
+        elapsed = time.time() - game['clock_running_since']
+        return base - elapsed
+    return base
+
+def chess_check_timeout(cid):
+    game = _chess_games.get(cid)
+    if game is None or not game.get('is_pvp') or 'clocks' not in game:
+        return None
+    turn_color = game['board'].turn
+    remaining = chess_remaining_seconds(cid, turn_color)
+    if remaining is not None and remaining <= 0:
+        return turn_color
+    return None
+
+def _touch(cid):
+    if cid in _chess_games:
+        _chess_games[cid]['last_move_at'] = time.time()
+
+def chess_touch(cid):
+    _touch(cid)
+
+def chess_active(cid):
+    game = _chess_games.get(cid)
+    if game is None:
+        return False
+    if time.time() - game.get('last_move_at', 0) > CHESS_STALE_SECONDS:
+        _chess_games.pop(cid, None)
+        return False
+    return True
+
+def chess_force_reset(cid):
+    existed = cid in _chess_games
+    _chess_games.pop(cid, None)
+    _chess_invites.pop(cid, None)
+    _chess_draw_offers.pop(cid, None)
+    return existed
+
+def chess_start(cid, player_id, bot_elo=1200):
+    if daily_games_left_today('chess_bot', player_id) <= 0:
+        return (False, False)
+    _consume_daily_slot('chess_bot', player_id)
+    dumbed = shop_consume_cu_cai(player_id)
+    _chess_games[cid] = {'board': chess.Board(), 'is_pvp': False, 'player_id': player_id, 'player_color': chess.WHITE, 'last_move_at': time.time(), 'bot_elo': bot_elo, 'last_move': None, 'bot_dumbed': dumbed}
+    return (dumbed, True)
+
+def chess_start_pvp(cid, white_id, black_id, time_mode=CHESS_DEFAULT_TIME_MODE):
+    cfg = CHESS_TIME_MODES[time_mode]
+    ref_white = shop_consume_trong_tai(white_id)
+    ref_black = shop_consume_trong_tai(black_id)
+    shield_white = shop_consume_shield_timeout(white_id)
+    clocks = {chess.WHITE: cfg['base'] + (60 if shield_white else 0), chess.BLACK: cfg['base']}
+    _chess_games[cid] = {'board': chess.Board(), 'is_pvp': True, 'white_id': white_id, 'black_id': black_id, 'last_move_at': time.time(), 'last_move': None, 'time_mode': time_mode, 'clocks': clocks, 'increment': cfg['increment'], 'clock_running_since': time.time(), 'referee_favors': chess.WHITE if ref_white else chess.BLACK if ref_black else None}
+    return (ref_white, ref_black, shield_white)
+
+def chess_is_pvp(cid):
+    return _chess_games[cid]['is_pvp']
+
+def chess_current_turn_id(cid):
+    game = _chess_games[cid]
+    board = game['board']
+    return game['white_id'] if board.turn == chess.WHITE else game['black_id']
+
+def chess_end(cid):
+    _chess_games.pop(cid, None)
+    _chess_draw_offers.pop(cid, None)
+
+def chess_player_id(cid):
+    return _chess_games[cid]['player_id']
+DEFAULT_ELO = 800
+K_FACTOR = 32
+HINT_ELO_PENALTY = 100
+BOT_LEVELS = {800: {'label': '🟢 Dễ', 'random_chance': 0.5}, 1200: {'label': '🟡 Vừa', 'random_chance': 0.15}, 1600: {'label': '🔴 Khó', 'random_chance': 0.0}}
+ELO_FILE = 'chess_elo.json'
+_elo_cache = {uid: d.get('elo', DEFAULT_ELO) for uid, d in _firestore_load_collection('elo', ELO_FILE).items()}
+
+def get_elo(user_id):
+    if user_id == BOT_OWNER_ID:
+        return INFINITE_AMOUNT
+    return _elo_cache.get(user_id, DEFAULT_ELO)
+
+def _set_elo(user_id, new_elo):
+    if user_id == BOT_OWNER_ID:
+        return INFINITE_AMOUNT
+    _elo_cache[user_id] = new_elo
+    _firestore_save_doc('elo', user_id, {'elo': new_elo})
+    return new_elo
+SHOP_RESTOCK_SECONDS = 5 * 60
+SHOP_ITEMS = {
+    'elo_100': {'emoji': '🥶', 'name': 'Mua Tài (100 Elo)', 'currency': 'aura', 'price': 50, 'stock': 8, 'rarity': 'common', 'appear_chance': 1.0, 'desc': '📈 +100 Elo ngay lập tức, không cần thắng, không cần chơi, không cần liêm sỉ.\n🐐 Messi mà thấy giá này chắc cũng phải khóc vì rẻ.'},
+    'elo10': {'emoji': '💠', 'name': '10 Elo', 'currency': 'aura', 'price': 5, 'stock': 20, 'rarity': 'common', 'appear_chance': 1.0, 'desc': '📈 +10 Elo bé xíu, dành cho người mua tài mà vẫn muốn giữ chút liêm sỉ.\n🐜 Chưa đủ để flex nhưng đủ để tự lừa bản thân là đang tiến bộ.'},
+    'hint_free': {'emoji': '💡', 'name': 'Gợi Ý Miễn Phí', 'currency': 'aura', 'price': 120, 'stock': 5, 'rarity': 'common', 'appear_chance': 1.0, 'desc': '🎯 Dùng 1 lần — hỏi bài mà không bị trừ điểm, sung sướng như quay cóp trót lọt.\n🧠 Não bạn nghỉ hưu sớm, bot lo hết.'},
+    'flag_slot': {'emoji': '🎟️', 'name': 'Slot Vé Game', 'currency': 'aura', 'price': 80, 'stock': 6, 'rarity': 'common', 'appear_chance': 1.0, 'desc': '📈 +1 lượt chơi hôm nay cho /wordle, /flag, /meme VÀ cờ vua vs Bot (vượt giới hạn 5 vé/ngày mỗi loại).\n🌾 Nghiện game thì Folk Valley không cản, chỉ cần trả tiền vé.'},
+    'aura_500': {'emoji': '💰', 'name': 'Túi Aura (500)', 'currency': 'elo', 'price': 250, 'stock': 5, 'rarity': 'uncommon', 'appear_chance': 0.75, 'desc': '💸 Bán 250 Elo lấy 500 Aura — vay nóng lãi cắt cổ nhưng tự nguyện.\n🏦 Tín dụng đen phiên bản cờ vua, không ai ép bạn cả.'},
+    'shield_timeout': {'emoji': '🛡️', 'name': 'Khiên Hết Giờ', 'currency': 'aura', 'price': 350, 'stock': 3, 'rarity': 'uncommon', 'appear_chance': 0.75, 'desc': '🎯 Dùng 1 lần — cộng free 60 giây để nghĩ nước đi cho thiên tài chậm tiêu.\n🐢 Rùa cũng có ngày về đích, miễn là mua đủ khiên.'},
+    'trong_tai': {'emoji': '⚖️', 'name': 'Trọng Tài Chess (PvP)', 'currency': 'aura', 'price': 450, 'stock': 3, 'rarity': 'uncommon', 'appear_chance': 0.6, 'desc': '🎯 Dùng 1 lần — mua đứt ông trọng tài trận PvP tiếp theo.\n🛡️ Thổi còi thiên vị bạn công khai giữa thanh thiên bạch nhật.\n🤫 "Đây là quyết định cuối cùng, không khiếu nại" — trọng tài, vừa nhận phong bì.'},
+    'double_aura': {'emoji': '✨', 'name': 'Nhân Đôi Aura (24 giờ)', 'currency': 'elo', 'price': 300, 'stock': 4, 'rarity': 'rare', 'appear_chance': 0.4, 'desc': '⏳ x2 Aura trong 24 giờ — bán Elo lấy Aura như bán nhà lấy vàng mã.\n🤑 Tư bản đích thực, không màng liêm sỉ chỉ màng lợi nhuận.'},
+    'cu_cai': {'emoji': '🥕', 'name': 'Củ Cải', 'currency': 'aura', 'price': 500, 'stock': 2, 'rarity': 'rare', 'appear_chance': 0.35, 'desc': '🎯 Dùng 1 lần — nhét củ cải vào não Chess Bot:\n🤯 IQ bot rớt về âm, đi cờ như đang say rượu ngoài quán nhậu.\n♟️ Thua ván này thì thôi khỏi chơi cờ luôn đi bạn ơi. 💀🥶'},
+    'mango_mustard': {'emoji': '🥭', 'name': 'Mango Mustard', 'currency': 'aura', 'price': 666, 'stock': 1, 'rarity': 'legendary', 'appear_chance': 0.15, 'desc': '🎯 Dùng 1 lần — sốt mù tạt xoài huyền thoại, không ai hiểu công thức nhưng ai cũng sợ.\n💥 Ăn vào +50 Aura NGAY LẬP TỨC vì can đảm thử món này xứng đáng được thưởng.\n🤢 Tác dụng phụ: ám ảnh vị giác vĩnh viễn.'},
+    'ronaldo_pasta': {'emoji': '🍝', 'name': 'Ronaldo Pasta', 'currency': 'elo', 'price': 500, 'stock': 1, 'rarity': 'legendary', 'appear_chance': 0.15, 'desc': '🎯 Dùng 1 lần — đĩa mì Ý SIUUUU chính hiệu, ăn vào tự tin thái quá.\n📈 +150 Elo NGAY LẬP TỨC vì tự tin cũng là một loại sức mạnh.\n⚠️ Cảnh báo: có thể khiến bạn ăn mừng quá lố sau mỗi nước đi.'},
+    'role_gubby': {'emoji': '🐹', 'name': 'Role Gubby', 'currency': 'aura', 'price': 3100, 'stock': 1, 'rarity': 'legendary', 'appear_chance': 0.2, 'desc': '🎖️ Vĩnh viễn thành Gubby chính hiệu, không hoàn không đổi trả.\n🐹 Một khi đã Gubby thì Gubby cả đời, hối hận cũng muộn rồi.'},
+}
+RARITY_LABEL = {'common': '⚪ Thường', 'uncommon': '🟢 Ít gặp', 'rare': '🔵 Hiếm', 'legendary': '🟣 Huyền thoại'}
+_user_buffs = {}
+_shop_stock = {}
+_shop_available = {}
+_shop_stock_cycle = None
+_receipts = {}
+
+def _ensure_stock_cycle():
+    global _shop_stock_cycle
+    cycle = shop_current_cycle()
+    if _shop_stock_cycle != cycle:
+        _shop_stock_cycle = cycle
+        _shop_stock.clear()
+        _shop_available.clear()
+        rng = random.Random(cycle)
+        for key, item in SHOP_ITEMS.items():
+            available = rng.random() < item['appear_chance']
+            _shop_available[key] = available
+            _shop_stock[key] = item['stock'] if available else 0
+
+def shop_stock_left(item_key):
+    _ensure_stock_cycle()
+    return _shop_stock.get(item_key, 0)
+
+def shop_item_available(item_key):
+    _ensure_stock_cycle()
+    return _shop_available.get(item_key, False)
+
+def _get_buffs(user_id):
+    return _user_buffs.setdefault(user_id, {'cu_cai': 0, 'trong_tai': 0, 'double_aura_until': 0, 'gubby_role': False, 'hint_free': 0, 'shield_timeout': 0})
+
+def _has_double_aura_buff(user_id):
+    buffs = _user_buffs.get(user_id)
+    return bool(buffs) and time.time() < buffs.get('double_aura_until', 0)
+
+def shop_current_cycle():
+    return int(time.time() // SHOP_RESTOCK_SECONDS)
+
+def shop_seconds_until_restock():
+    elapsed = time.time() % SHOP_RESTOCK_SECONDS
+    return int(SHOP_RESTOCK_SECONDS - elapsed)
+
+def shop_list():
+    _ensure_stock_cycle()
+    return SHOP_ITEMS
+
+_RECEIPTS_MAX_PER_USER = 30
+
+def _add_receipt(user_id, item_key, item, cost_currency, cost, balance_after):
+    entry = {
+        'time': time.time(), 'item_key': item_key, 'item_name': item['name'],
+        'emoji': item['emoji'], 'currency': cost_currency, 'cost': cost,
+        'balance_after': balance_after,
+    }
+    history = _receipts.setdefault(user_id, [])
+    history.append(entry)
+    if len(history) > _RECEIPTS_MAX_PER_USER:
+        del history[0:len(history) - _RECEIPTS_MAX_PER_USER]
+    return entry
+
+def get_receipts(user_id):
+    return list(reversed(_receipts.get(user_id, [])))
+
+def shop_buy(user_id, item_key):
+    _ensure_stock_cycle()
+    item = SHOP_ITEMS.get(item_key)
+    if item is None:
+        return {'ok': False, 'reason': '❌ Vật phẩm không tồn tại.', 'item': None, 'balance_after': None}
+    if not _shop_available.get(item_key, False) or _shop_stock.get(item_key, 0) <= 0:
+        return {'ok': False, 'reason': f"❌ **{item['name']}** đã hết hàng đợt này! Chờ restock sau **{shop_seconds_until_restock() // 60} phút** nhé.", 'item': item, 'balance_after': None}
+    currency = item['currency']
+    price = item['price']
+    current = get_aura(user_id) if currency == 'aura' else get_elo(user_id)
+    currency_label = 'Aura' if currency == 'aura' else 'Elo'
+    if current < price:
+        return {'ok': False, 'reason': f'❌ Không đủ {currency_label}! Cần **{price}**, bạn chỉ có **{current}**.', 'item': item, 'balance_after': current}
+    if currency == 'aura':
+        balance_after = add_aura(user_id, -price)
+        _apply_purchase_tax(price)
+    else:
+        balance_after = _set_elo(user_id, get_elo(user_id) - price)
+    buffs = _get_buffs(user_id)
+    if item_key == 'elo_100':
+        _set_elo(user_id, get_elo(user_id) + 100)
+    elif item_key == 'elo10':
+        _set_elo(user_id, get_elo(user_id) + 10)
+    elif item_key == 'cu_cai':
+        buffs['cu_cai'] += 1
+    elif item_key == 'double_aura':
+        base = max(time.time(), buffs['double_aura_until'])
+        buffs['double_aura_until'] = base + 24 * 3600
+    elif item_key == 'role_gubby':
+        buffs['gubby_role'] = True
+    elif item_key == 'trong_tai':
+        buffs['trong_tai'] += 1
+    elif item_key == 'hint_free':
+        buffs['hint_free'] += 1
+    elif item_key == 'aura_500':
+        add_aura(user_id, 500)
+    elif item_key == 'shield_timeout':
+        buffs['shield_timeout'] += 1
+    elif item_key == 'flag_slot':
+        daily_add_slot('flag', user_id)
+        daily_add_slot('meme', user_id)
+        daily_add_slot('chess_bot', user_id)
+        daily_add_slot('wordle', user_id)
+    elif item_key == 'mango_mustard':
+        add_aura(user_id, 50)
+    elif item_key == 'ronaldo_pasta':
+        _set_elo(user_id, get_elo(user_id) + 150)
+    _shop_stock[item_key] -= 1
+    receipt = _add_receipt(user_id, item_key, item, currency, price, balance_after)
+    return {'ok': True, 'reason': None, 'item': item, 'balance_after': balance_after, 'receipt': receipt}
+
+def shop_consume_cu_cai(user_id):
+    buffs = _user_buffs.get(user_id)
+    if not buffs or buffs.get('cu_cai', 0) <= 0:
+        return False
+    buffs['cu_cai'] -= 1
+    return True
+
+def shop_consume_trong_tai(user_id):
+    buffs = _user_buffs.get(user_id)
+    if not buffs or buffs.get('trong_tai', 0) <= 0:
+        return False
+    buffs['trong_tai'] -= 1
+    return True
+
+def shop_consume_hint_free(user_id):
+    buffs = _user_buffs.get(user_id)
+    if not buffs or buffs.get('hint_free', 0) <= 0:
+        return False
+    buffs['hint_free'] -= 1
+    return True
+
+def shop_consume_shield_timeout(user_id):
+    buffs = _user_buffs.get(user_id)
+    if not buffs or buffs.get('shield_timeout', 0) <= 0:
+        return False
+    buffs['shield_timeout'] -= 1
+    return True
+
+def shop_inventory_text(user_id):
+    buffs = _get_buffs(user_id)
+    lines = []
+    if buffs['cu_cai'] > 0:
+        lines.append(f"🥕 Củ Cải: còn **{buffs['cu_cai']}**")
+    if buffs['trong_tai'] > 0:
+        lines.append(f"⚖️ Trọng Tài: còn **{buffs['trong_tai']}**")
+    if buffs['hint_free'] > 0:
+        lines.append(f"💡 Gợi Ý Miễn Phí: còn **{buffs['hint_free']}**")
+    if buffs['shield_timeout'] > 0:
+        lines.append(f"🛡️ Khiên Hết Giờ: còn **{buffs['shield_timeout']}**")
+    if _has_double_aura_buff(user_id):
+        remain = buffs['double_aura_until'] - time.time()
+        h, rem = divmod(int(remain), 3600)
+        m = rem // 60
+        lines.append(f'✨ Nhân Đôi Aura: còn **{h}h{m:02d}m**')
+    if buffs['gubby_role']:
+        lines.append('🐹 Role Gubby: đã sở hữu vĩnh viễn')
+    return '\n'.join(lines) if lines else '_Chưa có vật phẩm/buff nào đang hoạt động._'
+
+def _expected_score(elo_a, elo_b):
+    return 1 / (1 + 10 ** ((elo_b - elo_a) / 400))
+
+def update_elo(id_a, elo_a, id_b, elo_b, score_a):
+    expected_a = _expected_score(elo_a, elo_b)
+    expected_b = 1 - expected_a
+    score_b = 1 - score_a
+    delta_a = round(K_FACTOR * (score_a - expected_a))
+    delta_b = round(K_FACTOR * (score_b - expected_b))
+    new_a = max(100, elo_a + delta_a)
+    new_b = max(100, elo_b + delta_b)
+    if id_a is not None:
+        _elo_cache[id_a] = new_a
+        _firestore_save_doc('elo', id_a, {'elo': new_a})
+    if id_b is not None:
+        _elo_cache[id_b] = new_b
+        _firestore_save_doc('elo', id_b, {'elo': new_b})
+    return (new_a, new_b, delta_a, delta_b)
+
+def apply_hint_penalty(user_id):
+    current = get_elo(user_id)
+    new_elo = max(100, current - HINT_ELO_PENALTY)
+    _elo_cache[user_id] = new_elo
+    _firestore_save_doc('elo', user_id, {'elo': new_elo})
+    return new_elo
+PIECE_NAME_VN = {chess.PAWN: 'Tốt', chess.KNIGHT: 'Mã', chess.BISHOP: 'Tượng', chess.ROOK: 'Xe', chess.QUEEN: 'Hậu', chess.KING: 'Vua'}
+
+def chess_from_options(cid):
+    board = _chess_games[cid]['board']
+    seen = {}
+    for move in board.legal_moves:
+        if move.from_square not in seen:
+            piece = board.piece_at(move.from_square)
+            name = PIECE_NAME_VN[piece.piece_type]
+            seen[move.from_square] = f'{name} {chess.square_name(move.from_square)}'
+    return [(chess.square_name(sq), label) for sq, label in seen.items()]
+
+def chess_to_options(cid, from_square_name):
+    board = _chess_games[cid]['board']
+    from_sq = chess.parse_square(from_square_name)
+    options = []
+    for move in board.legal_moves:
+        if move.from_square != from_sq:
+            continue
+        if move.promotion and move.promotion != chess.QUEEN:
+            continue
+        to_name = chess.square_name(move.to_square)
+        captured = board.piece_at(move.to_square)
+        if captured:
+            label = f'{to_name} (ăn {PIECE_NAME_VN[captured.piece_type]})'
+        elif board.is_en_passant(move):
+            label = f'{to_name} (ăn Tốt qua đường)'
+        else:
+            label = to_name
+        options.append((to_name, label))
+    return options
+
+def chess_make_move(cid, from_square_name, to_square_name):
+    game = _chess_games[cid]
+    board = game['board']
+    from_sq = chess.parse_square(from_square_name)
+    to_sq = chess.parse_square(to_square_name)
+    move = next((m for m in board.legal_moves if m.from_square == from_sq and m.to_square == to_sq and (not (m.promotion and m.promotion != chess.QUEEN))), None)
+    if move is None:
+        return (False, None, None)
+    mover_color = board.turn
+    scored = _score_all_moves(board, mover_color)
+    annotation = _annotate_move(board, move, mover_color, scored)
+    board.push(move)
+    game['last_move'] = move
+    _touch(cid)
+    if game.get('is_pvp') and 'clocks' in game:
+        now = time.time()
+        elapsed = now - game['clock_running_since']
+        game['clocks'][mover_color] = max(0, game['clocks'][mover_color] - elapsed) + game['increment']
+        game['clock_running_since'] = now
+    return (True, board.outcome(claim_draw=True), annotation)
+_SQUARE_PX = 60
+_BOARD_PX = _SQUARE_PX * 8
+_LIGHT = (240, 217, 181)
+_DARK = (181, 136, 99)
+_LASTMOVE_LIGHT = (205, 210, 106)
+_LASTMOVE_DARK = (170, 162, 58)
+_PIECE_UNICODE = {(chess.PAWN, True): '♙', (chess.KNIGHT, True): '♘', (chess.BISHOP, True): '♗', (chess.ROOK, True): '♖', (chess.QUEEN, True): '♕', (chess.KING, True): '♔', (chess.PAWN, False): '♟', (chess.KNIGHT, False): '♞', (chess.BISHOP, False): '♝', (chess.ROOK, False): '♜', (chess.QUEEN, False): '♛', (chess.KING, False): '♚'}
+_PIECE_LETTER = {chess.KING: 'K', chess.QUEEN: 'Q', chess.ROOK: 'R', chess.BISHOP: 'B', chess.KNIGHT: 'N', chess.PAWN: 'P'}
+_PIECE_KEY_INFO = {}
+for _pt, _letter in _PIECE_LETTER.items():
+    _PIECE_KEY_INFO[f'{_letter}_w'] = (_pt, chess.WHITE)
+    _PIECE_KEY_INFO[f'{_letter}_b'] = (_pt, chess.BLACK)
+PIECE_KEY_LABELS = {'K_w': 'Vua Trắng', 'Q_w': 'Hậu Trắng', 'R_w': 'Xe Trắng', 'B_w': 'Tượng Trắng', 'N_w': 'Mã Trắng', 'P_w': 'Tốt Trắng', 'K_b': 'Vua Đen', 'Q_b': 'Hậu Đen', 'R_b': 'Xe Đen', 'B_b': 'Tượng Đen', 'N_b': 'Mã Đen', 'P_b': 'Tốt Đen'}
+PIECE_THEME_FILE = 'chess_piece_themes.json'
+_piece_theme_cache = {uid: d for uid, d in _firestore_load_collection('chess_piece_theme', PIECE_THEME_FILE).items()}
+_PIECE_SPRITE_CACHE_MAX = 64
+_piece_sprite_cache = collections.OrderedDict()
+
+def _piece_key(piece_type, color):
+    return f'{_PIECE_LETTER[piece_type]}_{('w' if color == chess.WHITE else 'b')}'
+
+def get_piece_theme_url(user_id, piece_type, color):
+    d = _piece_theme_cache.get(user_id)
+    return d.get(_piece_key(piece_type, color)) if d else None
+
+def set_piece_theme(user_id, key, url):
+    raw = _fetch_image_bytes(url)
+    if raw is None:
+        return False
+    try:
+        img = Image.open(io.BytesIO(raw)).convert('RGBA').resize((_SQUARE_PX, _SQUARE_PX), Image.LANCZOS)
+        buf = io.BytesIO()
+        img.save(buf, format='PNG')
+        stored_value = 'b64:' + base64.b64encode(buf.getvalue()).decode('ascii')
+    except Exception as e:
+        print(f'[custom_chess] Ảnh tải được nhưng không đọc được (không phải ảnh hợp lệ?) từ {url}: {e!r}')
+        return False
+    d = _piece_theme_cache.setdefault(user_id, {})
+    d[key] = stored_value
+    _firestore_save_doc('chess_piece_theme', user_id, d)
+    _piece_sprite_cache.pop(stored_value, None)
+    return True
+
+def clear_piece_theme(user_id, key=None):
+    d = _piece_theme_cache.get(user_id)
+    if not d:
+        return False
+    if key is None:
+        _piece_theme_cache.pop(user_id, None)
+        _firestore_save_doc('chess_piece_theme', user_id, {})
+        return True
+    existed = d.pop(key, None) is not None
+    _firestore_save_doc('chess_piece_theme', user_id, d)
+    return existed
+
+def _fetch_image_bytes(url):
+    try:
+        req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
+        with urllib.request.urlopen(req, timeout=8) as resp:
+            return resp.read()
+    except Exception as e:
+        print(f'[custom_chess] Không tải được ảnh từ {url}: {e!r}')
+        return None
+
+def _load_piece_sprite(value):
+    if value in _piece_sprite_cache:
+        _piece_sprite_cache.move_to_end(value)
+        return _piece_sprite_cache[value]
+    try:
+        if value.startswith('b64:'):
+            raw = base64.b64decode(value[4:])
+        else:
+            raw = _fetch_image_bytes(value)
+            if raw is None:
+                raise ValueError('fetch failed')
+        sprite = Image.open(io.BytesIO(raw)).convert('RGBA').resize((_SQUARE_PX, _SQUARE_PX), Image.LANCZOS)
+    except Exception as e:
+        print(f'[custom_chess] Không đọc được ảnh: {e!r}')
+        _piece_sprite_cache[value] = None
+        _piece_sprite_cache.move_to_end(value)
+        if len(_piece_sprite_cache) > _PIECE_SPRITE_CACHE_MAX:
+            _piece_sprite_cache.popitem(last=False)
+        return None
+    _piece_sprite_cache[value] = sprite
+    _piece_sprite_cache.move_to_end(value)
+    if len(_piece_sprite_cache) > _PIECE_SPRITE_CACHE_MAX:
+        _piece_sprite_cache.popitem(last=False)
+    return sprite
+
+def preview_piece_sprite(url):
+    _piece_sprite_cache.pop(url, None)
+    return _load_piece_sprite(url)
+
+def piece_theme_preview_image(user_id):
+    pad = 4
+    label_h = 16
+    cell = _SQUARE_PX
+    cols, rows = (6, 2)
+    w = cols * (cell + pad) + pad
+    h = rows * (cell + pad + label_h) + pad
+    img = Image.new('RGBA', (w, h), (30, 30, 30, 255))
+    draw = ImageDraw.Draw(img)
+    font = _chess_font(11)
+    names = {chess.KING: 'Vua', chess.QUEEN: 'Hậu', chess.ROOK: 'Xe', chess.BISHOP: 'Tượng', chess.KNIGHT: 'Mã', chess.PAWN: 'Tốt'}
+    cols_order = [chess.KING, chess.QUEEN, chess.ROOK, chess.BISHOP, chess.KNIGHT, chess.PAWN]
+    rows_order = [chess.WHITE, chess.BLACK]
+    for row_idx, color in enumerate(rows_order):
+        for col_idx, piece_type in enumerate(cols_order):
+            x = pad + col_idx * (cell + pad)
+            y = pad + row_idx * (cell + pad + label_h)
+            url = get_piece_theme_url(user_id, piece_type, color)
+            sprite = _load_piece_sprite(url) if url else None
+            if sprite is None:
+                sprite = default_piece_sprite(piece_type, color)
+            img.alpha_composite(sprite, (x, y))
+            label = f'{names[piece_type]} {('Trắng' if color == chess.WHITE else 'Đen')}'
+            draw.text((x + cell / 2, y + cell + 2), label, font=font, fill='white', anchor='ma')
+    buf = io.BytesIO()
+    img.convert('RGB').save(buf, format='PNG')
+    buf.seek(0)
+    return buf
+
+def _chess_font(size):
+    for path in ('/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf', '/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf'):
+        try:
+            return ImageFont.truetype(path, size)
+        except Exception:
+            continue
+    try:
+        return ImageFont.load_default(size=size)
+    except TypeError:
+        return ImageFont.load_default()
+
+def _frac_to_px(points, ss):
+    return [(px * ss, py * ss) for px, py in points]
+_DEFAULT_PIECE_SPRITE_CACHE = {}
+
+def default_piece_sprite(piece_type, color):
+    key = (piece_type, color)
+    if key in _DEFAULT_PIECE_SPRITE_CACHE:
+        return _DEFAULT_PIECE_SPRITE_CACHE[key]
+    letter = _PIECE_LETTER[piece_type]
+    color_key = 'w' if color == chess.WHITE else 'b'
+    b64_key = f'{letter}_{color_key}'
+    raw = base64.b64decode(_BUILTIN_PIECE_SPRITES_B64[b64_key])
+    sprite = Image.open(io.BytesIO(raw)).convert('RGBA').resize((_SQUARE_PX, _SQUARE_PX), Image.LANCZOS)
+    _DEFAULT_PIECE_SPRITE_CACHE[key] = sprite
+    return sprite
+
+def chess_board_image(cid):
+    game = _chess_games[cid]
+    board = game['board']
+    last_move = game.get('last_move')
+    lastmove_squares = {last_move.from_square, last_move.to_square} if last_move else set()
+    white_id = game['player_id'] if not game['is_pvp'] else game['white_id']
+    black_id = None if not game['is_pvp'] else game['black_id']
+    owner_id = {chess.WHITE: white_id, chess.BLACK: black_id}
+    img = Image.new('RGBA', (_BOARD_PX, _BOARD_PX), _DARK)
+    draw = ImageDraw.Draw(img)
+    coord_font = _chess_font(13)
+    for row in range(8):
+        for col in range(8):
+            x0, y0 = (col * _SQUARE_PX, row * _SQUARE_PX)
+            sq = chess.square(col, 7 - row)
+            is_light = (row + col) % 2 == 0
+            if sq in lastmove_squares:
+                color = _LASTMOVE_LIGHT if is_light else _LASTMOVE_DARK
+            else:
+                color = _LIGHT if is_light else _DARK
+            draw.rectangle([x0, y0, x0 + _SQUARE_PX, y0 + _SQUARE_PX], fill=color)
+            label_color = _DARK if is_light else _LIGHT
+            if col == 0:
+                draw.text((x0 + 3, y0 + 1), str(8 - row), font=coord_font, fill=label_color)
+            if row == 7:
+                draw.text((x0 + _SQUARE_PX - 11, y0 + _SQUARE_PX - 16), chr(ord('a') + col), font=coord_font, fill=label_color)
+            piece = board.piece_at(sq)
+            if piece is None:
+                continue
+            uid = owner_id[piece.color]
+            url = get_piece_theme_url(uid, piece.piece_type, piece.color) if uid else None
+            sprite = _load_piece_sprite(url) if url else None
+            if sprite is None:
+                sprite = default_piece_sprite(piece.piece_type, piece.color)
+            img.alpha_composite(sprite, (x0, y0))
+    buf = io.BytesIO()
+    img.convert('RGB').save(buf, format='PNG')
+    buf.seek(0)
+    return buf
+
+def _material_score(board, color):
+    score = 0
+    for piece_type, value in _PIECE_VALUES.items():
+        score += len(board.pieces(piece_type, color)) * value
+        score -= len(board.pieces(piece_type, not color)) * value
+    return score
+
+def _score_all_moves(board, color):
+    scored = []
+    for move in board.legal_moves:
+        board.push(move)
+        score = 1000 if board.is_checkmate() else _material_score(board, color) + (0.5 if board.is_check() else 0)
+        board.pop()
+        scored.append((move, score))
+    return scored
+BRILLIANT_MARGIN = 3
+BLUNDER_HANG_VALUE = 5
+BLUNDER_MARGIN = 5
+
+def _annotate_move(board, move, color, scored):
+    played_score = next((s for m, s in scored if m == move))
+    if played_score >= 900:
+        return '!!'
+    scores_desc = sorted((s for _, s in scored), reverse=True)
+    best_score = scores_desc[0]
+    second_score = scores_desc[1] if len(scores_desc) > 1 else best_score
+    if played_score >= best_score and best_score - second_score >= BRILLIANT_MARGIN and (best_score > 0):
+        return '!!'
+    board.push(move)
+    hang = 0
+    if not board.is_game_over():
+        for reply in board.legal_moves:
+            captured = board.piece_at(reply.to_square)
+            if captured:
+                hang = max(hang, _PIECE_VALUES.get(captured.piece_type, 0))
+    board.pop()
+    if hang >= BLUNDER_HANG_VALUE or best_score - played_score >= BLUNDER_MARGIN:
+        return '??'
+    return None
+
+def chess_bot_move(cid):
+    game = _chess_games[cid]
+    board = game['board']
+    bot_color = not game['player_color']
+    random_chance = 1.0 if game.get('bot_dumbed') else BOT_LEVELS[game['bot_elo']]['random_chance']
+    scored = _score_all_moves(board, bot_color)
+    best_score = max((s for _, s in scored))
+    if random_chance > 0 and random.random() < random_chance:
+        move = random.choice([m for m, _ in scored])
+    else:
+        move = random.choice([m for m, s in scored if s == best_score])
+    annotation = _annotate_move(board, move, bot_color, scored)
+    board.push(move)
+    game['last_move'] = move
+    return (board.outcome(claim_draw=True), annotation)
+
+def chess_outcome_text(cid, outcome, display_names=None):
+    game = _chess_games[cid]
+    if game['is_pvp']:
+        white_id, black_id = (game['white_id'], game['black_id'])
+        white_elo, black_elo = (get_elo(white_id), get_elo(black_id))
+        if outcome.winner is None:
+            score_white = 0.5
+        elif outcome.winner == chess.WHITE:
+            score_white = 1
+        else:
+            score_white = 0
+        new_white, new_black, d_white, d_black = update_elo(white_id, white_elo, black_id, black_elo, score_white)
+        white_name = display_names[True] if display_names else f'<@{white_id}>'
+        black_name = display_names[False] if display_names else f'<@{black_id}>'
+        sign_w = f'+{d_white}' if d_white >= 0 else str(d_white)
+        sign_b = f'+{d_black}' if d_black >= 0 else str(d_black)
+        if outcome.winner is None:
+            result_line = '🤝 Hòa!'
+            add_aura(white_id, -150)
+            add_aura(black_id, -150)
+            aura_line = f'\n\n{AURA_ICON} Hòa cờ: cả hai bị trừ **150 Aura**.'
+        else:
+            winner_id = white_id if outcome.winner == chess.WHITE else black_id
+            winner_name = white_name if outcome.winner == chess.WHITE else black_name
+            result_line = f'🎉 {winner_name} thắng! Chiếu bí!'
+            new_winner_aura = add_aura(winner_id, 100)
+            aura_line = f'\n\n{AURA_ICON} {winner_name} nhận **+100 Aura** (số dư: {new_winner_aura}).'
+        return f'{result_line}\n\n⚪ {white_name}: {new_white} Elo ({sign_w})\n⚫ {black_name}: {new_black} Elo ({sign_b}){aura_line}'
+    player_id = game['player_id']
+    player_elo = get_elo(player_id)
+    player_color = game['player_color']
+    if outcome.winner is None:
+        score_player = 0.5
+    else:
+        score_player = 1 if outcome.winner == player_color else 0
+    new_player_elo, _, d_player, _ = update_elo(player_id, player_elo, None, game['bot_elo'], score_player)
+    sign = f'+{d_player}' if d_player >= 0 else str(d_player)
+    if outcome.winner is None:
+        result_line = '🤝 Hòa!'
+    elif score_player == 1:
+        result_line = '🎉 Bạn thắng! Bot chịu thua.'
+    else:
+        result_line = '🤖 Bot chiếu bí! Bạn thua rồi.'
+    return f'{result_line}\n\nElo của bạn: {new_player_elo} ({sign})'
+
+def chess_resign_text(cid, resigner_id, display_names=None):
+    game = _chess_games[cid]
+    if game['is_pvp']:
+        white_id, black_id = (game['white_id'], game['black_id'])
+        white_elo, black_elo = (get_elo(white_id), get_elo(black_id))
+        score_white = 0 if resigner_id == white_id else 1
+        new_white, new_black, d_white, d_black = update_elo(white_id, white_elo, black_id, black_elo, score_white)
+        white_name = display_names[True] if display_names else f'<@{white_id}>'
+        black_name = display_names[False] if display_names else f'<@{black_id}>'
+        resigner_name = white_name if resigner_id == white_id else black_name
+        winner_name = black_name if resigner_id == white_id else white_name
+        winner_id = black_id if resigner_id == white_id else white_id
+        new_winner_aura = add_aura(winner_id, 100)
+        sign_w = f'+{d_white}' if d_white >= 0 else str(d_white)
+        sign_b = f'+{d_black}' if d_black >= 0 else str(d_black)
+        return f'🏳️ {resigner_name} đã đầu hàng! {winner_name} thắng!\n\n⚪ {white_name}: {new_white} Elo ({sign_w})\n⚫ {black_name}: {new_black} Elo ({sign_b})\n\n{AURA_ICON} {winner_name} nhận **+100 Aura** (số dư: {new_winner_aura}).'
+    player_id = game['player_id']
+    player_elo = get_elo(player_id)
+    new_player_elo, _, d_player, _ = update_elo(player_id, player_elo, None, game['bot_elo'], 0)
+    sign = f'+{d_player}' if d_player >= 0 else str(d_player)
+    return f'🏳️ Bạn đã đầu hàng! Bot thắng.\n\nElo của bạn: {new_player_elo} ({sign})'
+
+def chess_timeout_text(cid, timed_out_color, display_names=None):
+    game = _chess_games[cid]
+    white_id, black_id = (game['white_id'], game['black_id'])
+    white_elo, black_elo = (get_elo(white_id), get_elo(black_id))
+    score_white = 0 if timed_out_color == chess.WHITE else 1
+    new_white, new_black, d_white, d_black = update_elo(white_id, white_elo, black_id, black_elo, score_white)
+    white_name = display_names[True] if display_names else f'<@{white_id}>'
+    black_name = display_names[False] if display_names else f'<@{black_id}>'
+    loser_name = white_name if timed_out_color == chess.WHITE else black_name
+    winner_name = black_name if timed_out_color == chess.WHITE else white_name
+    winner_id = black_id if timed_out_color == chess.WHITE else white_id
+    new_winner_aura = add_aura(winner_id, 100)
+    sign_w = f'+{d_white}' if d_white >= 0 else str(d_white)
+    sign_b = f'+{d_black}' if d_black >= 0 else str(d_black)
+    return f'⏰ {loser_name} đã hết giờ! {winner_name} thắng!\n\n⚪ {white_name}: {new_white} Elo ({sign_w})\n⚫ {black_name}: {new_black} Elo ({sign_b})\n\n{AURA_ICON} {winner_name} nhận **+100 Aura** (số dư: {new_winner_aura}).'
+
+def chess_hint(cid, hinter_id):
+    game = _chess_games[cid]
+    board = game['board']
+    mover_color = board.turn
+    scored = _score_all_moves(board, mover_color)
+    best_score = max((s for _, s in scored))
+    move = random.choice([m for m, s in scored if s == best_score])
+    piece = board.piece_at(move.from_square)
+    piece_name = PIECE_NAME_VN[piece.piece_type]
+    from_sq = chess.square_name(move.from_square)
+    to_sq = chess.square_name(move.to_square)
+    if shop_consume_hint_free(hinter_id):
+        new_elo = get_elo(hinter_id)
+        hint_text = f'💡 Gợi ý (miễn phí 🎟️): đi **{piece_name} {from_sq} → {to_sq}**'
+    else:
+        new_elo = apply_hint_penalty(hinter_id)
+        hint_text = f'💡 Gợi ý: đi **{piece_name} {from_sq} → {to_sq}**'
+    return (hint_text, new_elo)
+
+def chess_header_text(cid, display_names=None):
+    game = _chess_games[cid]
+    if game['is_pvp']:
+        white_id, black_id = (game['white_id'], game['black_id'])
+        white_name = display_names[True] if display_names else f'<@{white_id}>'
+        black_name = display_names[False] if display_names else f'<@{black_id}>'
+        if 'clocks' in game:
+            w_left = chess_remaining_seconds(cid, chess.WHITE)
+            b_left = chess_remaining_seconds(cid, chess.BLACK)
+            mode_label = CHESS_TIME_MODES[game['time_mode']]['label']
+            w_mark = '⏳' if game['board'].turn == chess.WHITE else '⏸️'
+            b_mark = '⏳' if game['board'].turn == chess.BLACK else '⏸️'
+            return f'{mode_label}\n⚪ **{white_name}** — {get_elo(white_id)} Elo — {w_mark} `{_fmt_clock(w_left)}`\n⚫ **{black_name}** — {get_elo(black_id)} Elo — {b_mark} `{_fmt_clock(b_left)}`'
+        return f'⚪ **{white_name}** — {get_elo(white_id)} Elo\n⚫ **{black_name}** — {get_elo(black_id)} Elo'
+    player_id = game['player_id']
+    player_name = display_names[True] if display_names else f'<@{player_id}>'
+    bot_elo = game['bot_elo']
+    bot_label = BOT_LEVELS[bot_elo]['label']
+    return f'⚪ **{player_name}** — {get_elo(player_id)} Elo\n⚫ **Bot ({bot_label})** — {bot_elo} Elo'
+_chess_draw_offers = {}
+
+def chess_offer_draw(cid, offerer_id):
+    _chess_draw_offers[cid] = offerer_id
+
+def chess_get_draw_offer(cid):
+    return _chess_draw_offers.get(cid)
+
+def chess_clear_draw_offer(cid):
+    _chess_draw_offers.pop(cid, None)
+
+def chess_accept_draw_text(cid, display_names=None):
+    game = _chess_games[cid]
+    white_id, black_id = (game['white_id'], game['black_id'])
+    white_name = display_names[True] if display_names else f'<@{white_id}>'
+    black_name = display_names[False] if display_names else f'<@{black_id}>'
+    return f'🤝 {white_name} và {black_name} đã đồng ý hòa. Ván cờ kết thúc, Elo giữ nguyên.'
+_chess_draw_offers = {}
+
+def chess_offer_draw(cid, offerer_id):
+    _chess_draw_offers[cid] = offerer_id
+
+def chess_get_draw_offer(cid):
+    return _chess_draw_offers.get(cid)
+
+def chess_clear_draw_offer(cid):
+    _chess_draw_offers.pop(cid, None)
+
+def chess_accept_draw_text(cid, display_names=None):
+    game = _chess_games[cid]
+    white_id, black_id = (game['white_id'], game['black_id'])
+    white_name = display_names[True] if display_names else f'<@{white_id}>'
+    black_name = display_names[False] if display_names else f'<@{black_id}>'
+    return f'🤝 {white_name} và {black_name} đã đồng ý kết thúc ván. Elo giữ nguyên, không tính thắng thua.'
+
+def chess_captured_text(cid):
+    board = _chess_games[cid]['board']
+    remaining = {chess.WHITE: {}, chess.BLACK: {}}
+    for color in (chess.WHITE, chess.BLACK):
+        for piece_type in _PIECE_VALUES:
+            remaining[color][piece_type] = len(board.pieces(piece_type, color))
+    start_counts = {chess.PAWN: 8, chess.KNIGHT: 2, chess.BISHOP: 2, chess.ROOK: 2, chess.QUEEN: 1}
+
+    def captured_symbols(by_color):
+        opp = not by_color
+        symbols = []
+        for piece_type, start in start_counts.items():
+            missing = start - remaining[opp][piece_type]
+            symbols.extend([_PIECE_UNICODE[piece_type, opp]] * missing)
+        return ''.join(symbols)
+    white_took = captured_symbols(chess.WHITE)
+    black_took = captured_symbols(chess.BLACK)
+    if not white_took and (not black_took):
+        return None
+    parts = []
+    if white_took:
+        parts.append(f'⚪ Trắng đã ăn: {white_took}')
+    if black_took:
+        parts.append(f'⚫ Đen đã ăn: {black_took}')
+    return '  |  '.join(parts)
+_chess_invites = {}
+
+def chess_create_invite(cid, inviter_id, invitee_id):
+    _chess_invites[cid] = {'inviter_id': inviter_id, 'invitee_id': invitee_id}
+
+def chess_get_invite(cid):
+    return _chess_invites.get(cid)
+
+def chess_clear_invite(cid):
+    _chess_invites.pop(cid, None)
+WIKI_API = 'https://vi.wikipedia.org/w/api.php'
+WIKI_SUMMARY_MAX = 700
+
+def wiki_lookup(keyword):
+    headers = {'User-Agent': 'TornadoAddonBot/1.0 (Discord bot; contact: n/a)'}
+    try:
+        search_params = urllib.parse.urlencode({'action': 'query', 'list': 'search', 'srsearch': keyword, 'format': 'json', 'srlimit': 1})
+        req = urllib.request.Request(f'{WIKI_API}?{search_params}', headers=headers)
+        with urllib.request.urlopen(req, timeout=8) as resp:
+            search_data = json.loads(resp.read())
+        results = search_data.get('query', {}).get('search', [])
+        if not results:
+            print(f'[wiki] Không có kết quả search cho: {keyword}')
+            return None
+        title = results[0]['title']
+        extract_params = urllib.parse.urlencode({'action': 'query', 'prop': 'extracts|pageimages', 'exintro': 1, 'explaintext': 1, 'piprop': 'thumbnail', 'pithumbsize': 400, 'titles': title, 'format': 'json'})
+        req2 = urllib.request.Request(f'{WIKI_API}?{extract_params}', headers=headers)
+        with urllib.request.urlopen(req2, timeout=8) as resp:
+            extract_data = json.loads(resp.read())
+        pages = extract_data.get('query', {}).get('pages', {})
+        page = next(iter(pages.values()))
+        summary = page.get('extract', '').strip()
+        if not summary:
+            print(f"[wiki] Bài '{title}' không có extract")
+            return None
+        if len(summary) > WIKI_SUMMARY_MAX:
+            summary = summary[:WIKI_SUMMARY_MAX].rsplit(' ', 1)[0] + '...'
+        thumbnail = page.get('thumbnail', {}).get('source')
+        article_url = f'https://vi.wikipedia.org/wiki/{urllib.parse.quote(title.replace(' ', '_'))}'
+        return (title, summary, thumbnail, article_url)
+    except Exception as e:
+        print(f"[wiki] Lỗi khi tra '{keyword}': {type(e).__name__}: {e}")
+        return None
+
+FARM_FILE = 'farm_data.json'
+FARM_WATER_COOLDOWN = 3 * 3600
+FARM_WATERINGS_NEEDED = 3
+FARM_FARMER_DAILY_COST = 350
+FARM_FARMER_SELL_FEE = 0.10
+FARM_FARMER_CYCLE_SECONDS = 15 * 60
+FARM_RARITY_LABELS = {'common': '⚪ Common', 'uncommon': '🟢 Uncommon', 'legend': '🟡 Legend', 'secret': '🔴 Secret'}
+FARM_SEEDS = {
+    'oliver': {'name': 'Cây Oliver', 'rarity': 'common', 'price': 0.1, 'reusable': True, 'yield_aura': 0.1, 'yield_aura_plus': 0.0},
+    'phonk': {'name': 'Phonk Seed', 'rarity': 'common', 'price': 0.1, 'reusable': False, 'yield_aura': 2, 'yield_aura_plus': 0.01},
+    'folkvalley': {'name': 'Folk Valley Seed', 'rarity': 'uncommon', 'price': 0.5, 'reusable': False, 'yield_aura': 5.5, 'yield_aura_plus': 0.2},
+    'skibidi': {'name': 'Skibidi Seed', 'rarity': 'uncommon', 'price': 0.9, 'reusable': False, 'yield_aura': 10.9, 'yield_aura_plus': 0.5},
+    'delta': {'name': 'Delta Seed', 'rarity': 'legend', 'price': 1.9, 'reusable': True, 'yield_aura': 100, 'yield_aura_plus': 0.9},
+    'penado': {'name': 'Penado Pesta', 'rarity': 'legend', 'price': 40, 'reusable': True, 'yield_aura': 500, 'yield_aura_plus': 30},
+    'beast': {'name': 'Beast Seed', 'rarity': 'secret', 'price': 100, 'reusable': False, 'yield_aura': 5000, 'yield_aura_plus': 190},
+}
+_farm_cache = {int(uid): d for uid, d in _firestore_load_collection('farm', FARM_FILE).items()}
+
+def _farm_get(user_id):
+    d = _farm_cache.setdefault(user_id, {})
+    if not isinstance(d.get('seeds'), dict):
+        d['seeds'] = {}
+    if not isinstance(d.get('fruits'), dict):
+        d['fruits'] = {}
+    d.pop('planted', None)
+    d.pop('waterings', None)
+    d.pop('last_water', None)
+    d.setdefault('plot_seed', None)
+    d.setdefault('plot_waterings', 0)
+    d.setdefault('plot_last_water', 0)
+    d.setdefault('farmer', False)
+    d.setdefault('farmer_next_charge', 0)
+    d.setdefault('farmer_next_tick', 0)
+    return d
+
+def _farm_save(user_id):
+    _firestore_save_doc('farm', user_id, _farm_cache[user_id])
+
+def _farm_settle_farmer(d, user_id):
+    if not d['farmer']:
+        return False
+    changed = False
+    now = time.time()
+    while d['farmer'] and d['farmer_next_charge'] <= now:
+        if get_aura(user_id) < FARM_FARMER_DAILY_COST:
+            d['farmer'] = False
+            changed = True
+            break
+        add_aura(user_id, -FARM_FARMER_DAILY_COST)
+        d['farmer_next_charge'] += 86400
+        changed = True
+    if not d['farmer']:
+        return changed
+    if d['farmer_next_tick'] <= 0:
+        d['farmer_next_tick'] = now + FARM_FARMER_CYCLE_SECONDS
+        return True
+    while d['farmer_next_tick'] <= now:
+        changed = True
         if d['plot_seed']:
-            await interaction.response.send_message('❌ Đất đang có cây rồi, thu hoạch trước đã!', ephemeral=True)
-            return
-        owned = {k: v for k, v in d['seeds'].items() if v > 0}
-        if not owned:
-            await interaction.response.send_message('❌ Bạn chưa có hạt giống nào — mua trong 🛒 Shop trước!', ephemeral=True)
-            return
-        await interaction.response.send_message('Chọn hạt giống để trồng:', view=PlantSelectView(self.owner_id, owned), ephemeral=True)
+            if d['plot_waterings'] < FARM_WATERINGS_NEEDED:
+                d['plot_waterings'] += 1
+                d['plot_last_water'] = now
+            else:
+                seed = FARM_SEEDS[d['plot_seed']]
+                net_aura = seed['yield_aura'] * (1 - FARM_FARMER_SELL_FEE)
+                net_aura_plus = round(seed['yield_aura_plus'] * (1 - FARM_FARMER_SELL_FEE), 2)
+                add_aura(user_id, int(round(net_aura)))
+                if net_aura_plus:
+                    add_aura_plus(user_id, net_aura_plus)
+                if seed['reusable']:
+                    d['plot_waterings'] = 0
+                    d['plot_last_water'] = now
+                else:
+                    d['plot_seed'] = None
+                    d['plot_waterings'] = 0
+                    d['plot_last_water'] = 0
+        d['farmer_next_tick'] += FARM_FARMER_CYCLE_SECONDS
+    return changed
 
-    @discord.ui.button(label='💧 Tưới nước', style=discord.ButtonStyle.secondary)
-    async def water_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
-        result = games.farm_water(self.owner_id)
-        if not result['ok']:
-            await interaction.response.send_message(result['reason'], ephemeral=True)
-            return
-        done = result['waterings'] >= games.FARM_WATERINGS_NEEDED
-        msg = '✅ Sẵn sàng thu hoạch — bấm 🧺!' if done else 'Tưới tiếp sau 3 tiếng nữa nhé.'
-        await interaction.response.send_message(f"💧 Đã tưới nước! ({result['waterings']}/{games.FARM_WATERINGS_NEEDED}) — {msg}", file=_garden_file(self.owner_id), ephemeral=True)
+def farm_status(user_id):
+    d = _farm_get(user_id)
+    if _farm_settle_farmer(d, user_id):
+        _farm_save(user_id)
+    return dict(d)
 
-    @discord.ui.button(label='🧺 Thu thập', style=discord.ButtonStyle.success)
-    async def harvest_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
-        d = games.farm_status(self.owner_id)
-        if not d['plot_seed']:
-            await interaction.response.send_message('❌ Bạn chưa trồng cây nào!', ephemeral=True)
-            return
-        if d['plot_waterings'] < games.FARM_WATERINGS_NEEDED:
-            await interaction.response.send_message(f"⏳ Cây chưa đủ nước ({d['plot_waterings']}/{games.FARM_WATERINGS_NEEDED}).", ephemeral=True)
-            return
-        await interaction.response.send_message('Xác nhận thu thập trái:', view=HarvestView(self.owner_id, d['plot_seed']), ephemeral=True)
+def farm_buy_seed(user_id, seed_key):
+    seed = FARM_SEEDS.get(seed_key)
+    if seed is None:
+        return {'ok': False, 'reason': '❌ Hạt giống không tồn tại.'}
+    price = seed['price']
+    balance = get_aura_plus(user_id)
+    if balance < price:
+        return {'ok': False, 'reason': f"❌ Không đủ Aura+! Cần **{price}** Aura+, bạn có **{balance}** Aura+."}
+    add_aura_plus(user_id, -price)
+    d = _farm_get(user_id)
+    d['seeds'][seed_key] = d['seeds'].get(seed_key, 0) + 1
+    _farm_save(user_id)
+    return {'ok': True, 'seed': seed, 'count': d['seeds'][seed_key]}
 
-    @discord.ui.button(label='👨\u200d🌾 Thuê nông dân', style=discord.ButtonStyle.secondary)
-    async def hire_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
-        result = games.farm_hire_farmer(self.owner_id)
-        if not result['ok']:
-            await interaction.response.send_message(result['reason'], ephemeral=True)
-            return
-        await interaction.response.send_message(f"👨‍🌾 Đã thuê nông dân! Nông dân sẽ tự tưới + thu hoạch + **bán giúp bạn mỗi ~15 phút** (thu phí **{int(games.FARM_FARMER_SELL_FEE * 100)}%** trên mỗi lần bán). Trừ **{games.FARM_FARMER_DAILY_COST} Aura/ngày** từ số dư — không đủ Aura quá lâu trong ngày thì nông dân sẽ tự bỏ đi.", ephemeral=True)
+def farm_plant(user_id, seed_key):
+    d = _farm_get(user_id)
+    _farm_settle_farmer(d, user_id)
+    if d['plot_seed']:
+        return {'ok': False, 'reason': '❌ Đất của bạn đang có cây trồng rồi, thu hoạch trước đã!'}
+    if d['seeds'].get(seed_key, 0) <= 0:
+        return {'ok': False, 'reason': '❌ Bạn không có hạt giống này! Mua trong Shop trước.'}
+    d['seeds'][seed_key] -= 1
+    if d['seeds'][seed_key] <= 0:
+        del d['seeds'][seed_key]
+    d['plot_seed'] = seed_key
+    d['plot_waterings'] = 0
+    d['plot_last_water'] = 0
+    _farm_save(user_id)
+    return {'ok': True, 'seed': FARM_SEEDS[seed_key]}
 
-    @discord.ui.button(label='💰 Bán', style=discord.ButtonStyle.danger)
-    async def sell_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
-        d = games.farm_status(self.owner_id)
-        if not any(v > 0 for v in d['fruits'].values()):
-            await interaction.response.send_message('❌ Kho trái của bạn đang trống, chưa có gì để bán.', ephemeral=True)
-            return
-        await interaction.response.send_message(embed=_fruit_inventory_embed(self.owner_id), view=SellView(self.owner_id, d['fruits']), ephemeral=True)
+def farm_water(user_id):
+    d = _farm_get(user_id)
+    _farm_settle_farmer(d, user_id)
+    if not d['plot_seed']:
+        return {'ok': False, 'reason': '❌ Bạn chưa trồng cây nào!'}
+    if d['plot_waterings'] >= FARM_WATERINGS_NEEDED:
+        return {'ok': False, 'reason': '✅ Cây đã đủ nước rồi, thu hoạch thôi!'}
+    now = time.time()
+    remain = d['plot_last_water'] + FARM_WATER_COOLDOWN - now
+    if remain > 0:
+        return {'ok': False, 'reason': f'⏳ Chưa tới giờ tưới tiếp — còn **{int(remain // 3600)}h{int((remain % 3600) // 60)}p**.'}
+    d['plot_waterings'] += 1
+    d['plot_last_water'] = now
+    _farm_save(user_id)
+    return {'ok': True, 'waterings': d['plot_waterings']}
 
-@bot.tree.command(name='vuon', description='🌾 Mở khu vườn của bạn — mua hạt, trồng, tưới, thu hoạch, bán')
-async def vuon_slash(interaction: discord.Interaction):
-    status = games.farm_status(interaction.user.id)
-    await interaction.response.send_message(embed=_garden_embed(interaction.user.id, status), file=_garden_file(interaction.user.id, status), view=GardenView(interaction.user.id))
+def farm_harvest(user_id):
+    d = _farm_get(user_id)
+    _farm_settle_farmer(d, user_id)
+    seed_key = d['plot_seed']
+    if not seed_key:
+        return {'ok': False, 'reason': '❌ Bạn chưa trồng cây nào!'}
+    if d['plot_waterings'] < FARM_WATERINGS_NEEDED:
+        return {'ok': False, 'reason': f"⏳ Cây chưa đủ nước ({d['plot_waterings']}/{FARM_WATERINGS_NEEDED})."}
+    seed = FARM_SEEDS[seed_key]
+    d['fruits'][seed_key] = d['fruits'].get(seed_key, 0) + 1
+    if seed['reusable']:
+        d['plot_waterings'] = 0
+        d['plot_last_water'] = 0
+    else:
+        d['plot_seed'] = None
+        d['plot_waterings'] = 0
+        d['plot_last_water'] = 0
+    _farm_save(user_id)
+    return {'ok': True, 'seed': seed, 'fruit_count': d['fruits'][seed_key]}
 
-@bot.tree.command(name='nhapcode', description='🎁 Nhập code để nhận thưởng Aura/Aura+/hạt giống')
-@app_commands.describe(code='Mã code (phân biệt hoa thường)')
-async def nhapcode_slash(interaction: discord.Interaction, code: str):
-    result = games.redeem_code(interaction.user.id, code)
-    if not result['ok']:
-        await interaction.response.send_message(result['reason'], ephemeral=True)
-        return
-    await interaction.response.send_message(f"🎁 Nhập code thành công! Nhận được: {' , '.join(result['reward_lines'])}", ephemeral=True)
+def farm_hire_farmer(user_id):
+    d = _farm_get(user_id)
+    if d['farmer']:
+        return {'ok': False, 'reason': '❌ Bạn đã thuê nông dân rồi!'}
+    balance = get_aura(user_id)
+    if balance < FARM_FARMER_DAILY_COST:
+        return {'ok': False, 'reason': f'❌ Không đủ Aura để trả công ngày đầu! Cần **{FARM_FARMER_DAILY_COST}**, bạn có **{balance}**.'}
+    add_aura(user_id, -FARM_FARMER_DAILY_COST)
+    d['farmer'] = True
+    d['farmer_next_charge'] = time.time() + 86400
+    d['farmer_next_tick'] = time.time() + FARM_FARMER_CYCLE_SECONDS
+    _farm_save(user_id)
+    return {'ok': True}
 
-web_server.keep_alive()
-bot.run(os.environ['DISCORD_KEY'])
+def farm_sell(user_id, seed_keys=None):
+    d = _farm_get(user_id)
+    keys = list(d['fruits'].keys()) if seed_keys is None else [k for k in seed_keys if d['fruits'].get(k, 0) > 0]
+    if not keys:
+        return {'ok': False, 'reason': '❌ Không có trái nào để bán.'}
+    total_aura, total_aura_plus, sold = 0, 0.0, []
+    for k in keys:
+        qty = d['fruits'].pop(k, 0)
+        if qty <= 0:
+            continue
+        seed = FARM_SEEDS[k]
+        total_aura += seed['yield_aura'] * qty
+        total_aura_plus = round(total_aura_plus + seed['yield_aura_plus'] * qty, 2)
+        sold.append((seed['name'], qty))
+    _farm_save(user_id)
+    if total_aura:
+        add_aura(user_id, int(round(total_aura)))
+    if total_aura_plus:
+        add_aura_plus(user_id, total_aura_plus)
+    return {'ok': True, 'sold': sold, 'aura': int(round(total_aura)), 'aura_plus': total_aura_plus}
+
+_FARM_PX_W, _FARM_PX_H, _FARM_SCALE = 40, 30, 10
+_FARM_SKY = (142, 207, 242)
+_FARM_HILL = (111, 191, 115)
+_FARM_DIRT = (155, 106, 62)
+_FARM_FURROW = (122, 82, 48)
+_FARM_HOLE = (92, 58, 33)
+_FARM_STEM = (62, 142, 65)
+_FARM_LEAF = (76, 175, 80)
+_FARM_LEAF2 = (102, 187, 106)
+_FARM_FLOWER = (255, 193, 7)
+_FARM_FLOWER2 = (255, 235, 59)
+
+def _farm_set(px, x, y, color):
+    if 0 <= x < _FARM_PX_W and 0 <= y < _FARM_PX_H:
+        px[x, y] = color
+
+def farm_render_image(user_id, status=None):
+    d = status or farm_status(user_id)
+    img = Image.new('RGB', (_FARM_PX_W, _FARM_PX_H), _FARM_SKY)
+    px = img.load()
+    for y in range(8, _FARM_PX_H):
+        for x in range(_FARM_PX_W):
+            px[x, y] = _FARM_DIRT
+    for y in (8, 9):
+        for x in range(_FARM_PX_W):
+            px[x, y] = _FARM_HILL
+    for y in range(11, _FARM_PX_H, 3):
+        for x in range(2, _FARM_PX_W - 2):
+            px[x, y] = _FARM_FURROW
+    cx, base_y = _FARM_PX_W // 2, 26
+    if d['farmer']:
+        fx = 8
+        for y in range(base_y - 6, base_y):
+            _farm_set(px, fx, y, (66, 99, 176))
+            _farm_set(px, fx + 1, y, (66, 99, 176))
+        for x in (fx, fx + 1):
+            _farm_set(px, x, base_y - 8, (255, 224, 189))
+        for x in range(fx - 1, fx + 3):
+            _farm_set(px, x, base_y - 9, (139, 69, 19))
+    if not d['plot_seed']:
+        _farm_set(px, cx, base_y, _FARM_HOLE)
+        _farm_set(px, cx - 1, base_y, _FARM_HOLE)
+    else:
+        w = d['plot_waterings']
+        stem_top = base_y - (2 if w == 0 else 5 if w == 1 else 8 if w == 2 else 11)
+        for y in range(stem_top, base_y + 1):
+            _farm_set(px, cx, y, _FARM_STEM)
+        if w >= 1:
+            _farm_set(px, cx - 1, stem_top + 2, _FARM_LEAF)
+            _farm_set(px, cx + 1, stem_top + 2, _FARM_LEAF)
+        if w >= 2:
+            _farm_set(px, cx - 2, stem_top + 4, _FARM_LEAF2)
+            _farm_set(px, cx + 2, stem_top + 4, _FARM_LEAF2)
+            _farm_set(px, cx - 1, stem_top + 1, _FARM_LEAF)
+            _farm_set(px, cx + 1, stem_top + 1, _FARM_LEAF)
+        if w >= FARM_WATERINGS_NEEDED:
+            for fx, fy in [(cx, stem_top - 1), (cx - 1, stem_top), (cx + 1, stem_top), (cx, stem_top)]:
+                _farm_set(px, fx, fy, _FARM_FLOWER)
+            _farm_set(px, cx, stem_top - 1, _FARM_FLOWER2)
+    img = img.resize((_FARM_PX_W * _FARM_SCALE, _FARM_PX_H * _FARM_SCALE), Image.NEAREST)
+    buf = io.BytesIO()
+    img.save(buf, format='PNG')
+    buf.seek(0)
+    return buf
+
+REDEEM_FILE = 'redeem_data.json'
+REDEEM_CODES = {
+    'ChaoNgayMoiVuiVe': {'aura': 50, 'aura_plus': 0.9},
+    'DeltaMickLaConCho': {'aura': 190, 'aura_plus': 5},
+    'PleaseFruit': {'seed': 'folkvalley', 'seed_qty': 1},
+}
+_redeem_cache = {int(uid): d for uid, d in _firestore_load_collection('redeem_codes', REDEEM_FILE).items()}
+
+def redeem_code(user_id, code):
+    code = code.strip()
+    entry = REDEEM_CODES.get(code)
+    if entry is None:
+        return {'ok': False, 'reason': '❌ Code không tồn tại hoặc đã hết hạn.'}
+    used = _redeem_cache.setdefault(user_id, {'codes': []})
+    if code in used['codes']:
+        return {'ok': False, 'reason': '❌ Bạn đã nhập code này rồi!'}
+    reward_lines = []
+    if 'aura' in entry:
+        add_aura(user_id, entry['aura'])
+        reward_lines.append(f"{AURA_ICON} +{entry['aura']} Aura")
+    if 'aura_plus' in entry:
+        add_aura_plus(user_id, entry['aura_plus'])
+        reward_lines.append(f"+{entry['aura_plus']} Aura+")
+    if 'seed' in entry:
+        d = _farm_get(user_id)
+        qty = entry.get('seed_qty', 1)
+        d['seeds'][entry['seed']] = d['seeds'].get(entry['seed'], 0) + qty
+        _farm_save(user_id)
+        reward_lines.append(f"+{qty} 🌱 {FARM_SEEDS[entry['seed']]['name']}")
+    used['codes'].append(code)
+    _firestore_save_doc('redeem_codes', user_id, used)
+    return {'ok': True, 'reward_lines': reward_lines}
