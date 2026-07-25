@@ -1459,20 +1459,24 @@ def _farm_save(user_id):
 
 def _farm_settle_farmer(d, user_id):
     if not d['farmer']:
-        return
+        return False
+    changed = False
     now = time.time()
     while d['farmer'] and d['farmer_next_charge'] <= now:
         if get_aura(user_id) < FARM_FARMER_DAILY_COST:
             d['farmer'] = False
+            changed = True
             break
         add_aura(user_id, -FARM_FARMER_DAILY_COST)
         d['farmer_next_charge'] += 86400
+        changed = True
     if not d['farmer']:
-        return
+        return changed
     if d['farmer_next_tick'] <= 0:
         d['farmer_next_tick'] = now + FARM_FARMER_CYCLE_SECONDS
-        return
+        return True
     while d['farmer_next_tick'] <= now:
+        changed = True
         if d['plot_seed']:
             if d['plot_waterings'] < FARM_WATERINGS_NEEDED:
                 d['plot_waterings'] += 1
@@ -1492,11 +1496,12 @@ def _farm_settle_farmer(d, user_id):
                     d['plot_waterings'] = 0
                     d['plot_last_water'] = 0
         d['farmer_next_tick'] += FARM_FARMER_CYCLE_SECONDS
+    return changed
 
 def farm_status(user_id):
     d = _farm_get(user_id)
-    _farm_settle_farmer(d, user_id)
-    _farm_save(user_id)
+    if _farm_settle_farmer(d, user_id):
+        _farm_save(user_id)
     return dict(d)
 
 def farm_buy_seed(user_id, seed_key):
@@ -1616,8 +1621,8 @@ def _farm_set(px, x, y, color):
     if 0 <= x < _FARM_PX_W and 0 <= y < _FARM_PX_H:
         px[x, y] = color
 
-def farm_render_image(user_id):
-    d = farm_status(user_id)
+def farm_render_image(user_id, status=None):
+    d = status or farm_status(user_id)
     img = Image.new('RGB', (_FARM_PX_W, _FARM_PX_H), _FARM_SKY)
     px = img.load()
     for y in range(8, _FARM_PX_H):
