@@ -52,15 +52,11 @@ async def on_message(message):
             if games.flag_active(cid):
                 await _handle_flag_round(message, content)
                 return
-            if games.toan_active(cid):
-                await _handle_toan_round(message, content)
-                return
         except Exception as e:
             print(f'⚠️ Lỗi xử lý round game (channel {cid}): {e!r}')
             await message.channel.send(f'⚠️ Lỗi khi xử lý câu trả lời: `{e}`\nVán đã bị hủy, dùng lệnh game để bắt đầu lại.')
             games.wordle_end(cid)
             games.flag_end(cid)
-            games.toan_end(cid)
             return
     await bot.process_commands(message)
 
@@ -72,69 +68,6 @@ async def _get_display_name_no_ping(user_id):
         except discord.HTTPException:
             return 'Ẩn danh'
     return user.display_name
-
-def _toan_question_embed(cid, title_prefix):
-    q = games.toan_current(cid)
-    lives = games.toan_lives(cid)
-    tax_note = f" (thuế {int(q['tax_rate'] * 100)}%)" if q['tax_rate'] > 0 else ''
-    desc = f"**{q['question']}**\n📚 Độ khó: {q['tier_label']}\n💖 Mạng: {lives}/{games.TOAN_MAX_LIVES}\n🎁 Thưởng nếu đúng: **{q['reward']} Aura**{tax_note}\n⏱️ Trả lời trong **{games.TOAN_TIME_LIMIT_SECONDS} giây**!"
-    embed = discord.Embed(title=f'🧮 {title_prefix}', description=desc, color=3066993)
-    embed.set_image(url=q['image_url'])
-    return embed
-
-async def _toan_run_timer(message_or_interaction, cid, round_token, send_func):
-    elapsed = 0
-    bar_len = 10
-    while elapsed < games.TOAN_TIME_LIMIT_SECONDS:
-        await asyncio.sleep(games.TOAN_UPDATE_INTERVAL_SECONDS)
-        elapsed += games.TOAN_UPDATE_INTERVAL_SECONDS
-        if not games.toan_active(cid) or games.toan_round_token(cid) != round_token:
-            return
-        remaining = max(0, games.TOAN_TIME_LIMIT_SECONDS - elapsed)
-        filled = int(bar_len * elapsed / games.TOAN_TIME_LIMIT_SECONDS)
-        bar = '🟩' * filled + '⬜' * (bar_len - filled)
-        try:
-            await send_func(f'⏱️ `{bar}` còn **{remaining}s**!')
-        except Exception:
-            pass
-    if games.toan_active(cid) and games.toan_round_token(cid) == round_token:
-        games.toan_timeout(cid)
-        try:
-            await send_func(f'⏰ Hết giờ! Đáp án đúng là **{games.toan_current(cid)["answer"]}**. Mất 1 mạng!')
-        except Exception:
-            pass
-        await _toan_advance(message_or_interaction, cid, is_message=True)
-
-async def _toan_advance(target, cid, is_message):
-    send = target.channel.send if is_message else target.channel.send
-    if not games.toan_active(cid):
-        return
-    if games.toan_over(cid):
-        solved, total_aura, wrong = games.toan_summary(cid)
-        new_aura_plus = games.award_game_completion_aura_plus(games.toan_owner(cid))
-        games.toan_end(cid)
-        embed = discord.Embed(title='🧮 TỔNG KẾT GIẢI TOÁN 🧮', description=f'**Số câu đúng: {solved}**\n{games.AURA_ICON} Tổng Aura nhận được: **{total_aura}**\n{games.AURA_PLUS_ICON} +{games.AURA_PLUS_PER_GAME} Aura+ vì đã hoàn thành ván (số dư: {new_aura_plus}).', color=3066993)
-        await send(embed=embed)
-        return
-    q = games.toan_next(cid)
-    embed = _toan_question_embed(cid, 'Câu tiếp theo')
-    await send(embed=embed)
-    round_token = games.toan_round_token(cid)
-    asyncio.create_task(_toan_run_timer(target, cid, round_token, send))
-
-async def _handle_toan_round(message, guess_text):
-    cid = message.channel.id
-    result, net, tax, new_balance = games.toan_check(cid, message.author.id, guess_text)
-    if result == 'not_owner':
-        return
-    answer = games.toan_current(cid)['answer']
-    if result == 'correct':
-        tax_note = f' (đã trừ thuế {tax} Aura)' if tax > 0 else ''
-        await message.channel.send(f'✅ Chính xác! Đáp án là **{answer}**!\n{games.AURA_ICON} +{net} Aura{tax_note} (số dư: {new_balance}).')
-    else:
-        lives = games.toan_lives(cid)
-        await message.channel.send(f'❌ Sai rồi! Đáp án đúng là **{answer}**. Mất 1 mạng! (còn {lives}/{games.TOAN_MAX_LIVES} mạng)')
-    await _toan_advance(message, cid, is_message=True)
 
 async def _deny_unless(interaction: discord.Interaction, allowed: bool, msg='❌ Đây không phải ván của bạn!'):
     if not allowed:
@@ -170,7 +103,7 @@ async def _handle_flag_round(message, guess_text):
         embed.set_footer(text='Folk Valley thì thầm: hẹn gặp lại ở vòng đoán sau...')
         await message.channel.send(embed=embed)
 MOVE_ANNOTATION_TEXT = {'!!': '✨ **!!** Nước đi thiên tài!', '??': '🤦 **??** Nước đi ngớ ngẩn!'}
-GAME_CONFIG = {'wordle': {'active': games.wordle_active, 'end': games.wordle_end, 'label': 'Wordle', 'reveal': lambda cid: f'Từ đúng là **{games.wordle_word(cid).upper()}**'}, 'flag': {'active': games.flag_active, 'end': games.flag_end, 'label': 'Đoán cờ', 'reveal': lambda cid: f'Đáp án là **{games.flag_answer(cid).title()}**'}, 'toan': {'active': games.toan_active, 'end': games.toan_end, 'label': 'Giải toán', 'reveal': lambda cid: f'Đáp án là **{games.toan_current(cid)["answer"]}**'}, 'chess': {'active': games.chess_active, 'end': games.chess_end, 'label': 'Cờ vua', 'reveal': lambda cid: 'Ván đấu đã dừng.'}}
+GAME_CONFIG = {'wordle': {'active': games.wordle_active, 'end': games.wordle_end, 'label': 'Wordle', 'reveal': lambda cid: f'Từ đúng là **{games.wordle_word(cid).upper()}**'}, 'flag': {'active': games.flag_active, 'end': games.flag_end, 'label': 'Đoán cờ', 'reveal': lambda cid: f'Đáp án là **{games.flag_answer(cid).title()}**'}, 'chess': {'active': games.chess_active, 'end': games.chess_end, 'label': 'Cờ vua', 'reveal': lambda cid: 'Ván đấu đã dừng.'}}
 
 def make_end_button(cid, kind, row=None):
     cfg = GAME_CONFIG[kind]
@@ -531,7 +464,7 @@ async def ping_slash(interaction: discord.Interaction):
 @bot.tree.command(name='about', description='Thông tin về bot')
 async def about_slash(interaction: discord.Interaction):
     embed = discord.Embed(title='🤖 About Bot', description='Bot mini-game vui nhộn cho server: đoán chữ, đoán cờ, cờ vua, Delta Shop và bói vui.', color=5793266)
-    embed.add_field(name='🎮 Các lệnh', value='`/wordle` — đoán từ 5 chữ\n`/flag` — đoán cờ các nước\n`/toan` — giải toán lớp 1-12, 10 mạng\n`/chess` — cờ vua vs bot\n`/chess_invite @ai_đó` — mời PvP cờ vua\n`/chess_reset` — xóa ván cờ bị kẹt (nếu bot báo lỗi)\n`/whatuinto` — bói vui\n`/wiki <từ khóa>` — tra bách khoa toàn thư\n`/aura` — xem số dư Aura\n`/shop` — mở Delta Shop 🛒\n`/kho` — xem vật phẩm/buff đang có\n`/hoadon` — xem hóa đơn Delta Shop\n`/ping` — kiểm tra độ trễ', inline=False)
+    embed.add_field(name='🎮 Các lệnh', value='`/wordle` — đoán từ 5 chữ\n`/flag` — đoán cờ các nước\n`/danhgia` — chấm điểm thẩm mỹ 1 tấm ảnh\n`/chess` — cờ vua vs bot\n`/chess_invite @ai_đó` — mời PvP cờ vua\n`/chess_reset` — xóa ván cờ bị kẹt (nếu bot báo lỗi)\n`/whatuinto` — bói vui\n`/wiki <từ khóa>` — tra bách khoa toàn thư\n`/aura` — xem số dư Aura\n`/shop` — mở Delta Shop 🛒\n`/kho` — xem vật phẩm/buff đang có\n`/hoadon` — xem hóa đơn Delta Shop\n`/ping` — kiểm tra độ trễ', inline=False)
     embed.set_footer(text='Made by TVPixel')
     await interaction.response.send_message(embed=embed)
 
@@ -912,21 +845,18 @@ async def kho_slash(interaction: discord.Interaction, member: discord.Member=Non
     text = games.shop_inventory_text(target.id)
     await interaction.response.send_message(f'🎒 Kho đồ của {who}:\n{text}')
 
-@bot.tree.command(name='toan', description='🧮 Giải toán lớp 1-12 — trả lời đúng nhận Aura, 10 mạng, mỗi câu 30 giây!')
-async def toan_slash(interaction: discord.Interaction):
-    cid = interaction.channel_id
-    if games.toan_active(cid):
-        await interaction.response.send_message('⚠️ Đang có ván giải toán chưa xong!', ephemeral=True)
+@bot.tree.command(name='danhgia', description='📸 Nhờ bot chấm điểm thẩm mỹ 1 tấm ảnh (bố cục, ánh sáng, màu sắc...)')
+@app_commands.describe(anh='Ảnh muốn chấm điểm (upload trực tiếp)')
+async def danhgia_slash(interaction: discord.Interaction, anh: discord.Attachment):
+    if not anh.content_type or not anh.content_type.startswith('image/'):
+        await interaction.response.send_message('❌ File phải là ảnh (png/jpg/webp...).', ephemeral=True)
         return
-    q, ok = games.toan_start(cid, interaction.user.id)
-    if not ok:
-        await interaction.response.send_message('❌ Bạn đã hết lượt chơi `/toan` hôm nay! Mua thêm 🎟️ Slot Vé Game ở `/shop` hoặc chờ mai nhé.', ephemeral=True)
-        return
-    left = games.daily_games_left_today('toan', interaction.user.id)
-    embed = _toan_question_embed(cid, f'Giải Toán (10/10 mạng, {left} vé còn lại hôm nay)')
+    result = games.danhgia_generate(anh.url)
+    stars = '⭐' * result['score'] + '☆' * (10 - result['score'])
+    embed = discord.Embed(title=f"📸 Đánh Giá Ảnh — {result['tier_label']}", description=f"**Điểm: {result['score']}/10**\n{stars}\n\n{result['comment']}", color=result['color'])
+    embed.set_image(url=result['image_url'])
+    embed.set_footer(text=f'Chấm bởi {interaction.user.display_name}')
     await interaction.response.send_message(embed=embed)
-    round_token = games.toan_round_token(cid)
-    asyncio.create_task(_toan_run_timer(interaction, cid, round_token, interaction.channel.send))
 
 NITRO_LOAD_STEPS = [12, 27, 41, 58, 73, 86, 94, 100]
 
