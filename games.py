@@ -60,6 +60,8 @@ AURA_FILE = 'aura_data.json'
 AURA_ICON = '<:mango:1529287058072408195>'
 TAX_RATE = 0.05
 TAX_RECIPIENT_ID = 1210771747889090571
+BOT_OWNER_ID = TAX_RECIPIENT_ID
+INFINITE_AMOUNT = 999999999
 
 def _apply_purchase_tax(price):
     tax = max(1, round(price * TAX_RATE))
@@ -68,9 +70,13 @@ def _apply_purchase_tax(price):
 _aura_cache = {uid: d.get('balance', 0) for uid, d in _firestore_load_collection('aura', AURA_FILE).items()}
 
 def get_aura(user_id):
+    if user_id == BOT_OWNER_ID:
+        return INFINITE_AMOUNT
     return _aura_cache.get(user_id, 0)
 
 def add_aura(user_id, amount):
+    if user_id == BOT_OWNER_ID:
+        return INFINITE_AMOUNT
     if amount > 0 and _has_double_aura_buff(user_id):
         amount *= 2
     new_balance = get_aura(user_id) + amount
@@ -694,9 +700,13 @@ ELO_FILE = 'chess_elo.json'
 _elo_cache = {uid: d.get('elo', DEFAULT_ELO) for uid, d in _firestore_load_collection('elo', ELO_FILE).items()}
 
 def get_elo(user_id):
+    if user_id == BOT_OWNER_ID:
+        return INFINITE_AMOUNT
     return _elo_cache.get(user_id, DEFAULT_ELO)
 
 def _set_elo(user_id, new_elo):
+    if user_id == BOT_OWNER_ID:
+        return INFINITE_AMOUNT
     _elo_cache[user_id] = new_elo
     _firestore_save_doc('elo', user_id, {'elo': new_elo})
     return new_elo
@@ -1707,3 +1717,13 @@ def redeem_code(user_id, code):
     used['codes'].append(code)
     _firestore_save_doc('redeem_codes', user_id, used)
     return {'ok': True, 'reward_lines': reward_lines}
+
+def top_aura(n=10):
+    items = [(uid, bal) for uid, bal in _aura_cache.items() if uid != BOT_OWNER_ID and bal > 0]
+    items.sort(key=lambda x: x[1], reverse=True)
+    return items[:n]
+
+def top_elo(n=10):
+    items = [(uid, elo) for uid, elo in _elo_cache.items() if uid != BOT_OWNER_ID]
+    items.sort(key=lambda x: x[1], reverse=True)
+    return items[:n]
