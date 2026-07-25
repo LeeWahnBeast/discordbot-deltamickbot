@@ -1313,17 +1313,29 @@ FARM_WATERINGS_NEEDED = 3
 FARM_FARMER_DAILY_COST = 350
 FARM_FARMER_SELL_FEE = 0.10
 FARM_FARMER_CYCLE_SECONDS = 15 * 60
+FARM_PLOTS_PER_GARDEN = 3
+FARM_TOTAL_PLOTS = FARM_PLOTS_PER_GARDEN * 2
 FARM_RARITY_LABELS = {'common': '⚪ Common', 'uncommon': '🟢 Uncommon', 'legend': '🟡 Legend', 'secret': '🔴 Secret'}
 FARM_SEEDS = {
-    'oliver': {'name': 'Cây Oliver', 'rarity': 'common', 'price': 0.1, 'reusable': True, 'yield_aura': 0.1, 'yield_aura_plus': 0.0},
-    'phonk': {'name': 'Phonk Seed', 'rarity': 'common', 'price': 0.1, 'reusable': False, 'yield_aura': 2, 'yield_aura_plus': 0.01},
-    'folkvalley': {'name': 'Folk Valley Seed', 'rarity': 'uncommon', 'price': 0.5, 'reusable': False, 'yield_aura': 5.5, 'yield_aura_plus': 0.2},
-    'skibidi': {'name': 'Skibidi Seed', 'rarity': 'uncommon', 'price': 0.9, 'reusable': False, 'yield_aura': 10.9, 'yield_aura_plus': 0.5},
-    'delta': {'name': 'Delta Seed', 'rarity': 'legend', 'price': 1.9, 'reusable': True, 'yield_aura': 100, 'yield_aura_plus': 0.9},
-    'penado': {'name': 'Penado Pesta', 'rarity': 'legend', 'price': 40, 'reusable': True, 'yield_aura': 500, 'yield_aura_plus': 30},
-    'beast': {'name': 'Beast Seed', 'rarity': 'secret', 'price': 100, 'reusable': False, 'yield_aura': 5000, 'yield_aura_plus': 190},
+    'oliver': {'name': 'Cây Oliver', 'rarity': 'common', 'price': 0.1, 'reusable': True, 'yield_aura': 0.1, 'yield_aura_plus': 0.0, 'colors': {'stem': (62, 142, 65), 'leaf': (76, 175, 80), 'leaf2': (102, 187, 106), 'crown': (255, 193, 7)}},
+    'phonk': {'name': 'Phonk Seed', 'rarity': 'common', 'price': 0.1, 'reusable': False, 'yield_aura': 2, 'yield_aura_plus': 0.01, 'colors': {'stem': (90, 62, 142), 'leaf': (124, 77, 175), 'leaf2': (149, 102, 187), 'crown': (216, 27, 96)}},
+    'folkvalley': {'name': 'Folk Valley Seed', 'rarity': 'uncommon', 'price': 0.5, 'reusable': False, 'yield_aura': 5.5, 'yield_aura_plus': 0.2, 'colors': {'stem': (62, 110, 142), 'leaf': (76, 145, 175), 'leaf2': (102, 165, 187), 'crown': (255, 235, 59)}},
+    'skibidi': {'name': 'Skibidi Seed', 'rarity': 'uncommon', 'price': 0.9, 'reusable': False, 'yield_aura': 10.9, 'yield_aura_plus': 0.5, 'colors': {'stem': (142, 100, 62), 'leaf': (175, 130, 76), 'leaf2': (187, 150, 102), 'crown': (244, 67, 54)}},
+    'delta': {'name': 'Delta Seed', 'rarity': 'legend', 'price': 1.9, 'reusable': True, 'yield_aura': 100, 'yield_aura_plus': 0.9, 'colors': {'stem': (62, 142, 120), 'leaf': (76, 175, 150), 'leaf2': (102, 187, 165), 'crown': (0, 230, 200)}},
+    'penado': {'name': 'Penado Pesta', 'rarity': 'legend', 'price': 40, 'reusable': True, 'yield_aura': 500, 'yield_aura_plus': 30, 'colors': {'stem': (142, 62, 62), 'leaf': (175, 76, 76), 'leaf2': (187, 102, 102), 'crown': (255, 111, 0)}},
+    'beast': {'name': 'Beast Seed', 'rarity': 'secret', 'price': 100, 'reusable': False, 'yield_aura': 5000, 'yield_aura_plus': 190, 'colors': {'stem': (40, 40, 45), 'leaf': (90, 20, 110), 'leaf2': (140, 30, 160), 'crown': (255, 0, 200)}},
 }
+FARM_WEATHERS = {
+    'sunny': {'label': '☀️ Nắng', 'desc': 'Cây lớn nhanh hơn — giảm 1 lần tưới cần thiết.'},
+    'rainy': {'label': '🌧️ Mưa', 'desc': 'Trời mưa tự tưới miễn phí 1 lần cho mọi cây đang trồng!'},
+    'storm': {'label': '⛈️ Bão', 'desc': 'Bão có thể làm hỏng cây non — cẩn thận mất trắng!'},
+}
+FARM_WEATHER_WEIGHTS = {'sunny': 0.4, 'rainy': 0.4, 'storm': 0.2}
+FARM_STORM_DESTROY_CHANCE = 0.15
 _farm_cache = {int(uid): d for uid, d in _firestore_load_collection('farm', FARM_FILE).items()}
+
+def _farm_empty_plot():
+    return {'seed': None, 'waterings': 0, 'last_water': 0}
 
 def _farm_get(user_id):
     d = _farm_cache.setdefault(user_id, {})
@@ -1334,16 +1346,58 @@ def _farm_get(user_id):
     d.pop('planted', None)
     d.pop('waterings', None)
     d.pop('last_water', None)
-    d.setdefault('plot_seed', None)
-    d.setdefault('plot_waterings', 0)
-    d.setdefault('plot_last_water', 0)
+    if not isinstance(d.get('plots'), list) or len(d['plots']) != FARM_TOTAL_PLOTS:
+        old_seed = d.get('plot_seed')
+        old_waterings = d.get('plot_waterings', 0)
+        old_last_water = d.get('plot_last_water', 0)
+        plots = [_farm_empty_plot() for _ in range(FARM_TOTAL_PLOTS)]
+        if old_seed:
+            plots[0] = {'seed': old_seed, 'waterings': old_waterings, 'last_water': old_last_water}
+        d['plots'] = plots
+    d.pop('plot_seed', None)
+    d.pop('plot_waterings', None)
+    d.pop('plot_last_water', None)
     d.setdefault('farmer', False)
     d.setdefault('farmer_next_charge', 0)
     d.setdefault('farmer_next_tick', 0)
+    d.setdefault('weather', None)
+    d.setdefault('weather_rolled_at', 0)
     return d
 
 def _farm_save(user_id):
     _firestore_save_doc('farm', user_id, _farm_cache[user_id])
+
+FARM_WEATHER_REFRESH_SECONDS = 3600
+
+def _farm_roll_weather(d):
+    now = time.time()
+    if d['weather'] and now - d['weather_rolled_at'] < FARM_WEATHER_REFRESH_SECONDS:
+        return False
+    keys = list(FARM_WEATHER_WEIGHTS.keys())
+    weights = list(FARM_WEATHER_WEIGHTS.values())
+    new_weather = random.choices(keys, weights=weights, k=1)[0]
+    d['weather'] = new_weather
+    d['weather_rolled_at'] = now
+    if new_weather == 'rainy':
+        for plot in d['plots']:
+            if plot['seed']:
+                needed = _farm_needed_waterings(d, plot)
+                if plot['waterings'] < needed:
+                    plot['waterings'] += 1
+                    plot['last_water'] = now
+    elif new_weather == 'storm':
+        for plot in d['plots']:
+            if plot['seed'] and random.random() < FARM_STORM_DESTROY_CHANCE:
+                plot['seed'] = None
+                plot['waterings'] = 0
+                plot['last_water'] = 0
+    return True
+
+def _farm_needed_waterings(d, plot=None):
+    needed = FARM_WATERINGS_NEEDED
+    if d.get('weather') == 'sunny':
+        needed = max(1, needed - 1)
+    return needed
 
 def _farm_settle_farmer(d, user_id):
     if not d['farmer']:
@@ -1365,30 +1419,35 @@ def _farm_settle_farmer(d, user_id):
         return True
     while d['farmer_next_tick'] <= now:
         changed = True
-        if d['plot_seed']:
-            if d['plot_waterings'] < FARM_WATERINGS_NEEDED:
-                d['plot_waterings'] += 1
-                d['plot_last_water'] = now
+        for plot in d['plots']:
+            if not plot['seed']:
+                continue
+            needed = _farm_needed_waterings(d, plot)
+            if plot['waterings'] < needed:
+                plot['waterings'] += 1
+                plot['last_water'] = now
             else:
-                seed = FARM_SEEDS[d['plot_seed']]
+                seed = FARM_SEEDS[plot['seed']]
                 net_aura = seed['yield_aura'] * (1 - FARM_FARMER_SELL_FEE)
                 net_aura_plus = round(seed['yield_aura_plus'] * (1 - FARM_FARMER_SELL_FEE), 2)
                 add_aura(user_id, int(round(net_aura)))
                 if net_aura_plus:
                     add_aura_plus(user_id, net_aura_plus)
                 if seed['reusable']:
-                    d['plot_waterings'] = 0
-                    d['plot_last_water'] = now
+                    plot['waterings'] = 0
+                    plot['last_water'] = now
                 else:
-                    d['plot_seed'] = None
-                    d['plot_waterings'] = 0
-                    d['plot_last_water'] = 0
+                    plot['seed'] = None
+                    plot['waterings'] = 0
+                    plot['last_water'] = 0
         d['farmer_next_tick'] += FARM_FARMER_CYCLE_SECONDS
     return changed
 
 def farm_status(user_id):
     d = _farm_get(user_id)
-    if _farm_settle_farmer(d, user_id):
+    changed = _farm_settle_farmer(d, user_id)
+    changed = _farm_roll_weather(d) or changed
+    if changed:
         _farm_save(user_id)
     return dict(d)
 
@@ -1406,55 +1465,66 @@ def farm_buy_seed(user_id, seed_key):
     _farm_save(user_id)
     return {'ok': True, 'seed': seed, 'count': d['seeds'][seed_key]}
 
-def farm_plant(user_id, seed_key):
+def farm_plant(user_id, seed_key, plot_index):
     d = _farm_get(user_id)
     _farm_settle_farmer(d, user_id)
-    if d['plot_seed']:
-        return {'ok': False, 'reason': '❌ Đất của bạn đang có cây trồng rồi, thu hoạch trước đã!'}
+    if not 0 <= plot_index < FARM_TOTAL_PLOTS:
+        return {'ok': False, 'reason': '❌ Ô đất không hợp lệ.'}
+    plot = d['plots'][plot_index]
+    if plot['seed']:
+        return {'ok': False, 'reason': '❌ Ô đất này đang có cây trồng rồi, thu hoạch trước đã!'}
     if d['seeds'].get(seed_key, 0) <= 0:
         return {'ok': False, 'reason': '❌ Bạn không có hạt giống này! Mua trong Shop trước.'}
     d['seeds'][seed_key] -= 1
     if d['seeds'][seed_key] <= 0:
         del d['seeds'][seed_key]
-    d['plot_seed'] = seed_key
-    d['plot_waterings'] = 0
-    d['plot_last_water'] = 0
+    plot['seed'] = seed_key
+    plot['waterings'] = 0
+    plot['last_water'] = 0
     _farm_save(user_id)
-    return {'ok': True, 'seed': FARM_SEEDS[seed_key]}
+    return {'ok': True, 'seed': FARM_SEEDS[seed_key], 'plot_index': plot_index}
 
-def farm_water(user_id):
+def farm_water(user_id, plot_index):
     d = _farm_get(user_id)
     _farm_settle_farmer(d, user_id)
-    if not d['plot_seed']:
-        return {'ok': False, 'reason': '❌ Bạn chưa trồng cây nào!'}
-    if d['plot_waterings'] >= FARM_WATERINGS_NEEDED:
+    if not 0 <= plot_index < FARM_TOTAL_PLOTS:
+        return {'ok': False, 'reason': '❌ Ô đất không hợp lệ.'}
+    plot = d['plots'][plot_index]
+    if not plot['seed']:
+        return {'ok': False, 'reason': '❌ Ô đất này chưa trồng cây nào!'}
+    needed = _farm_needed_waterings(d, plot)
+    if plot['waterings'] >= needed:
         return {'ok': False, 'reason': '✅ Cây đã đủ nước rồi, thu hoạch thôi!'}
     now = time.time()
-    remain = d['plot_last_water'] + FARM_WATER_COOLDOWN - now
+    remain = plot['last_water'] + FARM_WATER_COOLDOWN - now
     if remain > 0:
         return {'ok': False, 'reason': f'⏳ Chưa tới giờ tưới tiếp — còn **{int(remain // 3600)}h{int((remain % 3600) // 60)}p**.'}
-    d['plot_waterings'] += 1
-    d['plot_last_water'] = now
+    plot['waterings'] += 1
+    plot['last_water'] = now
     _farm_save(user_id)
-    return {'ok': True, 'waterings': d['plot_waterings']}
+    return {'ok': True, 'waterings': plot['waterings'], 'needed': needed}
 
-def farm_harvest(user_id):
+def farm_harvest(user_id, plot_index):
     d = _farm_get(user_id)
     _farm_settle_farmer(d, user_id)
-    seed_key = d['plot_seed']
+    if not 0 <= plot_index < FARM_TOTAL_PLOTS:
+        return {'ok': False, 'reason': '❌ Ô đất không hợp lệ.'}
+    plot = d['plots'][plot_index]
+    seed_key = plot['seed']
     if not seed_key:
-        return {'ok': False, 'reason': '❌ Bạn chưa trồng cây nào!'}
-    if d['plot_waterings'] < FARM_WATERINGS_NEEDED:
-        return {'ok': False, 'reason': f"⏳ Cây chưa đủ nước ({d['plot_waterings']}/{FARM_WATERINGS_NEEDED})."}
+        return {'ok': False, 'reason': '❌ Ô đất này chưa trồng cây nào!'}
+    needed = _farm_needed_waterings(d, plot)
+    if plot['waterings'] < needed:
+        return {'ok': False, 'reason': f"⏳ Cây chưa đủ nước ({plot['waterings']}/{needed})."}
     seed = FARM_SEEDS[seed_key]
     d['fruits'][seed_key] = d['fruits'].get(seed_key, 0) + 1
     if seed['reusable']:
-        d['plot_waterings'] = 0
-        d['plot_last_water'] = 0
+        plot['waterings'] = 0
+        plot['last_water'] = 0
     else:
-        d['plot_seed'] = None
-        d['plot_waterings'] = 0
-        d['plot_last_water'] = 0
+        plot['seed'] = None
+        plot['waterings'] = 0
+        plot['last_water'] = 0
     _farm_save(user_id)
     return {'ok': True, 'seed': seed, 'fruit_count': d['fruits'][seed_key]}
 
@@ -1493,65 +1563,109 @@ def farm_sell(user_id, seed_keys=None):
         add_aura_plus(user_id, total_aura_plus)
     return {'ok': True, 'sold': sold, 'aura': int(round(total_aura)), 'aura_plus': total_aura_plus}
 
-_FARM_PX_W, _FARM_PX_H, _FARM_SCALE = 40, 30, 10
-_FARM_SKY = (142, 207, 242)
+_FARM_PX_W, _FARM_PX_H, _FARM_SCALE = 76, 34, 10
+_FARM_SKY_DAY = (142, 207, 242)
+_FARM_SKY_RAIN = (120, 140, 160)
+_FARM_SKY_STORM = (70, 75, 90)
 _FARM_HILL = (111, 191, 115)
 _FARM_DIRT = (155, 106, 62)
 _FARM_FURROW = (122, 82, 48)
 _FARM_HOLE = (92, 58, 33)
-_FARM_STEM = (62, 142, 65)
-_FARM_LEAF = (76, 175, 80)
-_FARM_LEAF2 = (102, 187, 106)
+_FARM_FENCE = (139, 94, 60)
+_FARM_FENCE_DARK = (101, 67, 43)
+_FARM_GRASS_GAP = (98, 178, 102)
 _FARM_FLOWER = (255, 193, 7)
 _FARM_FLOWER2 = (255, 235, 59)
+_FARM_PLOT_W = 20
+_FARM_PLOT_GAP = 6
+_FARM_PLOT_Y0 = 10
+_FARM_PLOT_Y1 = 32
 
 def _farm_set(px, x, y, color):
     if 0 <= x < _FARM_PX_W and 0 <= y < _FARM_PX_H:
         px[x, y] = color
 
+def _farm_draw_fence_segment(px, x0, x1, y_top):
+    for x in range(x0, x1 + 1):
+        _farm_set(px, x, y_top, _FARM_FENCE_DARK)
+        _farm_set(px, x, y_top + 1, _FARM_FENCE)
+    for x in range(x0, x1 + 1, 4):
+        _farm_set(px, x, y_top - 1, _FARM_FENCE_DARK)
+
+def _farm_draw_plant(px, cx, base_y, seed_key, waterings, needed):
+    if seed_key is None:
+        _farm_set(px, cx, base_y, _FARM_HOLE)
+        _farm_set(px, cx - 1, base_y, _FARM_HOLE)
+        _farm_set(px, cx + 1, base_y, _FARM_HOLE)
+        return
+    colors = FARM_SEEDS[seed_key]['colors']
+    w = min(waterings, needed)
+    ratio = w / max(needed, 1)
+    stem_top = base_y - int(2 + ratio * 9)
+    for y in range(stem_top, base_y + 1):
+        _farm_set(px, cx, y, colors['stem'])
+    if ratio >= 1 / 3:
+        _farm_set(px, cx - 1, stem_top + 2, colors['leaf'])
+        _farm_set(px, cx + 1, stem_top + 2, colors['leaf'])
+    if ratio >= 2 / 3:
+        _farm_set(px, cx - 2, stem_top + 4, colors['leaf2'])
+        _farm_set(px, cx + 2, stem_top + 4, colors['leaf2'])
+        _farm_set(px, cx - 1, stem_top + 1, colors['leaf'])
+        _farm_set(px, cx + 1, stem_top + 1, colors['leaf'])
+    if w >= needed:
+        for fx, fy in [(cx, stem_top - 1), (cx - 1, stem_top), (cx + 1, stem_top)]:
+            _farm_set(px, fx, fy, colors['crown'])
+        _farm_set(px, cx, stem_top - 1, colors.get('crown2', colors['crown']))
+
+def _farm_draw_rain(px, seed_val):
+    rnd = random.Random(seed_val)
+    for _ in range(30):
+        x = rnd.randint(0, _FARM_PX_W - 1)
+        y = rnd.randint(0, _FARM_PX_H - 1)
+        _farm_set(px, x, y, (180, 200, 230))
+
 def farm_render_image(user_id, status=None):
     d = status or farm_status(user_id)
-    img = Image.new('RGB', (_FARM_PX_W, _FARM_PX_H), _FARM_SKY)
+    weather = d.get('weather') or 'sunny'
+    sky_color = {'sunny': _FARM_SKY_DAY, 'rainy': _FARM_SKY_RAIN, 'storm': _FARM_SKY_STORM}[weather]
+    img = Image.new('RGB', (_FARM_PX_W, _FARM_PX_H), sky_color)
     px = img.load()
     for y in range(8, _FARM_PX_H):
         for x in range(_FARM_PX_W):
-            px[x, y] = _FARM_DIRT
+            px[x, y] = _FARM_GRASS_GAP
     for y in (8, 9):
         for x in range(_FARM_PX_W):
             px[x, y] = _FARM_HILL
-    for y in range(11, _FARM_PX_H, 3):
-        for x in range(2, _FARM_PX_W - 2):
-            px[x, y] = _FARM_FURROW
-    cx, base_y = _FARM_PX_W // 2, 26
+    garden_x_starts = [2, 2 + _FARM_PLOT_W + _FARM_PLOT_GAP]
+    for gx in garden_x_starts:
+        for y in range(_FARM_PLOT_Y0, _FARM_PLOT_Y1):
+            for x in range(gx, gx + _FARM_PLOT_W):
+                px[x, y] = _FARM_DIRT
+        for y in range(_FARM_PLOT_Y0 + 2, _FARM_PLOT_Y1, 3):
+            for x in range(gx + 1, gx + _FARM_PLOT_W - 1):
+                px[x, y] = _FARM_FURROW
+        _farm_draw_fence_segment(px, gx - 1, gx + _FARM_PLOT_W, _FARM_PLOT_Y0 - 1)
+        for y in range(_FARM_PLOT_Y0 - 1, _FARM_PLOT_Y1 + 1):
+            _farm_set(px, gx - 1, y, _FARM_FENCE_DARK)
+            _farm_set(px, gx + _FARM_PLOT_W, y, _FARM_FENCE_DARK)
+        _farm_draw_fence_segment(px, gx - 1, gx + _FARM_PLOT_W, _FARM_PLOT_Y1)
     if d['farmer']:
-        fx = 8
-        for y in range(base_y - 6, base_y):
+        fx = garden_x_starts[0] - 1
+        for y in range(_FARM_PLOT_Y0 - 4, _FARM_PLOT_Y0):
             _farm_set(px, fx, y, (66, 99, 176))
-            _farm_set(px, fx + 1, y, (66, 99, 176))
-        for x in (fx, fx + 1):
-            _farm_set(px, x, base_y - 8, (255, 224, 189))
-        for x in range(fx - 1, fx + 3):
-            _farm_set(px, x, base_y - 9, (139, 69, 19))
-    if not d['plot_seed']:
-        _farm_set(px, cx, base_y, _FARM_HOLE)
-        _farm_set(px, cx - 1, base_y, _FARM_HOLE)
-    else:
-        w = d['plot_waterings']
-        stem_top = base_y - (2 if w == 0 else 5 if w == 1 else 8 if w == 2 else 11)
-        for y in range(stem_top, base_y + 1):
-            _farm_set(px, cx, y, _FARM_STEM)
-        if w >= 1:
-            _farm_set(px, cx - 1, stem_top + 2, _FARM_LEAF)
-            _farm_set(px, cx + 1, stem_top + 2, _FARM_LEAF)
-        if w >= 2:
-            _farm_set(px, cx - 2, stem_top + 4, _FARM_LEAF2)
-            _farm_set(px, cx + 2, stem_top + 4, _FARM_LEAF2)
-            _farm_set(px, cx - 1, stem_top + 1, _FARM_LEAF)
-            _farm_set(px, cx + 1, stem_top + 1, _FARM_LEAF)
-        if w >= FARM_WATERINGS_NEEDED:
-            for fx, fy in [(cx, stem_top - 1), (cx - 1, stem_top), (cx + 1, stem_top), (cx, stem_top)]:
-                _farm_set(px, fx, fy, _FARM_FLOWER)
-            _farm_set(px, cx, stem_top - 1, _FARM_FLOWER2)
+        _farm_set(px, fx, _FARM_PLOT_Y0 - 5, (255, 224, 189))
+    plots = d['plots']
+    needed = _farm_needed_waterings(d)
+    plot_i = 0
+    for gx in garden_x_starts:
+        slot_w = _FARM_PLOT_W // FARM_PLOTS_PER_GARDEN
+        for s in range(FARM_PLOTS_PER_GARDEN):
+            cx = gx + s * slot_w + slot_w // 2
+            plot = plots[plot_i]
+            _farm_draw_plant(px, cx, _FARM_PLOT_Y1 - 2, plot['seed'], plot['waterings'], needed if plot['seed'] else FARM_WATERINGS_NEEDED)
+            plot_i += 1
+    if weather == 'rainy':
+        _farm_draw_rain(px, int(d.get('weather_rolled_at', 0)))
     img = img.resize((_FARM_PX_W * _FARM_SCALE, _FARM_PX_H * _FARM_SCALE), Image.NEAREST)
     buf = io.BytesIO()
     img.save(buf, format='PNG')
