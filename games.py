@@ -190,7 +190,7 @@ FLAG_POOLS = {'easy': FLAG_EASY, 'medium': FLAG_MEDIUM, 'hard': FLAG_HARD, 'insa
 FLAG_AURA_PER_DIFFICULTY = {'easy': 6, 'medium': 10, 'hard': 14, 'insane': 20, 'mythic': 28}
 FLAG_UNLOCK_SCORE_MYTHIC = 500
 ROUNDS_PER_GAME = 5
-DAILY_FREE_GAMES = {'flag': 5, 'chess_bot': 5, 'wordle': 5}
+DAILY_FREE_GAMES = {'flag': 5, 'chess_bot': 5, 'wordle': 5, 'minesweeper': 3}
 _flag_games = {}
 _daily_usage = {}
 _flag_lifetime_score = {}
@@ -1846,8 +1846,14 @@ _minesweeper_game_seq = 0
 def minesweeper_active(cid):
     return cid in _minesweeper_games
 
+def minesweeper_games_left_today(user_id):
+    return daily_games_left_today('minesweeper', user_id)
+
 def minesweeper_start(cid, owner_id):
     global _minesweeper_game_seq
+    if daily_games_left_today('minesweeper', owner_id) <= 0:
+        return (None, False)
+    _consume_daily_slot('minesweeper', owner_id)
     size = MINESWEEPER_SIZE
     all_cells = [(r, c) for r in range(size) for c in range(size)]
     mines = set(random.sample(all_cells, MINESWEEPER_MINES))
@@ -1863,7 +1869,7 @@ def minesweeper_start(cid, owner_id):
     _minesweeper_game_seq += 1
     game_id = _minesweeper_game_seq
     _minesweeper_games[cid] = {'game_id': game_id, 'owner_id': owner_id, 'board': board, 'mines': mines, 'revealed': set(), 'flags': set(), 'size': size, 'over': False}
-    return game_id
+    return (game_id, True)
 
 def minesweeper_end(cid, game_id=None):
     if game_id is not None:
