@@ -497,12 +497,23 @@ async def ping_slash(interaction: discord.Interaction):
 async def minesweeper_slash(interaction: discord.Interaction):
     cid = interaction.channel_id
     if games.minesweeper_active(cid):
-        await interaction.response.send_message('⚠️ Đang có ván Dò Mìn chưa xong trong kênh này!', ephemeral=True)
+        await interaction.response.send_message('⚠️ Đang có ván Dò Mìn chưa xong trong kênh này! Dùng `/minesweeper_reset` nếu ván bị kẹt.', ephemeral=True)
         return
-    games.minesweeper_start(cid, interaction.user.id)
+    game_id = games.minesweeper_start(cid, interaction.user.id)
     embed = discord.Embed(title='💣 Dò Mìn', description=f'Bàn {games.MINESWEEPER_SIZE}x{games.MINESWEEPER_SIZE}, có {games.MINESWEEPER_MINES} quả mìn ẩn.\nBấm ô để mở, mở hết ô an toàn thì thắng!\n🏆 Thắng: **+{games.MINESWEEPER_AURA_REWARD} Aura** và **+{games.MINESWEEPER_AURA_PLUS_REWARD} Aura+**.', color=3447003)
-    view = MinesweeperView(cid, interaction.user.id)
+    view = MinesweeperView(cid, interaction.user.id, game_id)
     await interaction.response.send_message(embed=embed, view=view)
+
+@bot.tree.command(name='minesweeper_reset', description='🧹 Xóa ván Dò Mìn bị kẹt trong kênh này')
+async def minesweeper_reset_slash(interaction: discord.Interaction):
+    cid = interaction.channel_id
+    existed = games.minesweeper_force_reset(cid)
+    if not existed:
+        await interaction.response.send_message('ℹ️ Kênh này không có ván Dò Mìn nào đang chạy.', ephemeral=True)
+        return
+    await interaction.response.send_message('🧹 Đã xóa ván Dò Mìn bị kẹt. Chơi ván mới với `/minesweeper`!', ephemeral=True)
+
+
 
 @bot.tree.command(name='wordle', description='Bắt đầu ván Wordle — chat thẳng 5 chữ để đoán')
 async def wordle_slash(interaction: discord.Interaction):
@@ -1235,10 +1246,11 @@ class HarvestView(discord.ui.View):
 
 class MinesweeperView(discord.ui.View):
 
-    def __init__(self, cid, owner_id):
+    def __init__(self, cid, owner_id, game_id):
         super().__init__(timeout=300)
         self.cid = cid
         self.owner_id = owner_id
+        self.game_id = game_id
         self._build_buttons()
 
     def _build_buttons(self):
@@ -1269,18 +1281,19 @@ class MinesweeperView(discord.ui.View):
         async def callback(interaction):
             if await _deny_unless(interaction, interaction.user.id == self.owner_id, '❌ Đây không phải ván /minesweeper của bạn!'):
                 return
-            if games.minesweeper_game(self.cid) is None:
+            current = games.minesweeper_game(self.cid)
+            if current is None or current.get('game_id') != self.game_id:
                 for item in self.children:
                     item.disabled = True
                 await interaction.response.edit_message(content='⌛ Ván này đã kết thúc hoặc hết hạn. Chơi lại với `/minesweeper`!', view=self)
                 return
             try:
-                result = games.minesweeper_reveal(self.cid, r, c)
+                result = games.minesweeper_reveal(self.cid, self.game_id, r, c)
             except Exception as e:
                 print(f'[minesweeper] Lỗi xử lý nước đi: {e!r}')
                 await interaction.response.send_message('⚠️ Có lỗi khi xử lý nước đi, thử lại hoặc chơi ván mới với `/minesweeper`.', ephemeral=True)
                 return
-            if result == 'noop':
+            if result in ('gone', 'noop'):
                 await interaction.response.defer()
                 return
             if result == 'boom':
@@ -1288,7 +1301,7 @@ class MinesweeperView(discord.ui.View):
                 self._build_buttons()
                 for item in self.children:
                     item.disabled = True
-                games.minesweeper_end(self.cid)
+                games.minesweeper_end(self.cid, self.game_id)
                 embed = discord.Embed(title='💥 DÒ MÌN — Nổ mìn rồi!', description='Bạn đã đạp trúng mìn. Chơi lại với `/minesweeper`!', color=15158332)
                 await interaction.response.edit_message(embed=embed, view=self)
                 return
@@ -1296,7 +1309,7 @@ class MinesweeperView(discord.ui.View):
                 self._build_buttons()
                 for item in self.children:
                     item.disabled = True
-                games.minesweeper_end(self.cid)
+                games.minesweeper_end(self.cid, self.game_id)
                 new_aura, new_aura_plus = games.award_minesweeper_win(self.owner_id)
                 embed = discord.Embed(title='🎉 DÒ MÌN — Chiến thắng!', description=f'Bạn đã mở hết toàn bộ ô an toàn!\n{games.AURA_ICON} +{games.MINESWEEPER_AURA_REWARD} Aura (số dư: {new_aura})\n{games.AURA_PLUS_ICON} +{games.MINESWEEPER_AURA_PLUS_REWARD} Aura+ (số dư: {new_aura_plus})', color=3066993)
                 await interaction.response.edit_message(embed=embed, view=self)
@@ -1316,8 +1329,9 @@ class MinesweeperView(discord.ui.View):
                 game['revealed'].add((r, c))
 
     async def on_timeout(self):
-        games.minesweeper_end(self.cid)
+        games.minesweeper_end(self.cid, self.game_id)
 
+class GardenView(discord.ui.View):
 
     def __init__(self, owner_id):
         super().__init__(timeout=300)
