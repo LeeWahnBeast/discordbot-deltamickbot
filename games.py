@@ -300,6 +300,19 @@ def danhgia_generate(image_url):
     return {'score': score, 'comment': comment, 'tier_label': tier_label, 'color': color, 'image_url': image_url}
 # ==================== HẾT ĐÁNH GIÁ ẢNH ====================
 
+# ==================== TỰ ĐỘNG CHẤM ART TRONG FORUM ====================
+ART_FORUM_CHANNEL_ID = 1528613139027988649
+ART_RATED_THREADS_FILE = 'art_rated_threads.json'
+_art_rated_threads = set(_firestore_load_collection('art_rated_threads', ART_RATED_THREADS_FILE).keys())
+
+def art_thread_already_rated(thread_id):
+    return str(thread_id) in _art_rated_threads
+
+def art_thread_mark_rated(thread_id):
+    _art_rated_threads.add(str(thread_id))
+    _firestore_save_doc('art_rated_threads', thread_id, {'rated': True})
+# ==================== HẾT TỰ ĐỘNG CHẤM ART TRONG FORUM ====================
+
 LOTTERY_PROVINCES = ['Folk Valley', 'Ohio', 'Thành phố Delta', 'Shess Cex', 'Larp', 'Oliver Mango', 'Penaldo Pasta', 'Tỉnh Beast', 'Sinecraft Mex', 'Meow Meow']
 LOTTERY_WEEKDAY_LABELS = ['Thứ hai', 'Thứ ba', 'Thứ tư', 'Thứ năm', 'Thứ sáu', 'Thứ bảy', 'Chủ nhật']
 LOTTERY_WEEKDAY_PROVINCES = {
@@ -873,6 +886,21 @@ def set_piece_theme(user_id, key, url):
         stored_value = 'b64:' + base64.b64encode(buf.getvalue()).decode('ascii')
     except Exception as e:
         print(f'[custom_chess] Ảnh tải được nhưng không đọc được (không phải ảnh hợp lệ?) từ {url}: {e!r}')
+        return False
+    d = _piece_theme_cache.setdefault(user_id, {})
+    d[key] = stored_value
+    _firestore_save_doc('chess_piece_theme', user_id, d)
+    _piece_sprite_cache.pop(stored_value, None)
+    return True
+
+def set_piece_theme_bytes(user_id, key, raw):
+    try:
+        img = Image.open(io.BytesIO(raw)).convert('RGBA').resize((_SQUARE_PX, _SQUARE_PX), Image.LANCZOS)
+        buf = io.BytesIO()
+        img.save(buf, format='PNG')
+        stored_value = 'b64:' + base64.b64encode(buf.getvalue()).decode('ascii')
+    except Exception as e:
+        print(f'[custom_chess] File tải lên nhưng không đọc được (không phải ảnh hợp lệ?): {e!r}')
         return False
     d = _piece_theme_cache.setdefault(user_id, {})
     d[key] = stored_value
