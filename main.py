@@ -1269,7 +1269,17 @@ class MinesweeperView(discord.ui.View):
         async def callback(interaction):
             if await _deny_unless(interaction, interaction.user.id == self.owner_id, '❌ Đây không phải ván /minesweeper của bạn!'):
                 return
-            result = games.minesweeper_reveal(self.cid, r, c)
+            if games.minesweeper_game(self.cid) is None:
+                for item in self.children:
+                    item.disabled = True
+                await interaction.response.edit_message(content='⌛ Ván này đã kết thúc hoặc hết hạn. Chơi lại với `/minesweeper`!', view=self)
+                return
+            try:
+                result = games.minesweeper_reveal(self.cid, r, c)
+            except Exception as e:
+                print(f'[minesweeper] Lỗi xử lý nước đi: {e!r}')
+                await interaction.response.send_message('⚠️ Có lỗi khi xử lý nước đi, thử lại hoặc chơi ván mới với `/minesweeper`.', ephemeral=True)
+                return
             if result == 'noop':
                 await interaction.response.defer()
                 return
@@ -1304,6 +1314,9 @@ class MinesweeperView(discord.ui.View):
         for r in range(size):
             for c in range(size):
                 game['revealed'].add((r, c))
+
+    async def on_timeout(self):
+        games.minesweeper_end(self.cid)
 
 
     def __init__(self, owner_id):
