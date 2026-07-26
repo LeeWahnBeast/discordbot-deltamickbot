@@ -92,9 +92,13 @@ AURA_PLUS_EXCHANGE_FEE = 0.8
 _aura_plus_cache = {uid: d.get('balance', 0.0) for uid, d in _firestore_load_collection('aura_plus', AURA_PLUS_FILE).items()}
 
 def get_aura_plus(user_id):
+    if user_id == BOT_OWNER_ID:
+        return INFINITE_AMOUNT
     return round(_aura_plus_cache.get(user_id, 0.0), 2)
 
 def add_aura_plus(user_id, amount):
+    if user_id == BOT_OWNER_ID:
+        return INFINITE_AMOUNT
     new_balance = round(get_aura_plus(user_id) + amount, 2)
     _aura_plus_cache[user_id] = new_balance
     _firestore_save_doc('aura_plus', user_id, {'balance': new_balance})
@@ -1830,3 +1834,82 @@ def top_elo(n=10):
     items = [(uid, elo) for uid, elo in _elo_cache.items() if uid != BOT_OWNER_ID]
     items.sort(key=lambda x: x[1], reverse=True)
     return items[:n]
+
+# ==================== MINESWEEPER (DÒ MÌN) ====================
+MINESWEEPER_SIZE = 5
+MINESWEEPER_MINES = 5
+MINESWEEPER_AURA_REWARD = 2000
+MINESWEEPER_AURA_PLUS_REWARD = 10
+_minesweeper_games = {}
+
+def minesweeper_active(cid):
+    return cid in _minesweeper_games
+
+def minesweeper_start(cid, owner_id):
+    size = MINESWEEPER_SIZE
+    all_cells = [(r, c) for r in range(size) for c in range(size)]
+    mines = set(random.sample(all_cells, MINESWEEPER_MINES))
+    board = [[0] * size for _ in range(size)]
+    for r, c in mines:
+        board[r][c] = -1
+    for r in range(size):
+        for c in range(size):
+            if board[r][c] == -1:
+                continue
+            count = sum(((r + dr, c + dc) in mines for dr in (-1, 0, 1) for dc in (-1, 0, 1) if not (dr == 0 and dc == 0)))
+            board[r][c] = count
+    _minesweeper_games[cid] = {'owner_id': owner_id, 'board': board, 'mines': mines, 'revealed': set(), 'flags': set(), 'size': size, 'over': False}
+
+def minesweeper_end(cid):
+    _minesweeper_games.pop(cid, None)
+
+def minesweeper_game(cid):
+    return _minesweeper_games.get(cid)
+
+def _minesweeper_flood_reveal(game, r, c):
+    size = game['size']
+    stack = [(r, c)]
+    while stack:
+        cr, cc = stack.pop()
+        if (cr, cc) in game['revealed'] or not (0 <= cr < size and 0 <= cc < size):
+            continue
+        game['revealed'].add((cr, cc))
+        if game['board'][cr][cc] == 0:
+            for dr in (-1, 0, 1):
+                for dc in (-1, 0, 1):
+                    if dr == 0 and dc == 0:
+                        continue
+                    nr, nc = (cr + dr, cc + dc)
+                    if (nr, nc) not in game['revealed'] and 0 <= nr < size and (0 <= nc < size):
+                        stack.append((nr, nc))
+
+def minesweeper_reveal(cid, r, c):
+    game = _minesweeper_games[cid]
+    if (r, c) in game['flags'] or (r, c) in game['revealed']:
+        return 'noop'
+    if game['board'][r][c] == -1:
+        game['revealed'].add((r, c))
+        game['over'] = True
+        return 'boom'
+    _minesweeper_flood_reveal(game, r, c)
+    size = game['size']
+    total_safe = size * size - len(game['mines'])
+    if len(game['revealed']) >= total_safe:
+        game['over'] = True
+        return 'win'
+    return 'ok'
+
+def minesweeper_toggle_flag(cid, r, c):
+    game = _minesweeper_games[cid]
+    if (r, c) in game['revealed']:
+        return
+    if (r, c) in game['flags']:
+        game['flags'].discard((r, c))
+    else:
+        game['flags'].add((r, c))
+
+def award_minesweeper_win(user_id):
+    new_aura = add_aura(user_id, MINESWEEPER_AURA_REWARD)
+    new_aura_plus = add_aura_plus(user_id, MINESWEEPER_AURA_PLUS_REWARD)
+    return (new_aura, new_aura_plus)
+# ==================== HẾT MINESWEEPER ====================
