@@ -611,21 +611,86 @@ class ChessDifficultyView(discord.ui.View):
     async def hard(self, interaction: discord.Interaction, button: discord.ui.Button):
         await self._start(interaction, 1600)
 
-@bot.tree.command(name='chess', description='Chơi cờ vua với bot (bạn cầm quân Trắng)')
+class ChessOpponentSelectView(discord.ui.View):
+
+    def __init__(self, cid, inviter_id):
+        super().__init__(timeout=60)
+        self.cid = cid
+        self.inviter_id = inviter_id
+        self.time_mode = games.CHESS_DEFAULT_TIME_MODE
+        user_select = discord.ui.UserSelect(placeholder='Chọn đối thủ để mời PvP...')
+        user_select.callback = self._on_user_select
+        self.add_item(user_select)
+        mode_select = discord.ui.Select(placeholder=f"Chế độ thời gian (mặc định: {games.CHESS_TIME_MODES[self.time_mode]['label']})", options=[discord.SelectOption(label=cfg['label'], value=key) for key, cfg in games.CHESS_TIME_MODES.items()])
+        mode_select.callback = self._on_mode_select
+        self.add_item(mode_select)
+
+    async def interaction_check(self, interaction: discord.Interaction):
+        return not await _deny_unless(interaction, interaction.user.id == self.inviter_id, '❌ Đây không phải lựa chọn của bạn!')
+
+    async def _on_mode_select(self, interaction: discord.Interaction):
+        self.time_mode = interaction.data['values'][0]
+        await interaction.response.send_message(f"✅ Đã chọn chế độ **{games.CHESS_TIME_MODES[self.time_mode]['label']}**, giờ chọn đối thủ ở menu trên.", ephemeral=True)
+
+    async def _on_user_select(self, interaction: discord.Interaction):
+        doi_thu = interaction.data['resolved']['users']
+        doi_thu_id = int(list(doi_thu.keys())[0])
+        doi_thu_data = doi_thu[str(doi_thu_id)]
+        if doi_thu_data.get('bot'):
+            await interaction.response.send_message('❌ Không thể mời bot chơi PvP!', ephemeral=True)
+            return
+        if doi_thu_id == self.inviter_id:
+            await interaction.response.send_message('❌ Không thể tự mời chính mình!', ephemeral=True)
+            return
+        if games.chess_active(self.cid):
+            await interaction.response.send_message('⚠️ Đang có ván cờ vua chưa xong trong kênh này!', ephemeral=True)
+            return
+        games.chess_create_invite(self.cid, self.inviter_id, doi_thu_id)
+        view = ChessInviteView(self.cid, self.inviter_id, doi_thu_id, self.time_mode)
+        mode_label = games.CHESS_TIME_MODES[self.time_mode]['label']
+        await interaction.response.edit_message(content=f"♟️ <@{doi_thu_id}>, <@{self.inviter_id}> mời bạn chơi cờ vua (<@{self.inviter_id}> cầm ⚪ Trắng) — chế độ **{mode_label}**! Chấp nhận không?", embed=None, view=view)
+
+class ChessModeView(discord.ui.View):
+
+    def __init__(self, cid, player_id):
+        super().__init__(timeout=60)
+        self.cid = cid
+        self.player_id = player_id
+
+    async def interaction_check(self, interaction: discord.Interaction):
+        return not await _deny_unless(interaction, interaction.user.id == self.player_id, '❌ Đây không phải lựa chọn của bạn!')
+
+    @discord.ui.button(label='🤖 Đấu với Bot', style=discord.ButtonStyle.primary)
+    async def vs_bot(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if games.chess_active(self.cid):
+            await interaction.response.send_message('⚠️ Đang có ván cờ vua chưa xong trong kênh này!', ephemeral=True)
+            return
+        view = ChessDifficultyView(self.cid, self.player_id)
+        await interaction.response.edit_message(content='♟️ Chọn độ khó cho bot:', view=view)
+
+    @discord.ui.button(label='👥 Mời PvP', style=discord.ButtonStyle.success)
+    async def vs_player(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if games.chess_active(self.cid):
+            await interaction.response.send_message('⚠️ Đang có ván cờ vua chưa xong trong kênh này!', ephemeral=True)
+            return
+        view = ChessOpponentSelectView(self.cid, self.player_id)
+        await interaction.response.edit_message(content='♟️ Chọn đối thủ và chế độ thời gian (chọn đối thủ sau cùng để gửi lời mời):', view=view)
+
+@bot.tree.command(name='chess', description='♟️ Chơi cờ vua — đấu với Bot hoặc mời PvP')
 async def chess_slash(interaction: discord.Interaction):
     cid = interaction.channel_id
     if games.chess_active(cid):
         await interaction.response.send_message('⚠️ Đang có ván cờ vua chưa xong trong kênh này!', ephemeral=True)
         return
-    view = ChessDifficultyView(cid, interaction.user.id)
-    await interaction.response.send_message('♟️ Chọn độ khó cho bot:', view=view)
+    view = ChessModeView(cid, interaction.user.id)
+    await interaction.response.send_message('♟️ Bạn muốn chơi cờ vua kiểu nào?', view=view)
 
 @bot.tree.command(name='chess_reset', description='Xóa cưỡng bức trạng thái ván cờ bị kẹt trong kênh này')
 async def chess_reset_slash(interaction: discord.Interaction):
     cid = interaction.channel_id
     existed = games.chess_force_reset(cid)
     if existed:
-        await interaction.response.send_message('🧹 Đã xóa trạng thái ván cờ cũ. Giờ có thể dùng `/chess` hoặc `/chess_invite` lại bình thường.')
+        await interaction.response.send_message('🧹 Đã xóa trạng thái ván cờ cũ. Giờ có thể dùng `/chess` lại bình thường.')
     else:
         await interaction.response.send_message('ℹ️ Không có ván cờ nào được lưu trong kênh này để xóa.')
 
@@ -663,27 +728,7 @@ class ChessInviteView(discord.ui.View):
             return
         games.chess_clear_invite(self.cid)
         await interaction.response.edit_message(content='❌ Đã từ chối lời mời chơi cờ vua.', embed=None, view=None)
-_CHESS_TIME_MODE_CHOICES = [app_commands.Choice(name=cfg['label'], value=key) for key, cfg in games.CHESS_TIME_MODES.items()]
 
-@bot.tree.command(name='chess_invite', description='Mời người khác chơi cờ vua PvP (bạn cầm Trắng)')
-@app_commands.describe(doi_thu='Người bạn muốn mời chơi', che_do='Chế độ thời gian (mặc định: Cờ nhanh)')
-@app_commands.choices(che_do=_CHESS_TIME_MODE_CHOICES)
-async def chess_invite_slash(interaction: discord.Interaction, doi_thu: discord.Member, che_do: app_commands.Choice[str]=None):
-    cid = interaction.channel_id
-    time_mode = che_do.value if che_do else games.CHESS_DEFAULT_TIME_MODE
-    if games.chess_active(cid):
-        await interaction.response.send_message('⚠️ Đang có ván cờ vua chưa xong trong kênh này!', ephemeral=True)
-        return
-    if doi_thu.bot:
-        await interaction.response.send_message('❌ Không thể mời bot chơi PvP!', ephemeral=True)
-        return
-    if doi_thu.id == interaction.user.id:
-        await interaction.response.send_message('❌ Không thể tự mời chính mình!', ephemeral=True)
-        return
-    games.chess_create_invite(cid, interaction.user.id, doi_thu.id)
-    view = ChessInviteView(cid, interaction.user.id, doi_thu.id, time_mode)
-    mode_label = games.CHESS_TIME_MODES[time_mode]['label']
-    await interaction.response.send_message(content=f'♟️ {doi_thu.mention}, {interaction.user.mention} mời bạn chơi cờ vua ({interaction.user.mention} cầm ⚪ Trắng) — chế độ **{mode_label}**! Chấp nhận không?', view=view)
 _PIECE_CHOICES = [app_commands.Choice(name=label, value=key) for key, label in games.PIECE_KEY_LABELS.items()]
 
 @bot.tree.command(name='custom_chess', description='Đổi hình ảnh cho 1 quân cờ cụ thể bằng link ảnh HOẶC upload file ảnh')
@@ -1290,7 +1335,7 @@ class MinesweeperView(discord.ui.View):
                 elif pos in game['flags']:
                     style, label, disabled = (discord.ButtonStyle.success, '🚩', False)
                 else:
-                    style, label, disabled = (discord.ButtonStyle.primary, '　', False)
+                    style, label, disabled = (discord.ButtonStyle.primary, '⬜', False)
                 btn = discord.ui.Button(style=style, label=label, disabled=disabled, row=r)
                 btn.callback = self._make_callback(r, c)
                 self.add_item(btn)
