@@ -493,12 +493,16 @@ class ChessToView(ChessTimeoutView):
 async def ping_slash(interaction: discord.Interaction):
     await interaction.response.send_message(f'🏓 Pong! ({round(bot.latency * 1000)}ms)')
 
-@bot.tree.command(name='about', description='Thông tin về bot')
-async def about_slash(interaction: discord.Interaction):
-    embed = discord.Embed(title='🤖 About Bot', description='Bot mini-game vui nhộn cho server: đoán chữ, đoán cờ, cờ vua, Delta Shop và bói vui.', color=5793266)
-    embed.add_field(name='🎮 Các lệnh', value='`/wordle` — đoán từ 5 chữ\n`/flag` — đoán cờ các nước\n`/danhgia` — chấm điểm thẩm mỹ 1 tấm ảnh\n`/chess` — cờ vua vs bot\n`/chess_invite @ai_đó` — mời PvP cờ vua\n`/chess_reset` — xóa ván cờ bị kẹt (nếu bot báo lỗi)\n`/whatuinto` — bói vui\n`/wiki <từ khóa>` — tra bách khoa toàn thư\n`/aura` — xem số dư Aura\n`/shop` — mở Delta Shop 🛒\n`/kho` — xem vật phẩm/buff đang có\n`/hoadon` — xem hóa đơn Delta Shop\n`/ping` — kiểm tra độ trễ', inline=False)
-    embed.set_footer(text='Made by TVPixel')
-    await interaction.response.send_message(embed=embed)
+@bot.tree.command(name='minesweeper', description=f'💣 Dò mìn {games.MINESWEEPER_SIZE}x{games.MINESWEEPER_SIZE} — thắng nhận {games.MINESWEEPER_AURA_REWARD} Aura + {games.MINESWEEPER_AURA_PLUS_REWARD} Aura+')
+async def minesweeper_slash(interaction: discord.Interaction):
+    cid = interaction.channel_id
+    if games.minesweeper_active(cid):
+        await interaction.response.send_message('⚠️ Đang có ván Dò Mìn chưa xong trong kênh này!', ephemeral=True)
+        return
+    games.minesweeper_start(cid, interaction.user.id)
+    embed = discord.Embed(title='💣 Dò Mìn', description=f'Bàn {games.MINESWEEPER_SIZE}x{games.MINESWEEPER_SIZE}, có {games.MINESWEEPER_MINES} quả mìn ẩn.\nBấm ô để mở, mở hết ô an toàn thì thắng!\n🏆 Thắng: **+{games.MINESWEEPER_AURA_REWARD} Aura** và **+{games.MINESWEEPER_AURA_PLUS_REWARD} Aura+**.', color=3447003)
+    view = MinesweeperView(cid, interaction.user.id)
+    await interaction.response.send_message(embed=embed, view=view)
 
 @bot.tree.command(name='wordle', description='Bắt đầu ván Wordle — chat thẳng 5 chữ để đoán')
 async def wordle_slash(interaction: discord.Interaction):
@@ -1229,7 +1233,79 @@ class HarvestView(discord.ui.View):
         super().__init__(timeout=120)
         self.add_item(HarvestSelect(owner_id, status, garden_message))
 
-class GardenView(discord.ui.View):
+class MinesweeperView(discord.ui.View):
+
+    def __init__(self, cid, owner_id):
+        super().__init__(timeout=300)
+        self.cid = cid
+        self.owner_id = owner_id
+        self._build_buttons()
+
+    def _build_buttons(self):
+        self.clear_items()
+        game = games.minesweeper_game(self.cid)
+        size = game['size']
+        for r in range(size):
+            for c in range(size):
+                pos = (r, c)
+                if pos in game['revealed']:
+                    val = game['board'][r][c]
+                    if val == -1:
+                        style, label, disabled = (discord.ButtonStyle.danger, '💣', True)
+                    elif val == 0:
+                        style, label, disabled = (discord.ButtonStyle.secondary, '⬛', True)
+                    else:
+                        style, label, disabled = (discord.ButtonStyle.secondary, str(val), True)
+                elif pos in game['flags']:
+                    style, label, disabled = (discord.ButtonStyle.success, '🚩', False)
+                else:
+                    style, label, disabled = (discord.ButtonStyle.primary, '　', False)
+                btn = discord.ui.Button(style=style, label=label, disabled=disabled, row=r)
+                btn.callback = self._make_callback(r, c)
+                self.add_item(btn)
+
+    def _make_callback(self, r, c):
+
+        async def callback(interaction):
+            if await _deny_unless(interaction, interaction.user.id == self.owner_id, '❌ Đây không phải ván /minesweeper của bạn!'):
+                return
+            result = games.minesweeper_reveal(self.cid, r, c)
+            if result == 'noop':
+                await interaction.response.defer()
+                return
+            if result == 'boom':
+                self._reveal_all()
+                self._build_buttons()
+                for item in self.children:
+                    item.disabled = True
+                games.minesweeper_end(self.cid)
+                embed = discord.Embed(title='💥 DÒ MÌN — Nổ mìn rồi!', description='Bạn đã đạp trúng mìn. Chơi lại với `/minesweeper`!', color=15158332)
+                await interaction.response.edit_message(embed=embed, view=self)
+                return
+            if result == 'win':
+                self._build_buttons()
+                for item in self.children:
+                    item.disabled = True
+                games.minesweeper_end(self.cid)
+                new_aura, new_aura_plus = games.award_minesweeper_win(self.owner_id)
+                embed = discord.Embed(title='🎉 DÒ MÌN — Chiến thắng!', description=f'Bạn đã mở hết toàn bộ ô an toàn!\n{games.AURA_ICON} +{games.MINESWEEPER_AURA_REWARD} Aura (số dư: {new_aura})\n{games.AURA_PLUS_ICON} +{games.MINESWEEPER_AURA_PLUS_REWARD} Aura+ (số dư: {new_aura_plus})', color=3066993)
+                await interaction.response.edit_message(embed=embed, view=self)
+                return
+            self._build_buttons()
+            embed = discord.Embed(title='💣 Dò Mìn', description='Chọn ô để mở, bấm 🚩 để đánh dấu nghi ngờ (bấm giữ lâu không được, cứ bấm lại để gỡ cờ).', color=3447003)
+            await interaction.response.edit_message(embed=embed, view=self)
+        return callback
+
+    def _reveal_all(self):
+        game = games.minesweeper_game(self.cid)
+        if game is None:
+            return
+        size = game['size']
+        for r in range(size):
+            for c in range(size):
+                game['revealed'].add((r, c))
+
+
     def __init__(self, owner_id):
         super().__init__(timeout=300)
         self.owner_id = owner_id
@@ -1337,7 +1413,7 @@ async def bangxephang_slash(interaction: discord.Interaction, loai: app_commands
 
 @bot.tree.command(name='help', description='📖 Xem danh sách tất cả lệnh của bot')
 async def help_slash(interaction: discord.Interaction):
-    embed = discord.Embed(title='📖 Danh Sách Lệnh', description='Toàn bộ slash command hiện có:', color=3447003)
+    embed = discord.Embed(title='📖 Danh Sách Lệnh', description='Bot mini-game vui nhộn cho server: đoán chữ, đoán cờ, cờ vua, Delta Shop, dò mìn và bói vui.\n\nToàn bộ slash command hiện có:', color=3447003)
     lines = [f"`/{cmd.name}` — {cmd.description}" for cmd in sorted(bot.tree.get_commands(), key=lambda c: c.name)]
     chunk, chunk_len, part = [], 0, 1
     for line in lines:
@@ -1348,6 +1424,7 @@ async def help_slash(interaction: discord.Interaction):
         chunk_len += len(line) + 1
     if chunk:
         embed.add_field(name=f'Lệnh (phần {part})', value='\n'.join(chunk), inline=False)
+    embed.set_footer(text='Made by TVPixel')
     await interaction.response.send_message(embed=embed, ephemeral=True)
 
 web_server.keep_alive()
