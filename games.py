@@ -1563,36 +1563,108 @@ def farm_sell(user_id, seed_keys=None):
         add_aura_plus(user_id, total_aura_plus)
     return {'ok': True, 'sold': sold, 'aura': int(round(total_aura)), 'aura_plus': total_aura_plus}
 
-_FARM_PX_W, _FARM_PX_H, _FARM_SCALE = 76, 34, 10
-_FARM_SKY_DAY = (142, 207, 242)
-_FARM_SKY_RAIN = (120, 140, 160)
-_FARM_SKY_STORM = (70, 75, 90)
+_FARM_PX_W, _FARM_PX_H, _FARM_SCALE = 112, 52, 8
+_FARM_SKY_DAY_TOP = (120, 190, 235)
+_FARM_SKY_DAY_BOT = (176, 224, 245)
+_FARM_SKY_RAIN_TOP = (96, 112, 132)
+_FARM_SKY_RAIN_BOT = (140, 155, 170)
+_FARM_SKY_STORM_TOP = (48, 50, 62)
+_FARM_SKY_STORM_BOT = (85, 88, 102)
+_FARM_HILL_DARK = (78, 156, 92)
 _FARM_HILL = (111, 191, 115)
+_FARM_HILL_LIGHT = (139, 209, 128)
+_FARM_GRASS_DARK = (72, 138, 82)
+_FARM_GRASS = (98, 178, 102)
+_FARM_GRASS_LIGHT = (128, 198, 120)
+_FARM_DIRT_DARK = (110, 74, 42)
 _FARM_DIRT = (155, 106, 62)
-_FARM_FURROW = (122, 82, 48)
-_FARM_HOLE = (92, 58, 33)
-_FARM_FENCE = (139, 94, 60)
-_FARM_FENCE_DARK = (101, 67, 43)
-_FARM_GRASS_GAP = (98, 178, 102)
+_FARM_DIRT_LIGHT = (178, 130, 82)
+_FARM_FURROW = (98, 64, 36)
+_FARM_HOLE = (74, 46, 26)
+_FARM_FENCE = (150, 104, 66)
+_FARM_FENCE_LIGHT = (176, 130, 88)
+_FARM_FENCE_DARK = (94, 62, 38)
+_FARM_BUSH_DARK = (46, 110, 58)
+_FARM_BUSH = (66, 140, 76)
+_FARM_BUSH_LIGHT = (94, 168, 92)
+_FARM_ROCK = (140, 140, 148)
+_FARM_ROCK_DARK = (104, 104, 114)
+_FARM_ROCK_LIGHT = (168, 168, 176)
 _FARM_FLOWER = (255, 193, 7)
 _FARM_FLOWER2 = (255, 235, 59)
-_FARM_PLOT_W = 20
-_FARM_PLOT_GAP = 6
-_FARM_PLOT_Y0 = 10
-_FARM_PLOT_Y1 = 32
+_FARM_SHADOW = (0, 0, 0)
+_FARM_PLOT_W = 30
+_FARM_PLOT_GAP = 8
+_FARM_PLOT_Y0 = 16
+_FARM_PLOT_Y1 = 48
 
-def _farm_set(px, x, y, color):
+def _farm_set(px, x, y, color, alpha=1.0):
     if 0 <= x < _FARM_PX_W and 0 <= y < _FARM_PX_H:
-        px[x, y] = color
+        if alpha >= 1.0:
+            px[x, y] = color
+        else:
+            r0, g0, b0 = px[x, y]
+            r1, g1, b1 = color
+            px[x, y] = (int(r0 + (r1 - r0) * alpha), int(g0 + (g1 - g0) * alpha), int(b0 + (b1 - b0) * alpha))
+
+def _farm_vgradient(px, x0, x1, y0, y1, top, bot):
+    span = max(1, y1 - y0)
+    for y in range(y0, y1):
+        t = (y - y0) / span
+        col = tuple(int(top[i] + (bot[i] - top[i]) * t) for i in range(3))
+        for x in range(x0, x1):
+            _farm_set(px, x, y, col)
+
+def _farm_dither(px, x0, x1, y0, y1, base, dark, light, seed_val, density=0.35):
+    rnd = random.Random(seed_val)
+    for y in range(y0, y1):
+        for x in range(x0, x1):
+            _farm_set(px, x, y, base)
+            r = rnd.random()
+            if r < density * 0.4:
+                _farm_set(px, x, y, dark)
+            elif r < density:
+                _farm_set(px, x, y, light)
+
+def _farm_draw_bush(px, cx, base_y, rnd, w=5, h=4):
+    for dy in range(h):
+        row_w = w - abs(dy - h // 2)
+        for dx in range(-row_w, row_w + 1):
+            x, y = cx + dx, base_y - dy
+            r = rnd.random()
+            col = _FARM_BUSH_DARK if r < 0.25 else (_FARM_BUSH_LIGHT if r < 0.5 else _FARM_BUSH)
+            _farm_set(px, x, y, col)
+    if rnd.random() < 0.6:
+        _farm_set(px, cx + rnd.choice([-1, 0, 1]), base_y - h, _FARM_FLOWER if rnd.random() < 0.5 else _FARM_FLOWER2)
+
+def _farm_draw_rock(px, cx, base_y, rnd):
+    for dx, dy, col in [(-1, 0, _FARM_ROCK_DARK), (0, 0, _FARM_ROCK), (1, 0, _FARM_ROCK_DARK), (0, -1, _FARM_ROCK_LIGHT), (-1, -1, _FARM_ROCK)]:
+        _farm_set(px, cx + dx, base_y + dy, col)
+
+def _farm_draw_border_foliage(px, x0, x1, base_y, seed_val):
+    rnd = random.Random(seed_val)
+    x = x0
+    while x < x1:
+        step = rnd.randint(3, 5)
+        if rnd.random() < 0.75:
+            _farm_draw_bush(px, x, base_y, rnd, w=rnd.choice([2, 3]), h=rnd.choice([2, 3]))
+        else:
+            _farm_draw_rock(px, x, base_y, rnd)
+        x += step
 
 def _farm_draw_fence_segment(px, x0, x1, y_top):
     for x in range(x0, x1 + 1):
         _farm_set(px, x, y_top, _FARM_FENCE_DARK)
         _farm_set(px, x, y_top + 1, _FARM_FENCE)
+        _farm_set(px, x, y_top + 2, _FARM_FENCE_DARK)
     for x in range(x0, x1 + 1, 4):
         _farm_set(px, x, y_top - 1, _FARM_FENCE_DARK)
+        _farm_set(px, x, y_top - 2, _FARM_FENCE_LIGHT)
 
 def _farm_draw_plant(px, cx, base_y, seed_key, waterings, needed):
+    _farm_set(px, cx, base_y + 1, _FARM_SHADOW, alpha=0.28)
+    _farm_set(px, cx - 1, base_y + 1, _FARM_SHADOW, alpha=0.16)
+    _farm_set(px, cx + 1, base_y + 1, _FARM_SHADOW, alpha=0.16)
     if seed_key is None:
         _farm_set(px, cx, base_y, _FARM_HOLE)
         _farm_set(px, cx - 1, base_y, _FARM_HOLE)
@@ -1601,59 +1673,75 @@ def _farm_draw_plant(px, cx, base_y, seed_key, waterings, needed):
     colors = FARM_SEEDS[seed_key]['colors']
     w = min(waterings, needed)
     ratio = w / max(needed, 1)
-    stem_top = base_y - int(2 + ratio * 9)
+    stem_top = base_y - int(3 + ratio * 14)
     for y in range(stem_top, base_y + 1):
         _farm_set(px, cx, y, colors['stem'])
-    if ratio >= 1 / 3:
+    if ratio >= 1 / 4:
+        _farm_set(px, cx - 1, stem_top + 3, colors['leaf'])
+        _farm_set(px, cx + 1, stem_top + 3, colors['leaf'])
+    if ratio >= 2 / 4:
+        _farm_set(px, cx - 2, stem_top + 6, colors['leaf2'])
+        _farm_set(px, cx + 2, stem_top + 6, colors['leaf2'])
         _farm_set(px, cx - 1, stem_top + 2, colors['leaf'])
         _farm_set(px, cx + 1, stem_top + 2, colors['leaf'])
-    if ratio >= 2 / 3:
-        _farm_set(px, cx - 2, stem_top + 4, colors['leaf2'])
-        _farm_set(px, cx + 2, stem_top + 4, colors['leaf2'])
-        _farm_set(px, cx - 1, stem_top + 1, colors['leaf'])
-        _farm_set(px, cx + 1, stem_top + 1, colors['leaf'])
+    if ratio >= 3 / 4:
+        _farm_set(px, cx - 2, stem_top + 2, colors['leaf2'])
+        _farm_set(px, cx + 2, stem_top + 2, colors['leaf2'])
+        _farm_set(px, cx - 1, stem_top, colors['leaf'])
+        _farm_set(px, cx + 1, stem_top, colors['leaf'])
     if w >= needed:
-        for fx, fy in [(cx, stem_top - 1), (cx - 1, stem_top), (cx + 1, stem_top)]:
+        for fx, fy in [(cx, stem_top - 2), (cx - 1, stem_top - 1), (cx + 1, stem_top - 1), (cx - 1, stem_top), (cx + 1, stem_top)]:
             _farm_set(px, fx, fy, colors['crown'])
         _farm_set(px, cx, stem_top - 1, colors.get('crown2', colors['crown']))
+        _farm_set(px, cx, stem_top, colors.get('crown2', colors['crown']))
 
 def _farm_draw_rain(px, seed_val):
     rnd = random.Random(seed_val)
-    for _ in range(30):
+    for _ in range(60):
         x = rnd.randint(0, _FARM_PX_W - 1)
         y = rnd.randint(0, _FARM_PX_H - 1)
-        _farm_set(px, x, y, (180, 200, 230))
+        _farm_set(px, x, y, (180, 200, 230), alpha=0.7)
 
 def farm_render_image(user_id, status=None):
     d = status or farm_status(user_id)
     weather = d.get('weather') or 'sunny'
-    sky_color = {'sunny': _FARM_SKY_DAY, 'rainy': _FARM_SKY_RAIN, 'storm': _FARM_SKY_STORM}[weather]
-    img = Image.new('RGB', (_FARM_PX_W, _FARM_PX_H), sky_color)
+    sky_top, sky_bot = {
+        'sunny': (_FARM_SKY_DAY_TOP, _FARM_SKY_DAY_BOT),
+        'rainy': (_FARM_SKY_RAIN_TOP, _FARM_SKY_RAIN_BOT),
+        'storm': (_FARM_SKY_STORM_TOP, _FARM_SKY_STORM_BOT),
+    }[weather]
+    img = Image.new('RGB', (_FARM_PX_W, _FARM_PX_H), sky_bot)
     px = img.load()
-    for y in range(8, _FARM_PX_H):
+    _farm_vgradient(px, 0, _FARM_PX_W, 0, 10, sky_top, sky_bot)
+    seed_val = int(d.get('weather_rolled_at', 0)) or user_id
+    _farm_dither(px, 0, _FARM_PX_W, 10, _FARM_PX_H, _FARM_GRASS, _FARM_GRASS_DARK, _FARM_GRASS_LIGHT, seed_val, density=0.3)
+    for y in (10, 11):
         for x in range(_FARM_PX_W):
-            px[x, y] = _FARM_GRASS_GAP
-    for y in (8, 9):
-        for x in range(_FARM_PX_W):
-            px[x, y] = _FARM_HILL
-    garden_x_starts = [2, 2 + _FARM_PLOT_W + _FARM_PLOT_GAP]
-    for gx in garden_x_starts:
-        for y in range(_FARM_PLOT_Y0, _FARM_PLOT_Y1):
-            for x in range(gx, gx + _FARM_PLOT_W):
-                px[x, y] = _FARM_DIRT
-        for y in range(_FARM_PLOT_Y0 + 2, _FARM_PLOT_Y1, 3):
+            r = random.Random(seed_val + x * 7 + y).random()
+            col = _FARM_HILL_DARK if r < 0.3 else (_FARM_HILL_LIGHT if r < 0.55 else _FARM_HILL)
+            _farm_set(px, x, y, col)
+    border_rnd_seed = seed_val + 1
+    _farm_draw_border_foliage(px, 0, _FARM_PX_W, 13, border_rnd_seed)
+    _farm_draw_border_foliage(px, 0, _FARM_PX_W, _FARM_PX_H - 1, border_rnd_seed + 99)
+    garden_x_starts = [3, 3 + _FARM_PLOT_W + _FARM_PLOT_GAP]
+    for gi, gx in enumerate(garden_x_starts):
+        _farm_dither(px, gx, gx + _FARM_PLOT_W, _FARM_PLOT_Y0, _FARM_PLOT_Y1, _FARM_DIRT, _FARM_DIRT_DARK, _FARM_DIRT_LIGHT, seed_val + gi * 31, density=0.4)
+        for y in range(_FARM_PLOT_Y0 + 2, _FARM_PLOT_Y1, 4):
             for x in range(gx + 1, gx + _FARM_PLOT_W - 1):
-                px[x, y] = _FARM_FURROW
-        _farm_draw_fence_segment(px, gx - 1, gx + _FARM_PLOT_W, _FARM_PLOT_Y0 - 1)
+                _farm_set(px, x, y, _FARM_FURROW)
+                _farm_set(px, x, y + 1, _FARM_SHADOW, alpha=0.12)
+        _farm_draw_fence_segment(px, gx - 1, gx + _FARM_PLOT_W, _FARM_PLOT_Y0 - 2)
         for y in range(_FARM_PLOT_Y0 - 1, _FARM_PLOT_Y1 + 1):
             _farm_set(px, gx - 1, y, _FARM_FENCE_DARK)
             _farm_set(px, gx + _FARM_PLOT_W, y, _FARM_FENCE_DARK)
         _farm_draw_fence_segment(px, gx - 1, gx + _FARM_PLOT_W, _FARM_PLOT_Y1)
+        for bx in range(gx - 2, gx + _FARM_PLOT_W + 3, 5):
+            _farm_draw_bush(px, bx, _FARM_PLOT_Y0 - 3, random.Random(seed_val + gi * 17 + bx), w=2, h=2)
     if d['farmer']:
         fx = garden_x_starts[0] - 1
-        for y in range(_FARM_PLOT_Y0 - 4, _FARM_PLOT_Y0):
+        for y in range(_FARM_PLOT_Y0 - 6, _FARM_PLOT_Y0 - 2):
             _farm_set(px, fx, y, (66, 99, 176))
-        _farm_set(px, fx, _FARM_PLOT_Y0 - 5, (255, 224, 189))
+        _farm_set(px, fx, _FARM_PLOT_Y0 - 7, (255, 224, 189))
     plots = d['plots']
     needed = _farm_needed_waterings(d)
     plot_i = 0
@@ -1662,7 +1750,7 @@ def farm_render_image(user_id, status=None):
         for s in range(FARM_PLOTS_PER_GARDEN):
             cx = gx + s * slot_w + slot_w // 2
             plot = plots[plot_i]
-            _farm_draw_plant(px, cx, _FARM_PLOT_Y1 - 2, plot['seed'], plot['waterings'], needed if plot['seed'] else FARM_WATERINGS_NEEDED)
+            _farm_draw_plant(px, cx, _FARM_PLOT_Y1 - 3, plot['seed'], plot['waterings'], needed if plot['seed'] else FARM_WATERINGS_NEEDED)
             plot_i += 1
     if weather == 'rainy':
         _farm_draw_rain(px, int(d.get('weather_rolled_at', 0)))
