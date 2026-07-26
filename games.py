@@ -1841,11 +1841,13 @@ MINESWEEPER_MINES = 5
 MINESWEEPER_AURA_REWARD = 2000
 MINESWEEPER_AURA_PLUS_REWARD = 10
 _minesweeper_games = {}
+_minesweeper_game_seq = 0
 
 def minesweeper_active(cid):
     return cid in _minesweeper_games
 
 def minesweeper_start(cid, owner_id):
+    global _minesweeper_game_seq
     size = MINESWEEPER_SIZE
     all_cells = [(r, c) for r in range(size) for c in range(size)]
     mines = set(random.sample(all_cells, MINESWEEPER_MINES))
@@ -1858,10 +1860,20 @@ def minesweeper_start(cid, owner_id):
                 continue
             count = sum(((r + dr, c + dc) in mines for dr in (-1, 0, 1) for dc in (-1, 0, 1) if not (dr == 0 and dc == 0)))
             board[r][c] = count
-    _minesweeper_games[cid] = {'owner_id': owner_id, 'board': board, 'mines': mines, 'revealed': set(), 'flags': set(), 'size': size, 'over': False}
+    _minesweeper_game_seq += 1
+    game_id = _minesweeper_game_seq
+    _minesweeper_games[cid] = {'game_id': game_id, 'owner_id': owner_id, 'board': board, 'mines': mines, 'revealed': set(), 'flags': set(), 'size': size, 'over': False}
+    return game_id
 
-def minesweeper_end(cid):
+def minesweeper_end(cid, game_id=None):
+    if game_id is not None:
+        current = _minesweeper_games.get(cid)
+        if current is None or current.get('game_id') != game_id:
+            return
     _minesweeper_games.pop(cid, None)
+
+def minesweeper_force_reset(cid):
+    return _minesweeper_games.pop(cid, None) is not None
 
 def minesweeper_game(cid):
     return _minesweeper_games.get(cid)
@@ -1883,8 +1895,10 @@ def _minesweeper_flood_reveal(game, r, c):
                     if (nr, nc) not in game['revealed'] and 0 <= nr < size and (0 <= nc < size):
                         stack.append((nr, nc))
 
-def minesweeper_reveal(cid, r, c):
-    game = _minesweeper_games[cid]
+def minesweeper_reveal(cid, game_id, r, c):
+    game = _minesweeper_games.get(cid)
+    if game is None or game.get('game_id') != game_id:
+        return 'gone'
     if (r, c) in game['flags'] or (r, c) in game['revealed']:
         return 'noop'
     if game['board'][r][c] == -1:
@@ -1899,14 +1913,17 @@ def minesweeper_reveal(cid, r, c):
         return 'win'
     return 'ok'
 
-def minesweeper_toggle_flag(cid, r, c):
-    game = _minesweeper_games[cid]
+def minesweeper_toggle_flag(cid, game_id, r, c):
+    game = _minesweeper_games.get(cid)
+    if game is None or game.get('game_id') != game_id:
+        return 'gone'
     if (r, c) in game['revealed']:
-        return
+        return 'noop'
     if (r, c) in game['flags']:
         game['flags'].discard((r, c))
     else:
         game['flags'].add((r, c))
+    return 'ok'
 
 def award_minesweeper_win(user_id):
     new_aura = add_aura(user_id, MINESWEEPER_AURA_REWARD)
