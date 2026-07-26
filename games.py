@@ -310,10 +310,10 @@ ART_RATED_THREADS_FILE = 'art_rated_threads.json'
 _art_rated_threads = set(_firestore_load_collection('art_rated_threads', ART_RATED_THREADS_FILE).keys())
 
 def art_thread_already_rated(thread_id):
-    return str(thread_id) in _art_rated_threads
+    return int(thread_id) in _art_rated_threads
 
 def art_thread_mark_rated(thread_id):
-    _art_rated_threads.add(str(thread_id))
+    _art_rated_threads.add(int(thread_id))
     _firestore_save_doc('art_rated_threads', thread_id, {'rated': True})
 # ==================== HẾT TỰ ĐỘNG CHẤM ART TRONG FORUM ====================
 
