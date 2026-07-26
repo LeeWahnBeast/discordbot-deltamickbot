@@ -11,6 +11,18 @@ intents = discord.Intents.default()
 intents.message_content = True
 bot = commands.Bot(command_prefix='!', intents=intents)
 
+@bot.tree.error
+async def on_app_command_error(interaction: discord.Interaction, error: app_commands.AppCommandError):
+    import traceback
+    traceback.print_exc()
+    try:
+        if not interaction.response.is_done():
+            await interaction.response.send_message('⚠️ Có lỗi xảy ra khi xử lý lệnh này, thử lại sau.', ephemeral=True)
+        else:
+            await interaction.followup.send('⚠️ Có lỗi xảy ra khi xử lý lệnh này, thử lại sau.', ephemeral=True)
+    except Exception:
+        traceback.print_exc()
+
 async def _auto_rate_art_thread(thread):
     if games.art_thread_already_rated(thread.id):
         return
@@ -499,10 +511,17 @@ async def minesweeper_slash(interaction: discord.Interaction):
     if games.minesweeper_active(cid):
         await interaction.response.send_message('⚠️ Đang có ván Dò Mìn chưa xong trong kênh này! Dùng `/minesweeper_reset` nếu ván bị kẹt.', ephemeral=True)
         return
-    game_id = games.minesweeper_start(cid, interaction.user.id)
-    embed = discord.Embed(title='💣 Dò Mìn', description=f'Bàn {games.MINESWEEPER_SIZE}x{games.MINESWEEPER_SIZE}, có {games.MINESWEEPER_MINES} quả mìn ẩn.\nBấm ô để mở, mở hết ô an toàn thì thắng!\n🏆 Thắng: **+{games.MINESWEEPER_AURA_REWARD} Aura** và **+{games.MINESWEEPER_AURA_PLUS_REWARD} Aura+**.', color=3447003)
-    view = MinesweeperView(cid, interaction.user.id, game_id)
-    await interaction.response.send_message(embed=embed, view=view)
+    try:
+        game_id = games.minesweeper_start(cid, interaction.user.id)
+        embed = discord.Embed(title='💣 Dò Mìn', description=f'Bàn {games.MINESWEEPER_SIZE}x{games.MINESWEEPER_SIZE}, có {games.MINESWEEPER_MINES} quả mìn ẩn.\nBấm ô để mở, mở hết ô an toàn thì thắng!\n🏆 Thắng: **+{games.MINESWEEPER_AURA_REWARD} Aura** và **+{games.MINESWEEPER_AURA_PLUS_REWARD} Aura+**.', color=3447003)
+        view = MinesweeperView(cid, interaction.user.id, game_id)
+        await interaction.response.send_message(embed=embed, view=view)
+    except Exception:
+        import traceback
+        traceback.print_exc()
+        games.minesweeper_force_reset(cid)
+        if not interaction.response.is_done():
+            await interaction.response.send_message('⚠️ Có lỗi khi tạo ván Dò Mìn, thử lại sau.', ephemeral=True)
 
 @bot.tree.command(name='minesweeper_reset', description='🧹 Xóa ván Dò Mìn bị kẹt trong kênh này')
 async def minesweeper_reset_slash(interaction: discord.Interaction):
@@ -1279,44 +1298,55 @@ class MinesweeperView(discord.ui.View):
     def _make_callback(self, r, c):
 
         async def callback(interaction):
-            if await _deny_unless(interaction, interaction.user.id == self.owner_id, '❌ Đây không phải ván /minesweeper của bạn!'):
-                return
-            current = games.minesweeper_game(self.cid)
-            if current is None or current.get('game_id') != self.game_id:
-                for item in self.children:
-                    item.disabled = True
-                await interaction.response.edit_message(content='⌛ Ván này đã kết thúc hoặc hết hạn. Chơi lại với `/minesweeper`!', view=self)
-                return
             try:
+                if await _deny_unless(interaction, interaction.user.id == self.owner_id, '❌ Đây không phải ván /minesweeper của bạn!'):
+                    return
+                current = games.minesweeper_game(self.cid)
+                if current is None or current.get('game_id') != self.game_id:
+                    for item in self.children:
+                        item.disabled = True
+                    if not interaction.response.is_done():
+                        await interaction.response.edit_message(content='⌛ Ván này đã kết thúc hoặc hết hạn. Chơi lại với `/minesweeper`!', view=self)
+                    return
                 result = games.minesweeper_reveal(self.cid, self.game_id, r, c)
-            except Exception as e:
-                print(f'[minesweeper] Lỗi xử lý nước đi: {e!r}')
-                await interaction.response.send_message('⚠️ Có lỗi khi xử lý nước đi, thử lại hoặc chơi ván mới với `/minesweeper`.', ephemeral=True)
-                return
-            if result in ('gone', 'noop'):
-                await interaction.response.defer()
-                return
-            if result == 'boom':
-                self._reveal_all()
+                if result in ('gone', 'noop'):
+                    if not interaction.response.is_done():
+                        await interaction.response.defer()
+                    return
+                if result == 'boom':
+                    self._reveal_all()
+                    self._build_buttons()
+                    for item in self.children:
+                        item.disabled = True
+                    games.minesweeper_end(self.cid, self.game_id)
+                    embed = discord.Embed(title='💥 DÒ MÌN — Nổ mìn rồi!', description='Bạn đã đạp trúng mìn. Chơi lại với `/minesweeper`!', color=15158332)
+                    if not interaction.response.is_done():
+                        await interaction.response.edit_message(embed=embed, view=self)
+                    return
+                if result == 'win':
+                    self._build_buttons()
+                    for item in self.children:
+                        item.disabled = True
+                    games.minesweeper_end(self.cid, self.game_id)
+                    new_aura, new_aura_plus = games.award_minesweeper_win(self.owner_id)
+                    embed = discord.Embed(title='🎉 DÒ MÌN — Chiến thắng!', description=f'Bạn đã mở hết toàn bộ ô an toàn!\n{games.AURA_ICON} +{games.MINESWEEPER_AURA_REWARD} Aura (số dư: {new_aura})\n{games.AURA_PLUS_ICON} +{games.MINESWEEPER_AURA_PLUS_REWARD} Aura+ (số dư: {new_aura_plus})', color=3066993)
+                    if not interaction.response.is_done():
+                        await interaction.response.edit_message(embed=embed, view=self)
+                    return
                 self._build_buttons()
-                for item in self.children:
-                    item.disabled = True
-                games.minesweeper_end(self.cid, self.game_id)
-                embed = discord.Embed(title='💥 DÒ MÌN — Nổ mìn rồi!', description='Bạn đã đạp trúng mìn. Chơi lại với `/minesweeper`!', color=15158332)
-                await interaction.response.edit_message(embed=embed, view=self)
-                return
-            if result == 'win':
-                self._build_buttons()
-                for item in self.children:
-                    item.disabled = True
-                games.minesweeper_end(self.cid, self.game_id)
-                new_aura, new_aura_plus = games.award_minesweeper_win(self.owner_id)
-                embed = discord.Embed(title='🎉 DÒ MÌN — Chiến thắng!', description=f'Bạn đã mở hết toàn bộ ô an toàn!\n{games.AURA_ICON} +{games.MINESWEEPER_AURA_REWARD} Aura (số dư: {new_aura})\n{games.AURA_PLUS_ICON} +{games.MINESWEEPER_AURA_PLUS_REWARD} Aura+ (số dư: {new_aura_plus})', color=3066993)
-                await interaction.response.edit_message(embed=embed, view=self)
-                return
-            self._build_buttons()
-            embed = discord.Embed(title='💣 Dò Mìn', description='Chọn ô để mở, bấm 🚩 để đánh dấu nghi ngờ (bấm giữ lâu không được, cứ bấm lại để gỡ cờ).', color=3447003)
-            await interaction.response.edit_message(embed=embed, view=self)
+                embed = discord.Embed(title='💣 Dò Mìn', description='Chọn ô để mở, bấm 🚩 để đánh dấu nghi ngờ (bấm giữ lâu không được, cứ bấm lại để gỡ cờ).', color=3447003)
+                if not interaction.response.is_done():
+                    await interaction.response.edit_message(embed=embed, view=self)
+            except Exception:
+                import traceback
+                traceback.print_exc()
+                try:
+                    if not interaction.response.is_done():
+                        await interaction.response.send_message('⚠️ Có lỗi xảy ra, thử chơi ván mới với `/minesweeper`.', ephemeral=True)
+                    else:
+                        await interaction.followup.send('⚠️ Có lỗi xảy ra, thử chơi ván mới với `/minesweeper`.', ephemeral=True)
+                except Exception:
+                    traceback.print_exc()
         return callback
 
     def _reveal_all(self):
