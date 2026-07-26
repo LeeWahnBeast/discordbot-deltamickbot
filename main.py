@@ -505,15 +505,22 @@ class ChessToView(ChessTimeoutView):
 async def ping_slash(interaction: discord.Interaction):
     await interaction.response.send_message(f'🏓 Pong! ({round(bot.latency * 1000)}ms)')
 
-@bot.tree.command(name='minesweeper', description=f'💣 Dò mìn {games.MINESWEEPER_SIZE}x{games.MINESWEEPER_SIZE} — thắng nhận {games.MINESWEEPER_AURA_REWARD} Aura + {games.MINESWEEPER_AURA_PLUS_REWARD} Aura+')
+@bot.tree.command(name='minesweeper', description='💣 Dò Mìn — trò chơi cổ đại thử thách trí tuệ, thắng nhận Aura + Aura+ (3 vé/ngày)')
 async def minesweeper_slash(interaction: discord.Interaction):
     cid = interaction.channel_id
     if games.minesweeper_active(cid):
         await interaction.response.send_message('⚠️ Đang có ván Dò Mìn chưa xong trong kênh này! Dùng `/minesweeper_reset` nếu ván bị kẹt.', ephemeral=True)
         return
+    if games.minesweeper_games_left_today(interaction.user.id) <= 0:
+        await interaction.response.send_message('❌ Bạn đã hết vé chơi Dò Mìn hôm nay (3 vé/ngày)! Chờ mai nhé.', ephemeral=True)
+        return
     try:
-        game_id = games.minesweeper_start(cid, interaction.user.id)
-        embed = discord.Embed(title='💣 Dò Mìn', description=f'Bàn {games.MINESWEEPER_SIZE}x{games.MINESWEEPER_SIZE}, có {games.MINESWEEPER_MINES} quả mìn ẩn.\nBấm ô để mở, mở hết ô an toàn thì thắng!\n🏆 Thắng: **+{games.MINESWEEPER_AURA_REWARD} Aura** và **+{games.MINESWEEPER_AURA_PLUS_REWARD} Aura+**.', color=3447003)
+        game_id, ok = games.minesweeper_start(cid, interaction.user.id)
+        if not ok:
+            await interaction.response.send_message('❌ Bạn đã hết vé chơi Dò Mìn hôm nay (3 vé/ngày)! Chờ mai nhé.', ephemeral=True)
+            return
+        left = games.minesweeper_games_left_today(interaction.user.id)
+        embed = discord.Embed(title='💣 Dò Mìn — Trò Chơi Cổ Đại', description=f'Một trò chơi trí tuệ cổ xưa được lưu truyền qua nhiều thế hệ, thử thách sự tính toán và may rủi của người chơi.\n\nBàn {games.MINESWEEPER_SIZE}x{games.MINESWEEPER_SIZE}, có {games.MINESWEEPER_MINES} quả mìn ẩn.\nBấm ô để mở, mở hết ô an toàn thì thắng!\n🏆 Thắng: **+{games.MINESWEEPER_AURA_REWARD} Aura** và **+{games.MINESWEEPER_AURA_PLUS_REWARD} Aura+**.\n\n🎟️ Vé chơi còn lại hôm nay: **{left}**', color=3447003)
         view = MinesweeperView(cid, interaction.user.id, game_id)
         await interaction.response.send_message(embed=embed, view=view)
     except Exception:
@@ -522,6 +529,7 @@ async def minesweeper_slash(interaction: discord.Interaction):
         games.minesweeper_force_reset(cid)
         if not interaction.response.is_done():
             await interaction.response.send_message('⚠️ Có lỗi khi tạo ván Dò Mìn, thử lại sau.', ephemeral=True)
+
 
 @bot.tree.command(name='minesweeper_reset', description='🧹 Xóa ván Dò Mìn bị kẹt trong kênh này')
 async def minesweeper_reset_slash(interaction: discord.Interaction):
