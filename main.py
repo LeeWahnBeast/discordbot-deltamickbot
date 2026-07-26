@@ -11,6 +11,31 @@ intents = discord.Intents.default()
 intents.message_content = True
 bot = commands.Bot(command_prefix='!', intents=intents)
 
+async def _auto_rate_art_thread(thread):
+    if games.art_thread_already_rated(thread.id):
+        return
+    try:
+        starter = thread.starter_message or await thread.fetch_message(thread.id)
+    except (discord.HTTPException, discord.NotFound, AttributeError):
+        starter = None
+    image_url = None
+    if starter:
+        for att in starter.attachments:
+            if att.content_type and att.content_type.startswith('image/'):
+                image_url = att.url
+                break
+    if image_url is None:
+        return
+    games.art_thread_mark_rated(thread.id)
+    embed = _danhgia_embed(image_url, 'Bot (tự động)')
+    await thread.send(embed=embed)
+
+@bot.event
+async def on_thread_create(thread):
+    if thread.parent_id == games.ART_FORUM_CHANNEL_ID:
+        await asyncio.sleep(1)
+        await _auto_rate_art_thread(thread)
+
 @bot.event
 async def on_ready():
     try:
@@ -18,6 +43,13 @@ async def on_ready():
         print(f'✅ Đã đồng bộ {len(synced)} slash command(s)')
     except Exception as e:
         print(f'⚠️ Lỗi đồng bộ slash command: {e}')
+    art_channel = bot.get_channel(games.ART_FORUM_CHANNEL_ID)
+    if art_channel is not None:
+        try:
+            for thread in art_channel.threads:
+                await _auto_rate_art_thread(thread)
+        except Exception as e:
+            print(f'⚠️ Lỗi quét thread art chưa chấm: {e!r}')
     print(f'✅ Bot đã đăng nhập với tên {bot.user}')
 
 @bot.event
@@ -620,18 +652,28 @@ async def chess_invite_slash(interaction: discord.Interaction, doi_thu: discord.
     await interaction.response.send_message(content=f'♟️ {doi_thu.mention}, {interaction.user.mention} mời bạn chơi cờ vua ({interaction.user.mention} cầm ⚪ Trắng) — chế độ **{mode_label}**! Chấp nhận không?', view=view)
 _PIECE_CHOICES = [app_commands.Choice(name=label, value=key) for key, label in games.PIECE_KEY_LABELS.items()]
 
-@bot.tree.command(name='custom_chess', description='Đổi hình ảnh cho 1 quân cờ cụ thể bằng link ảnh')
-@app_commands.describe(quan='Chọn quân cờ muốn đổi ảnh', link='Link ảnh (PNG/JPG) trỏ thẳng tới file, chỉ cho quân này')
+@bot.tree.command(name='custom_chess', description='Đổi hình ảnh cho 1 quân cờ cụ thể bằng link ảnh HOẶC upload file ảnh')
+@app_commands.describe(quan='Chọn quân cờ muốn đổi ảnh', link='Link ảnh (PNG/JPG) trỏ thẳng tới file, chỉ cho quân này', file='Hoặc upload trực tiếp file ảnh (PNG/JPG) thay vì dán link')
 @app_commands.choices(quan=_PIECE_CHOICES)
-async def custom_chess_slash(interaction: discord.Interaction, quan: app_commands.Choice[str], link: str):
+async def custom_chess_slash(interaction: discord.Interaction, quan: app_commands.Choice[str], link: str=None, file: discord.Attachment=None):
+    if not link and (not file):
+        await interaction.response.send_message('❌ Cần cung cấp **link** ảnh hoặc **file** ảnh (chọn 1 trong 2).', ephemeral=True)
+        return
     await interaction.response.defer(ephemeral=True)
-    ok = games.set_piece_theme(interaction.user.id, quan.value, link)
+    if file:
+        if not file.content_type or not file.content_type.startswith('image/'):
+            await interaction.followup.send('❌ File phải là ảnh (png/jpg/webp...).')
+            return
+        raw = await file.read()
+        ok = games.set_piece_theme_bytes(interaction.user.id, quan.value, raw)
+    else:
+        ok = games.set_piece_theme(interaction.user.id, quan.value, link)
     if not ok:
-        await interaction.followup.send('❌ Không tải/đọc được ảnh từ link này. Kiểm tra lại: link phải trỏ thẳng tới file ảnh (PNG/JPG) và còn truy cập được (lưu ý: link CDN Discord có thể hết hạn sau vài giờ, hãy dùng link ảnh cố định như Imgur).')
+        await interaction.followup.send('❌ Không tải/đọc được ảnh này. Kiểm tra lại: nếu dùng link, phải trỏ thẳng tới file ảnh (PNG/JPG) và còn truy cập được (lưu ý: link CDN Discord có thể hết hạn sau vài giờ, hãy dùng link ảnh cố định như Imgur).')
         return
     preview = games.piece_theme_preview_image(interaction.user.id)
-    file = discord.File(preview, filename='piece_theme.png')
-    await interaction.followup.send(content=f'✅ Đã đổi ảnh cho **{quan.name}**! Đây là toàn bộ bộ quân cờ hiện tại của bạn:', file=file)
+    file_out = discord.File(preview, filename='piece_theme.png')
+    await interaction.followup.send(content=f'✅ Đã đổi ảnh cho **{quan.name}**! Đây là toàn bộ bộ quân cờ hiện tại của bạn:', file=file_out)
 
 @bot.tree.command(name='custom_chess_xoa', description='Xóa ảnh custom của 1 quân cờ (bỏ trống = xóa toàn bộ)')
 @app_commands.describe(quan='Quân muốn xóa ảnh custom — bỏ trống để xóa hết cả bộ')
@@ -845,17 +887,21 @@ async def kho_slash(interaction: discord.Interaction, member: discord.Member=Non
     text = games.shop_inventory_text(target.id)
     await interaction.response.send_message(f'🎒 Kho đồ của {who}:\n{text}')
 
+def _danhgia_embed(image_url, rater_name):
+    result = games.danhgia_generate(image_url)
+    stars = '⭐' * result['score'] + '☆' * (10 - result['score'])
+    embed = discord.Embed(title=f"📸 Đánh Giá Ảnh — {result['tier_label']}", description=f"**Điểm: {result['score']}/10**\n{stars}\n\n{result['comment']}", color=result['color'])
+    embed.set_image(url=result['image_url'])
+    embed.set_footer(text=f'Chấm bởi {rater_name}')
+    return embed
+
 @bot.tree.command(name='danhgia', description='📸 Nhờ bot chấm điểm thẩm mỹ 1 tấm ảnh (bố cục, ánh sáng, màu sắc...)')
 @app_commands.describe(anh='Ảnh muốn chấm điểm (upload trực tiếp)')
 async def danhgia_slash(interaction: discord.Interaction, anh: discord.Attachment):
     if not anh.content_type or not anh.content_type.startswith('image/'):
         await interaction.response.send_message('❌ File phải là ảnh (png/jpg/webp...).', ephemeral=True)
         return
-    result = games.danhgia_generate(anh.url)
-    stars = '⭐' * result['score'] + '☆' * (10 - result['score'])
-    embed = discord.Embed(title=f"📸 Đánh Giá Ảnh — {result['tier_label']}", description=f"**Điểm: {result['score']}/10**\n{stars}\n\n{result['comment']}", color=result['color'])
-    embed.set_image(url=result['image_url'])
-    embed.set_footer(text=f'Chấm bởi {interaction.user.display_name}')
+    embed = _danhgia_embed(anh.url, interaction.user.display_name)
     await interaction.response.send_message(embed=embed)
 
 NITRO_LOAD_STEPS = [12, 27, 41, 58, 73, 86, 94, 100]
