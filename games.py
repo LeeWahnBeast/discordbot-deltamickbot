@@ -1836,12 +1836,17 @@ def top_elo(n=10):
     return items[:n]
 
 # ==================== MINESWEEPER (DÒ MÌN) ====================
-MINESWEEPER_SIZE = 5
-MINESWEEPER_MINES = 5
+MINESWEEPER_MIN_SIZE = 5
+MINESWEEPER_MAX_SIZE = 12
+MINESWEEPER_DEFAULT_SIZE = 8
+MINESWEEPER_MINE_RATIO = 0.15625
 MINESWEEPER_AURA_REWARD = 2000
 MINESWEEPER_AURA_PLUS_REWARD = 10
 _minesweeper_games = {}
 _minesweeper_game_seq = 0
+
+def minesweeper_mine_count(size):
+    return max(3, round(size * size * MINESWEEPER_MINE_RATIO))
 
 def minesweeper_active(cid):
     return cid in _minesweeper_games
@@ -1849,14 +1854,36 @@ def minesweeper_active(cid):
 def minesweeper_games_left_today(user_id):
     return daily_games_left_today('minesweeper', user_id)
 
-def minesweeper_start(cid, owner_id):
+def minesweeper_parse_size(text, default=MINESWEEPER_DEFAULT_SIZE):
+    if not text:
+        return (default, True)
+    text = text.strip().lower().replace(' ', '')
+    if 'x' in text:
+        parts = text.split('x')
+    elif '*' in text:
+        parts = text.split('*')
+    else:
+        parts = [text, text]
+    if len(parts) != 2:
+        return (None, False)
+    try:
+        w, h = (int(parts[0]), int(parts[1]))
+    except ValueError:
+        return (None, False)
+    if w != h:
+        return (None, False)
+    if not MINESWEEPER_MIN_SIZE <= w <= MINESWEEPER_MAX_SIZE:
+        return (None, False)
+    return (w, True)
+
+def minesweeper_start(cid, owner_id, size=MINESWEEPER_DEFAULT_SIZE):
     global _minesweeper_game_seq
     if daily_games_left_today('minesweeper', owner_id) <= 0:
         return (None, False)
     _consume_daily_slot('minesweeper', owner_id)
-    size = MINESWEEPER_SIZE
+    mine_count = minesweeper_mine_count(size)
     all_cells = [(r, c) for r in range(size) for c in range(size)]
-    mines = set(random.sample(all_cells, MINESWEEPER_MINES))
+    mines = set(random.sample(all_cells, mine_count))
     board = [[0] * size for _ in range(size)]
     for r, c in mines:
         board[r][c] = -1
@@ -1868,7 +1895,7 @@ def minesweeper_start(cid, owner_id):
             board[r][c] = count
     _minesweeper_game_seq += 1
     game_id = _minesweeper_game_seq
-    _minesweeper_games[cid] = {'game_id': game_id, 'owner_id': owner_id, 'board': board, 'mines': mines, 'revealed': set(), 'flags': set(), 'size': size, 'over': False}
+    _minesweeper_games[cid] = {'game_id': game_id, 'owner_id': owner_id, 'board': board, 'mines': mines, 'mine_count': mine_count, 'revealed': set(), 'flags': set(), 'size': size, 'over': False, 'won': False}
     return (game_id, True)
 
 def minesweeper_end(cid, game_id=None):
@@ -1891,6 +1918,8 @@ def _minesweeper_flood_reveal(game, r, c):
         cr, cc = stack.pop()
         if (cr, cc) in game['revealed'] or not (0 <= cr < size and 0 <= cc < size):
             continue
+        if (cr, cc) in game['flags']:
+            continue
         game['revealed'].add((cr, cc))
         if game['board'][cr][cc] == 0:
             for dr in (-1, 0, 1):
@@ -1905,6 +1934,9 @@ def minesweeper_reveal(cid, game_id, r, c):
     game = _minesweeper_games.get(cid)
     if game is None or game.get('game_id') != game_id:
         return 'gone'
+    size = game['size']
+    if not (0 <= r < size and 0 <= c < size):
+        return 'invalid'
     if (r, c) in game['flags'] or (r, c) in game['revealed']:
         return 'noop'
     if game['board'][r][c] == -1:
@@ -1912,10 +1944,10 @@ def minesweeper_reveal(cid, game_id, r, c):
         game['over'] = True
         return 'boom'
     _minesweeper_flood_reveal(game, r, c)
-    size = game['size']
     total_safe = size * size - len(game['mines'])
     if len(game['revealed']) >= total_safe:
         game['over'] = True
+        game['won'] = True
         return 'win'
     return 'ok'
 
@@ -1923,6 +1955,9 @@ def minesweeper_toggle_flag(cid, game_id, r, c):
     game = _minesweeper_games.get(cid)
     if game is None or game.get('game_id') != game_id:
         return 'gone'
+    size = game['size']
+    if not (0 <= r < size and 0 <= c < size):
+        return 'invalid'
     if (r, c) in game['revealed']:
         return 'noop'
     if (r, c) in game['flags']:
@@ -1935,4 +1970,137 @@ def award_minesweeper_win(user_id):
     new_aura = add_aura(user_id, MINESWEEPER_AURA_REWARD)
     new_aura_plus = add_aura_plus(user_id, MINESWEEPER_AURA_PLUS_REWARD)
     return (new_aura, new_aura_plus)
+
+_MS_CELL_PX = 48
+_MS_BORDER_PX = 22
+_MS_HEADER_PX = 100
+_MS_BG = (108, 117, 125)
+_MS_BG_DARK = (74, 81, 87)
+_MS_BG_LIGHT = (138, 146, 153)
+_MS_PANEL = (68, 74, 80)
+_MS_NUM_COLORS = {1: (34, 90, 214), 2: (43, 140, 66), 3: (214, 45, 32), 4: (28, 42, 130), 5: (135, 30, 20), 6: (26, 130, 140), 7: (20, 20, 20), 8: (110, 110, 110)}
+
+def _ms_bevel_rect(draw, x0, y0, x1, y1, raised=True):
+    light = _MS_BG_LIGHT if raised else _MS_BG_DARK
+    dark = _MS_BG_DARK if raised else _MS_BG_LIGHT
+    draw.rectangle([x0, y0, x1, y1], fill=_MS_BG)
+    t = 3
+    draw.polygon([(x0, y0), (x1, y0), (x1 - t, y0 + t), (x0 + t, y0 + t), (x0 + t, y1 - t), (x0, y1)], fill=light)
+    draw.polygon([(x1, y0), (x1, y1), (x0, y1), (x0 + t, y1 - t), (x1 - t, y1 - t), (x1 - t, y0 + t)], fill=dark)
+
+def _ms_digit_segments(digit):
+    segs = {'0': 'abcdef', '1': 'bc', '2': 'abged', '3': 'abgcd', '4': 'fgbc', '5': 'afgcd', '6': 'afgedc', '7': 'abc', '8': 'abcdefg', '9': 'abcfgd', '-': 'g', ' ': ''}
+    return segs.get(digit, '')
+
+def _ms_draw_7seg(draw, x, y, digit, w=22, h=38):
+    on_color = (237, 28, 36)
+    off_color = (60, 15, 15)
+    seg_on = set(_ms_digit_segments(digit))
+    t = 4
+    coords = {'a': (x + t, y, x + w - t, y + t), 'g': (x + t, y + h // 2 - t // 2, x + w - t, y + h // 2 + t // 2), 'd': (x + t, y + h - t, x + w - t, y + h), 'f': (x, y + t, x + t, y + h // 2), 'b': (x + w - t, y + t, x + w, y + h // 2), 'e': (x, y + h // 2, x + t, y + h - t), 'c': (x + w - t, y + h // 2, x + w, y + h - t)}
+    for seg, box in coords.items():
+        draw.rectangle(box, fill=on_color if seg in seg_on else off_color)
+
+def _ms_draw_counter(draw, x, y, value):
+    value = max(-99, min(999, value))
+    text = f'{value:03d}' if value >= 0 else f'-{abs(value):02d}'
+    text = text[-3:].rjust(3, '0') if value >= 0 else text
+    _ms_bevel_rect(draw, x, y, x + 74, y + 46, raised=False)
+    for i, ch in enumerate(text):
+        _ms_draw_7seg(draw, x + 6 + i * 24, y + 4, ch)
+
+def _ms_draw_face(draw, cx, cy, r, state):
+    draw.ellipse([cx - r, cy - r, cx + r, cy + r], fill=(247, 213, 90), outline=(40, 30, 10), width=2)
+    if state == 'dead':
+        eye_color = (30, 30, 30)
+        for ex in (cx - r * 0.35, cx + r * 0.35):
+            draw.line([(ex - 5, cy - 6), (ex + 5, cy + 4)], fill=eye_color, width=3)
+            draw.line([(ex - 5, cy + 4), (ex + 5, cy - 6)], fill=eye_color, width=3)
+        draw.arc([cx - r * 0.5, cy + r * 0.05, cx + r * 0.5, cy + r * 0.55], 200, 340, fill=eye_color, width=3)
+    elif state == 'win':
+        draw.ellipse([cx - r * 0.4, cy - r * 0.15, cx - r * 0.15, cy + r * 0.1], fill=(30, 30, 30))
+        draw.ellipse([cx + r * 0.15, cy - r * 0.15, cx + r * 0.4, cy + r * 0.1], fill=(30, 30, 30))
+        draw.arc([cx - r * 0.45, cy - r * 0.1, cx + r * 0.45, cy + r * 0.5], 20, 160, fill=(30, 30, 30), width=3)
+    else:
+        draw.ellipse([cx - r * 0.4, cy - r * 0.15, cx - r * 0.15, cy + r * 0.1], fill=(30, 30, 30))
+        draw.ellipse([cx + r * 0.15, cy - r * 0.15, cx + r * 0.4, cy + r * 0.1], fill=(30, 30, 30))
+        draw.arc([cx - r * 0.35, cy + r * 0.05, cx + r * 0.35, cy + r * 0.4], 0, 180, fill=(30, 30, 30), width=3)
+
+def minesweeper_col_label(c):
+    label = ''
+    c += 1
+    while c > 0:
+        c, rem = divmod(c - 1, 26)
+        label = chr(65 + rem) + label
+    return label
+
+def minesweeper_render_image(cid):
+    game = _minesweeper_games[cid]
+    size = game['size']
+    cell = _MS_CELL_PX
+    board_px = cell * size
+    coord_margin = 26
+    width = board_px + _MS_BORDER_PX * 2 + coord_margin
+    height = board_px + _MS_BORDER_PX * 2 + _MS_HEADER_PX + coord_margin
+    img = Image.new('RGB', (width, height), _MS_PANEL)
+    draw = ImageDraw.Draw(img)
+    font = _chess_font(15)
+    font_small = _chess_font(13)
+    flags_used = len(game['flags'])
+    remaining = game['mine_count'] - flags_used
+    _ms_draw_counter(draw, _MS_BORDER_PX, 18, remaining)
+    if game['over'] and (not game['won']):
+        face_state = 'dead'
+    elif game['won']:
+        face_state = 'win'
+    else:
+        face_state = 'normal'
+    _ms_draw_face(draw, width // 2, 18 + 23, 22, face_state)
+    _ms_draw_counter(draw, width - _MS_BORDER_PX - 74, 18, len(game['revealed']))
+    board_x0 = coord_margin + _MS_BORDER_PX
+    board_y0 = _MS_HEADER_PX + coord_margin
+    for c in range(size):
+        label = minesweeper_col_label(c)
+        draw.text((board_x0 + c * cell + cell / 2, board_y0 - coord_margin / 2), label, font=font_small, fill=(210, 210, 210), anchor='mm')
+    for r in range(size):
+        draw.text((coord_margin / 2 + 4, board_y0 + r * cell + cell / 2), str(r + 1), font=font_small, fill=(210, 210, 210), anchor='mm')
+    reveal_all = game['over'] and (not game['won'])
+    for r in range(size):
+        for c in range(size):
+            x0 = board_x0 + c * cell
+            y0 = board_y0 + r * cell
+            x1, y1 = (x0 + cell, y0 + cell)
+            is_revealed = (r, c) in game['revealed']
+            is_flag = (r, c) in game['flags']
+            is_mine = (r, c) in game['mines']
+            if is_revealed:
+                draw.rectangle([x0, y0, x1, y1], fill=(198, 198, 198), outline=(150, 150, 150))
+                if is_mine:
+                    fill = (255, 60, 60) if game['won'] is False and game['over'] else (198, 198, 198)
+                    draw.rectangle([x0, y0, x1, y1], fill=fill)
+                    mcx, mcy = (x0 + cell / 2, y0 + cell / 2)
+                    mr = cell * 0.28
+                    draw.ellipse([mcx - mr, mcy - mr, mcx + mr, mcy + mr], fill=(20, 20, 20))
+                    for ang in range(0, 360, 45):
+                        import math
+                        rad = math.radians(ang)
+                        draw.line([(mcx, mcy), (mcx + mr * 1.6 * math.cos(rad), mcy + mr * 1.6 * math.sin(rad))], fill=(20, 20, 20), width=2)
+                else:
+                    val = game['board'][r][c]
+                    if val > 0:
+                        draw.text((x0 + cell / 2, y0 + cell / 2), str(val), font=font, fill=_MS_NUM_COLORS.get(val, (0, 0, 0)), anchor='mm')
+            else:
+                _ms_bevel_rect(draw, x0, y0, x1, y1, raised=True)
+                if is_flag:
+                    fx, fy = (x0 + cell / 2, y0 + cell / 2)
+                    draw.line([(fx - 2, fy - cell * 0.28), (fx - 2, fy + cell * 0.28)], fill=(40, 30, 10), width=3)
+                    draw.polygon([(fx - 2, fy - cell * 0.28), (fx - 2, fy - cell * 0.02), (fx + cell * 0.22, fy - cell * 0.15)], fill=(214, 45, 32))
+                elif reveal_all and is_mine:
+                    mcx, mcy = (x0 + cell / 2, y0 + cell / 2)
+                    mr = cell * 0.24
+                    draw.ellipse([mcx - mr, mcy - mr, mcx + mr, mcy + mr], fill=(20, 20, 20))
+    buf = io.BytesIO()
+    img.save(buf, format='PNG')
+    buf.seek(0)
+    return buf
 # ==================== HẾT MINESWEEPER ====================
