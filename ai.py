@@ -1,3 +1,24 @@
+"""
+ai.py — AI chat tự động cho bot Discord, dùng Gemini.
+
+Tính năng:
+  1. Tại (các) kênh được chỉ định (AI_CHANNEL_IDS), bot sẽ tự động buôn chuyện
+     mỗi ~15 phút (không cần slash command, không cần ai gọi) — dựa vào lịch sử
+     đoạn chat gần đây để bắt chuyện/bình luận cho tự nhiên.
+  2. Nếu có ai đó REPLY (trả lời) vào một tin nhắn của chính bot trong kênh đó,
+     bot sẽ đọc lịch sử đoạn chat + câu reply đó rồi trả lời lại ngay bằng Gemini.
+
+Cấu hình qua biến môi trường:
+  GEMINI_API_KEY   -> API key của Google Gemini (bắt buộc để tính năng hoạt động)
+  GEMINI_MODEL     -> tên model, mặc định "gemini-2.0-flash"
+  AI_CHANNEL_IDS   -> danh sách channel ID, phân tách bằng dấu phẩy
+                      (ví dụ: "123456789012345678,987654321098765432")
+                      Có thể dùng AI_CHANNEL_ID (số ít) nếu chỉ có 1 kênh.
+  AI_CHAT_INTERVAL_MINUTES -> số phút giữa mỗi lần tự nhắn, mặc định 15
+
+Cần cài thêm package:
+  pip install google-generativeai
+"""
 import os
 import time
 import asyncio
@@ -76,10 +97,10 @@ def _build_model():
 async def generate_reply(channel, trigger_message=None):
     """Gọi Gemini để tạo câu trả lời, dựa trên lịch sử đoạn chat của channel."""
     if not _GENAI_AVAILABLE:
-        print('⚠️ Chưa cài package google-generativeai, bỏ qua AI chat.')
+        print('⚠️ Chưa cài package google-generativeai, bỏ qua AI chat.', flush=True)
         return None
     if not GEMINI_API_KEY:
-        print('⚠️ Thiếu GEMINI_API_KEY, bỏ qua AI chat.')
+        print('⚠️ Thiếu GEMINI_API_KEY, bỏ qua AI chat.', flush=True)
         return None
 
     history_msgs = await fetch_recent_history(channel, limit=HISTORY_LIMIT)
@@ -107,7 +128,7 @@ async def generate_reply(channel, trigger_message=None):
         text = (getattr(response, 'text', '') or '').strip()
         return text or None
     except Exception as e:
-        print(f'⚠️ Lỗi gọi Gemini API: {e!r}')
+        print(f'⚠️ Lỗi gọi Gemini API: {e!r}', flush=True)
         return None
 
 
@@ -139,7 +160,7 @@ async def handle_reply_to_bot(bot, message) -> bool:
         try:
             await message.reply(text, mention_author=False)
         except discord.HTTPException as e:
-            print(f'⚠️ Lỗi gửi reply AI chat: {e!r}')
+            print(f'⚠️ Lỗi gửi reply AI chat: {e!r}', flush=True)
 
     async with _lock:
         _last_auto_message_time[message.channel.id] = time.time()
@@ -170,7 +191,7 @@ async def maybe_send_auto_message(channel):
     try:
         await channel.send(text)
     except discord.HTTPException as e:
-        print(f'⚠️ Lỗi gửi tin nhắn tự động AI chat: {e!r}')
+        print(f'⚠️ Lỗi gửi tin nhắn tự động AI chat: {e!r}', flush=True)
 
 
 def start_auto_chat_loop(bot):
@@ -190,12 +211,12 @@ def start_auto_chat_loop(bot):
             try:
                 await maybe_send_auto_message(channel)
             except Exception as e:
-                print(f'⚠️ Lỗi auto chat AI (channel {cid}): {e!r}')
+                print(f'⚠️ Lỗi auto chat AI (channel {cid}): {e!r}', flush=True)
 
     if not AI_CHANNEL_IDS:
-        print('ℹ️ AI_CHANNEL_IDS/AI_CHANNEL_ID chưa được cấu hình, tính năng AI chat tự động sẽ không chạy.')
+        print('ℹ️ AI_CHANNEL_IDS/AI_CHANNEL_ID chưa được cấu hình, tính năng AI chat tự động sẽ không chạy.', flush=True)
     elif not GEMINI_API_KEY:
-        print('ℹ️ GEMINI_API_KEY chưa được cấu hình, tính năng AI chat sẽ không hoạt động.')
+        print('ℹ️ GEMINI_API_KEY chưa được cấu hình, tính năng AI chat sẽ không hoạt động.', flush=True)
     else:
         _auto_chat_task.start()
     return _auto_chat_task
