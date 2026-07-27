@@ -2,6 +2,8 @@ import discord
 import os
 import time
 import random
+import re
+import io
 import asyncio
 import web_server
 import games
@@ -506,7 +508,8 @@ async def ping_slash(interaction: discord.Interaction):
     await interaction.response.send_message(f'🏓 Pong! ({round(bot.latency * 1000)}ms)')
 
 @bot.tree.command(name='minesweeper', description='💣 Dò Mìn — trò chơi cổ đại thử thách trí tuệ, thắng nhận Aura + Aura+ (3 vé/ngày)')
-async def minesweeper_slash(interaction: discord.Interaction):
+@app_commands.describe(size=f'Kích thước bàn dạng NxN, VD "8x8" (mặc định {games.MINESWEEPER_DEFAULT_SIZE}x{games.MINESWEEPER_DEFAULT_SIZE}, từ {games.MINESWEEPER_MIN_SIZE}x{games.MINESWEEPER_MIN_SIZE} đến {games.MINESWEEPER_MAX_SIZE}x{games.MINESWEEPER_MAX_SIZE})')
+async def minesweeper_slash(interaction: discord.Interaction, size: str=None):
     cid = interaction.channel_id
     if games.minesweeper_active(cid):
         await interaction.response.send_message('⚠️ Đang có ván Dò Mìn chưa xong trong kênh này! Dùng `/minesweeper_reset` nếu ván bị kẹt.', ephemeral=True)
@@ -514,15 +517,23 @@ async def minesweeper_slash(interaction: discord.Interaction):
     if games.minesweeper_games_left_today(interaction.user.id) <= 0:
         await interaction.response.send_message('❌ Bạn đã hết vé chơi Dò Mìn hôm nay (3 vé/ngày)! Chờ mai nhé.', ephemeral=True)
         return
+    board_size, size_ok = games.minesweeper_parse_size(size)
+    if not size_ok:
+        await interaction.response.send_message(f'❌ Kích thước không hợp lệ. Dùng dạng `NxN` (VD `8x8`), từ {games.MINESWEEPER_MIN_SIZE}x{games.MINESWEEPER_MIN_SIZE} đến {games.MINESWEEPER_MAX_SIZE}x{games.MINESWEEPER_MAX_SIZE}.', ephemeral=True)
+        return
     try:
-        game_id, ok = games.minesweeper_start(cid, interaction.user.id)
+        game_id, ok = games.minesweeper_start(cid, interaction.user.id, size=board_size)
         if not ok:
             await interaction.response.send_message('❌ Bạn đã hết vé chơi Dò Mìn hôm nay (3 vé/ngày)! Chờ mai nhé.', ephemeral=True)
             return
         left = games.minesweeper_games_left_today(interaction.user.id)
-        embed = discord.Embed(title='💣 Dò Mìn — Trò Chơi Cổ Đại', description=f'Một trò chơi trí tuệ cổ xưa được lưu truyền qua nhiều thế hệ, thử thách sự tính toán và may rủi của người chơi.\n\nBàn {games.MINESWEEPER_SIZE}x{games.MINESWEEPER_SIZE}, có {games.MINESWEEPER_MINES} quả mìn ẩn.\nBấm ô để mở, mở hết ô an toàn thì thắng!\n🏆 Thắng: **+{games.MINESWEEPER_AURA_REWARD} Aura** và **+{games.MINESWEEPER_AURA_PLUS_REWARD} Aura+**.\n\n🎟️ Vé chơi còn lại hôm nay: **{left}**', color=3447003)
+        game = games.minesweeper_game(cid)
+        img_buf = games.minesweeper_render_image(cid)
+        file = discord.File(img_buf, filename='minesweeper.png')
+        embed = discord.Embed(title='💣 Dò Mìn — Trò Chơi Cổ Đại', description=f"Một trò chơi trí tuệ cổ xưa được lưu truyền qua nhiều thế hệ, thử thách sự tính toán và may rủi của người chơi.\n\nBàn {board_size}x{board_size}, có {game['mine_count']} quả mìn ẩn.\nBấm ⌨️ để nhập tọa độ (VD: `B3`), hoặc bấm 🚩 để bật/tắt chế độ cắm cờ.\n🏆 Thắng: **+{games.MINESWEEPER_AURA_REWARD} Aura** và **+{games.MINESWEEPER_AURA_PLUS_REWARD} Aura+**.\n\n🎟️ Vé chơi còn lại hôm nay: **{left}**", color=3447003)
+        embed.set_image(url='attachment://minesweeper.png')
         view = MinesweeperView(cid, interaction.user.id, game_id)
-        await interaction.response.send_message(embed=embed, view=view)
+        await interaction.response.send_message(embed=embed, file=file, view=view)
     except Exception:
         import traceback
         traceback.print_exc()
@@ -1316,6 +1327,42 @@ class HarvestView(discord.ui.View):
         super().__init__(timeout=120)
         self.add_item(HarvestSelect(owner_id, status, garden_message))
 
+def _minesweeper_status_embed(game, footer_extra=''):
+    if game['over'] and (not game['won']):
+        title, color, desc = ('💥 DÒ MÌN — Nổ mìn rồi!', 15158332, 'Bạn đã đạp trúng mìn. Chơi lại với `/minesweeper`!')
+    elif game['won']:
+        title, color, desc = ('🎉 DÒ MÌN — Chiến thắng!', 3066993, 'Bạn đã mở hết toàn bộ ô an toàn!')
+    else:
+        remaining = game['mine_count'] - len(game['flags'])
+        title, color, desc = ('💣 Dò Mìn — Trò Chơi Cổ Đại', 3447003, f"Còn **{remaining}** mìn chưa đánh dấu. Bấm ⌨️ để nhập tọa độ (VD: `B3`), hoặc bấm 🚩 để bật/tắt chế độ cắm cờ.{footer_extra}")
+    return discord.Embed(title=title, description=desc, color=color)
+
+class MinesweeperCoordModal(discord.ui.Modal):
+
+    def __init__(self, view):
+        super().__init__(title='Nhập tọa độ ô (VD: B3)')
+        self.ms_view = view
+        self.coord_input = discord.ui.TextInput(label='Tọa độ ô', placeholder='Ví dụ: A1, C5, H8...', max_length=6)
+        self.add_item(self.coord_input)
+
+    async def on_submit(self, interaction: discord.Interaction):
+        await self.ms_view.handle_coord(interaction, self.coord_input.value)
+
+def _minesweeper_parse_coord(text, size):
+    text = text.strip().upper().replace(' ', '')
+    m = re.match('^([A-Z]+)(\\d+)$', text)
+    if not m:
+        return None
+    col_letters, row_digits = m.groups()
+    col = 0
+    for ch in col_letters:
+        col = col * 26 + (ord(ch) - 64)
+    col -= 1
+    row = int(row_digits) - 1
+    if not (0 <= row < size and 0 <= col < size):
+        return None
+    return (row, col)
+
 class MinesweeperView(discord.ui.View):
 
     def __init__(self, cid, owner_id, game_id):
@@ -1323,93 +1370,92 @@ class MinesweeperView(discord.ui.View):
         self.cid = cid
         self.owner_id = owner_id
         self.game_id = game_id
-        self._build_buttons()
+        self.flag_mode = False
+        self._sync_flag_button()
 
-    def _build_buttons(self):
-        self.clear_items()
-        game = games.minesweeper_game(self.cid)
-        size = game['size']
-        for r in range(size):
-            for c in range(size):
-                pos = (r, c)
-                if pos in game['revealed']:
-                    val = game['board'][r][c]
-                    if val == -1:
-                        style, label, disabled = (discord.ButtonStyle.danger, '💣', True)
-                    elif val == 0:
-                        style, label, disabled = (discord.ButtonStyle.secondary, '⬛', True)
-                    else:
-                        style, label, disabled = (discord.ButtonStyle.secondary, str(val), True)
-                elif pos in game['flags']:
-                    style, label, disabled = (discord.ButtonStyle.success, '🚩', False)
-                else:
-                    style, label, disabled = (discord.ButtonStyle.primary, '⬜', False)
-                btn = discord.ui.Button(style=style, label=label, disabled=disabled, row=r)
-                btn.callback = self._make_callback(r, c)
-                self.add_item(btn)
+    def _sync_flag_button(self):
+        self.flag_toggle_btn.style = discord.ButtonStyle.success if self.flag_mode else discord.ButtonStyle.secondary
+        self.flag_toggle_btn.label = '🚩 Chế độ cắm cờ: BẬT' if self.flag_mode else '🚩 Chế độ cắm cờ: TẮT'
 
-    def _make_callback(self, r, c):
+    async def interaction_check(self, interaction: discord.Interaction):
+        return not await _deny_unless(interaction, interaction.user.id == self.owner_id, '❌ Đây không phải ván /minesweeper của bạn!')
 
-        async def callback(interaction):
-            try:
-                if await _deny_unless(interaction, interaction.user.id == self.owner_id, '❌ Đây không phải ván /minesweeper của bạn!'):
-                    return
-                current = games.minesweeper_game(self.cid)
-                if current is None or current.get('game_id') != self.game_id:
-                    for item in self.children:
-                        item.disabled = True
-                    if not interaction.response.is_done():
-                        await interaction.response.edit_message(content='⌛ Ván này đã kết thúc hoặc hết hạn. Chơi lại với `/minesweeper`!', view=self)
-                    return
-                result = games.minesweeper_reveal(self.cid, self.game_id, r, c)
-                if result in ('gone', 'noop'):
-                    if not interaction.response.is_done():
-                        await interaction.response.defer()
-                    return
-                if result == 'boom':
-                    self._reveal_all()
-                    self._build_buttons()
-                    for item in self.children:
-                        item.disabled = True
-                    games.minesweeper_end(self.cid, self.game_id)
-                    embed = discord.Embed(title='💥 DÒ MÌN — Nổ mìn rồi!', description='Bạn đã đạp trúng mìn. Chơi lại với `/minesweeper`!', color=15158332)
-                    if not interaction.response.is_done():
-                        await interaction.response.edit_message(embed=embed, view=self)
-                    return
-                if result == 'win':
-                    self._build_buttons()
-                    for item in self.children:
-                        item.disabled = True
-                    games.minesweeper_end(self.cid, self.game_id)
-                    new_aura, new_aura_plus = games.award_minesweeper_win(self.owner_id)
-                    embed = discord.Embed(title='🎉 DÒ MÌN — Chiến thắng!', description=f'Bạn đã mở hết toàn bộ ô an toàn!\n{games.AURA_ICON} +{games.MINESWEEPER_AURA_REWARD} Aura (số dư: {new_aura})\n{games.AURA_PLUS_ICON} +{games.MINESWEEPER_AURA_PLUS_REWARD} Aura+ (số dư: {new_aura_plus})', color=3066993)
-                    if not interaction.response.is_done():
-                        await interaction.response.edit_message(embed=embed, view=self)
-                    return
-                self._build_buttons()
-                embed = discord.Embed(title='💣 Dò Mìn', description='Chọn ô để mở, bấm 🚩 để đánh dấu nghi ngờ (bấm giữ lâu không được, cứ bấm lại để gỡ cờ).', color=3447003)
-                if not interaction.response.is_done():
-                    await interaction.response.edit_message(embed=embed, view=self)
-            except Exception:
-                import traceback
-                traceback.print_exc()
-                try:
-                    if not interaction.response.is_done():
-                        await interaction.response.send_message('⚠️ Có lỗi xảy ra, thử chơi ván mới với `/minesweeper`.', ephemeral=True)
-                    else:
-                        await interaction.followup.send('⚠️ Có lỗi xảy ra, thử chơi ván mới với `/minesweeper`.', ephemeral=True)
-                except Exception:
-                    traceback.print_exc()
-        return callback
+    def _game_or_none(self):
+        current = games.minesweeper_game(self.cid)
+        if current is None or current.get('game_id') != self.game_id:
+            return None
+        return current
 
-    def _reveal_all(self):
-        game = games.minesweeper_game(self.cid)
+    async def _refresh(self, interaction, extra_note=''):
+        game = self._game_or_none()
         if game is None:
+            for item in self.children:
+                item.disabled = True
+            await interaction.response.edit_message(content='⌛ Ván này đã kết thúc hoặc hết hạn. Chơi lại với `/minesweeper`!', embed=None, attachments=[], view=self)
             return
-        size = game['size']
-        for r in range(size):
-            for c in range(size):
-                game['revealed'].add((r, c))
+        img_buf = games.minesweeper_render_image(self.cid)
+        file = discord.File(img_buf, filename='minesweeper.png')
+        embed = _minesweeper_status_embed(game, extra_note)
+        embed.set_image(url='attachment://minesweeper.png')
+        if game['over']:
+            for item in self.children:
+                item.disabled = True
+            games.minesweeper_end(self.cid, self.game_id)
+            if game['won']:
+                new_aura, new_aura_plus = games.award_minesweeper_win(self.owner_id)
+                embed.description += f"\n\n{games.AURA_ICON} +{games.MINESWEEPER_AURA_REWARD} Aura (số dư: {new_aura})\n{games.AURA_PLUS_ICON} +{games.MINESWEEPER_AURA_PLUS_REWARD} Aura+ (số dư: {new_aura_plus})"
+        await interaction.response.edit_message(content=None, embed=embed, attachments=[file], view=self)
+
+    async def handle_coord(self, interaction, raw_text):
+        try:
+            game = self._game_or_none()
+            if game is None:
+                await interaction.response.send_message('⌛ Ván này đã kết thúc hoặc hết hạn. Chơi lại với `/minesweeper`!', ephemeral=True)
+                return
+            pos = _minesweeper_parse_coord(raw_text, game['size'])
+            if pos is None:
+                await interaction.response.send_message(f"❌ Tọa độ không hợp lệ. Dùng dạng chữ+số trong phạm vi bàn (VD: `A1` tới `{games.minesweeper_col_label(game['size']-1)}{game['size']}`).", ephemeral=True)
+                return
+            r, c = pos
+            if self.flag_mode:
+                games.minesweeper_toggle_flag(self.cid, self.game_id, r, c)
+                await self._refresh(interaction)
+                return
+            result = games.minesweeper_reveal(self.cid, self.game_id, r, c)
+            if result in ('gone', 'invalid'):
+                await interaction.response.send_message('⌛ Ván đã kết thúc hoặc tọa độ không hợp lệ.', ephemeral=True)
+                return
+            if result == 'noop':
+                await interaction.response.send_message('ℹ️ Ô này đã mở rồi hoặc đang cắm cờ (tắt chế độ cắm cờ để mở).', ephemeral=True)
+                return
+            await self._refresh(interaction)
+        except Exception:
+            import traceback
+            traceback.print_exc()
+            if not interaction.response.is_done():
+                await interaction.response.send_message('⚠️ Có lỗi xảy ra, thử chơi ván mới với `/minesweeper`.', ephemeral=True)
+
+    @discord.ui.button(label='⌨️ Nhập tọa độ', style=discord.ButtonStyle.primary, row=0)
+    async def enter_coord(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if self._game_or_none() is None:
+            for item in self.children:
+                item.disabled = True
+            await interaction.response.edit_message(content='⌛ Ván này đã kết thúc hoặc hết hạn. Chơi lại với `/minesweeper`!', view=self)
+            return
+        await interaction.response.send_modal(MinesweeperCoordModal(self))
+
+    @discord.ui.button(label='🚩 Chế độ cắm cờ: TẮT', style=discord.ButtonStyle.secondary, row=0)
+    async def flag_toggle_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
+        self.flag_mode = not self.flag_mode
+        self._sync_flag_button()
+        game = self._game_or_none()
+        if game is None:
+            for item in self.children:
+                item.disabled = True
+            await interaction.response.edit_message(content='⌛ Ván này đã kết thúc hoặc hết hạn. Chơi lại với `/minesweeper`!', view=self)
+            return
+        note = '\n\n🚩 **Chế độ cắm cờ đang BẬT** — nhập tọa độ để cắm/gỡ cờ thay vì mở ô.' if self.flag_mode else ''
+        await self._refresh(interaction, note)
 
     async def on_timeout(self):
         games.minesweeper_end(self.cid, self.game_id)
