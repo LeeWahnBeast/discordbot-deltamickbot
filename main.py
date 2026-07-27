@@ -7,6 +7,7 @@ import io
 import asyncio
 import web_server
 import games
+import ai
 from discord.ext import commands
 from discord import app_commands
 intents = discord.Intents.default()
@@ -64,6 +65,7 @@ async def on_ready():
                 await _auto_rate_art_thread(thread)
         except Exception as e:
             print(f'⚠️ Lỗi quét thread art chưa chấm: {e!r}')
+    ai.start_auto_chat_loop(bot)
     print(f'✅ Bot đã đăng nhập với tên {bot.user}')
 
 @bot.event
@@ -104,6 +106,13 @@ async def on_message(message):
             games.wordle_end(cid)
             games.flag_end(cid)
             return
+        if ai.is_ai_channel(cid):
+            try:
+                handled = await ai.handle_reply_to_bot(bot, message)
+                if handled:
+                    return
+            except Exception as e:
+                print(f'⚠️ Lỗi xử lý AI chat (channel {cid}): {e!r}')
     await bot.process_commands(message)
 
 async def _get_display_name_no_ping(user_id):
