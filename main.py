@@ -507,30 +507,34 @@ class ChessToView(ChessTimeoutView):
 async def ping_slash(interaction: discord.Interaction):
     await interaction.response.send_message(f'🏓 Pong! ({round(bot.latency * 1000)}ms)')
 
-@bot.tree.command(name='minesweeper', description='💣 Dò Mìn — trò chơi cổ đại thử thách trí tuệ, thắng nhận Aura + Aura+ (3 vé/ngày)')
-@app_commands.describe(size=f'Kích thước bàn dạng NxN, VD "8x8" (mặc định {games.MINESWEEPER_DEFAULT_SIZE}x{games.MINESWEEPER_DEFAULT_SIZE}, từ {games.MINESWEEPER_MIN_SIZE}x{games.MINESWEEPER_MIN_SIZE} đến {games.MINESWEEPER_MAX_SIZE}x{games.MINESWEEPER_MAX_SIZE})')
-async def minesweeper_slash(interaction: discord.Interaction, size: str=None):
+@bot.tree.command(name='minesweeper', description='💣 Dò Mìn — trò chơi cổ đại thử thách trí tuệ, thắng nhận Aura + Aura+ (10 vé/ngày)')
+@app_commands.describe(size=f'Kích thước bàn dạng NxN, VD "8x8" (mặc định {games.MINESWEEPER_DEFAULT_SIZE}x{games.MINESWEEPER_DEFAULT_SIZE}, từ {games.MINESWEEPER_MIN_SIZE}x{games.MINESWEEPER_MIN_SIZE} đến {games.MINESWEEPER_MAX_SIZE}x{games.MINESWEEPER_MAX_SIZE})', seed='Nhập seed cũ để chơi lại đúng bàn đó (để trống để random)')
+async def minesweeper_slash(interaction: discord.Interaction, size: str=None, seed: str=None):
     cid = interaction.channel_id
     if games.minesweeper_active(cid):
         await interaction.response.send_message('⚠️ Đang có ván Dò Mìn chưa xong trong kênh này! Dùng `/minesweeper_reset` nếu ván bị kẹt.', ephemeral=True)
         return
     if games.minesweeper_games_left_today(interaction.user.id) <= 0:
-        await interaction.response.send_message('❌ Bạn đã hết vé chơi Dò Mìn hôm nay (3 vé/ngày)! Chờ mai nhé.', ephemeral=True)
+        await interaction.response.send_message('❌ Bạn đã hết vé chơi Dò Mìn hôm nay (10 vé/ngày)! Chờ mai nhé.', ephemeral=True)
         return
     board_size, size_ok = games.minesweeper_parse_size(size)
     if not size_ok:
         await interaction.response.send_message(f'❌ Kích thước không hợp lệ. Dùng dạng `NxN` (VD `8x8`), từ {games.MINESWEEPER_MIN_SIZE}x{games.MINESWEEPER_MIN_SIZE} đến {games.MINESWEEPER_MAX_SIZE}x{games.MINESWEEPER_MAX_SIZE}.', ephemeral=True)
         return
+    seed_val, seed_ok = games.minesweeper_parse_seed(seed)
+    if not seed_ok:
+        await interaction.response.send_message('❌ Seed không hợp lệ, chỉ được nhập số nguyên dương.', ephemeral=True)
+        return
     try:
-        game_id, ok = games.minesweeper_start(cid, interaction.user.id, size=board_size)
+        game_id, ok, used_seed = games.minesweeper_start(cid, interaction.user.id, size=board_size, seed=seed_val)
         if not ok:
-            await interaction.response.send_message('❌ Bạn đã hết vé chơi Dò Mìn hôm nay (3 vé/ngày)! Chờ mai nhé.', ephemeral=True)
+            await interaction.response.send_message('❌ Bạn đã hết vé chơi Dò Mìn hôm nay (10 vé/ngày)! Chờ mai nhé.', ephemeral=True)
             return
         left = games.minesweeper_games_left_today(interaction.user.id)
         game = games.minesweeper_game(cid)
         img_buf = games.minesweeper_render_image(cid)
         file = discord.File(img_buf, filename='minesweeper.png')
-        embed = discord.Embed(title='💣 Dò Mìn — Trò Chơi Cổ Đại', description=f"Một trò chơi trí tuệ cổ xưa được lưu truyền qua nhiều thế hệ, thử thách sự tính toán và may rủi của người chơi.\n\nBàn {board_size}x{board_size}, có {game['mine_count']} quả mìn ẩn.\nBấm ⌨️ để nhập tọa độ (VD: `B3`), hoặc bấm 🚩 để bật/tắt chế độ cắm cờ.\n🏆 Thắng: **+{games.MINESWEEPER_AURA_REWARD} Aura** và **+{games.MINESWEEPER_AURA_PLUS_REWARD} Aura+**.\n\n🎟️ Vé chơi còn lại hôm nay: **{left}**", color=3447003)
+        embed = discord.Embed(title='💣 Dò Mìn — Trò Chơi Cổ Đại', description=f"Một trò chơi trí tuệ cổ xưa được lưu truyền qua nhiều thế hệ, thử thách sự tính toán và may rủi của người chơi.\n\nBàn {board_size}x{board_size}, có {game['mine_count']} quả mìn ẩn.\nBấm ⌨️ để nhập tọa độ (VD: `B3`), hoặc bấm 🚩 để bật/tắt chế độ cắm cờ.\n🏆 Thắng: **+{games.MINESWEEPER_AURA_REWARD} Aura** và **+{games.MINESWEEPER_AURA_PLUS_REWARD} Aura+**.\n\n🌱 Seed: `{used_seed}` (dùng lại seed này ở lệnh `/minesweeper` để chơi đúng bàn này)\n🎟️ Vé chơi còn lại hôm nay: **{left}**", color=3447003)
         embed.set_image(url='attachment://minesweeper.png')
         view = MinesweeperView(cid, interaction.user.id, game_id)
         await interaction.response.send_message(embed=embed, file=file, view=view)
@@ -1393,6 +1397,7 @@ class MinesweeperView(discord.ui.View):
                 item.disabled = True
             await interaction.response.edit_message(content='⌛ Ván này đã kết thúc hoặc hết hạn. Chơi lại với `/minesweeper`!', embed=None, attachments=[], view=self)
             return
+        self.timeout = 300
         img_buf = games.minesweeper_render_image(self.cid)
         file = discord.File(img_buf, filename='minesweeper.png')
         embed = _minesweeper_status_embed(game, extra_note)
