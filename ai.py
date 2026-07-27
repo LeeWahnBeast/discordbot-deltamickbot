@@ -32,7 +32,7 @@ except ImportError:
     _GENAI_AVAILABLE = False
 
 GEMINI_API_KEY = os.environ.get('GEMINI_API_KEY', '').strip()
-MODEL_NAME = os.environ.get('GEMINI_MODEL', 'gemini-2.0-flash').strip()
+MODEL_NAME = os.environ.get('GEMINI_MODEL', 'gemini-2.5-flash').strip()
 
 if _GENAI_AVAILABLE and GEMINI_API_KEY:
     genai.configure(api_key=GEMINI_API_KEY)
