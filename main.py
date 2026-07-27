@@ -1557,7 +1557,18 @@ async def aichat_slash(interaction: discord.Interaction, tin_nhan: str):
     await interaction.response.defer(thinking=True)
     text, wait_left = await ai.reply_to_slash_command(interaction.channel, interaction.user.id, interaction.user.display_name, tin_nhan)
     if text is None:
-        await interaction.followup.send(f'⏳ Chờ khoảng {wait_left}s nữa rồi hỏi tiếp nha, đỡ tốn quota!', ephemeral=True)
+        sent = await interaction.followup.send(f'⏳ Hừ, chờ khoảng {wait_left}s nữa rồi hỏi tiếp đi, tốn quota lắm đấy!', wait=True)
+        try:
+            await sent.delete(delay=5.0)
+        except discord.HTTPException:
+            pass
+        return
+    if text == ai.FALLBACK_ERROR_MSG:
+        sent = await interaction.followup.send(text, wait=True)
+        try:
+            await sent.delete(delay=5.0)
+        except discord.HTTPException:
+            pass
         return
     await interaction.followup.send(f'💬 **{interaction.user.display_name}:** {tin_nhan}\n\n🤖 {text}')
 
