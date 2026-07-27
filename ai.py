@@ -1,32 +1,42 @@
 """
-ai.py — AI chat tự động cho bot Discord, dùng Gemini.
+ai.py — AI chat tự động cho bot Discord.
+
+Dùng CHUỖI FALLBACK nhiều provider: mặc định thử Gemini trước (nhiều model),
+nếu tất cả model Gemini đều lỗi/hết quota thì tự động rớt qua Groq (nhiều model),
+tất cả trong CÙNG một lượt gọi — người dùng không nhận ra có chuyển đổi.
 
 Tính năng:
   1. Tại (các) kênh được chỉ định (AI_CHANNEL_IDS), bot sẽ tự động buôn chuyện
-     mỗi ~15 phút (không cần slash command, không cần ai gọi) — dựa vào lịch sử
-     đoạn chat gần đây để bắt chuyện/bình luận cho tự nhiên.
-  2. Nếu có ai đó REPLY (trả lời) vào một tin nhắn của chính bot trong kênh đó,
-     bot sẽ đọc lịch sử đoạn chat + câu reply đó rồi trả lời lại ngay bằng Gemini.
+     mỗi ~15 phút — dựa vào lịch sử đoạn chat gần đây để bắt chuyện/bình luận.
+  2. Nếu có ai đó REPLY vào một tin nhắn của chính bot trong kênh đó, bot sẽ đọc
+     lịch sử đoạn chat + câu reply đó rồi trả lời lại ngay.
 
 Cấu hình qua biến môi trường:
-  GEMINI_API_KEY   -> API key của Google Gemini (bắt buộc để tính năng hoạt động)
-  GEMINI_MODEL     -> tên model chính, mặc định "gemini-2.5-flash"
-  GEMINI_MODEL_FALLBACKS -> danh sách model dự phòng khi model chính bị rate-limit,
-                      phân tách bằng dấu phẩy. Mặc định tự thử qua vài model nhẹ hơn.
-  AI_CHANNEL_IDS   -> danh sách channel ID, phân tách bằng dấu phẩy
-                      (ví dụ: "123456789012345678,987654321098765432")
-                      Có thể dùng AI_CHANNEL_ID (số ít) nếu chỉ có 1 kênh.
-  AI_CHAT_INTERVAL_MINUTES -> số phút giữa mỗi lần tự nhắn, mặc định 15
-  AI_REPLY_COOLDOWN_SECONDS -> số giây chờ giữa 2 lần 1 người có thể trigger
-                      AI trả lời bằng reply, mặc định 20 (chống spam tốn quota)
+  AI_PROVIDER_ORDER      -> thứ tự thử provider, phân tách bằng dấu phẩy.
+                            Mặc định "gemini,groq" (Gemini trước, hết thì qua Groq).
+                            Có thể đổi thành "groq,gemini" hoặc chỉ "groq" / "gemini".
+
+  GEMINI_API_KEY         -> API key Gemini (https://aistudio.google.com/apikey)
+  GEMINI_MODEL           -> model Gemini chính, mặc định "gemini-2.5-flash"
+  GEMINI_MODEL_FALLBACKS -> model Gemini dự phòng, phân tách bằng dấu phẩy
+
+  GROQ_API_KEY           -> API key Groq (https://console.groq.com/keys)
+  GROQ_MODEL             -> model Groq chính, mặc định "llama-3.3-70b-versatile"
+  GROQ_MODEL_FALLBACKS   -> model Groq dự phòng, phân tách bằng dấu phẩy
+
+  AI_CHANNEL_IDS         -> danh sách channel ID, phân tách bằng dấu phẩy
+                            (có thể dùng AI_CHANNEL_ID nếu chỉ 1 kênh)
+  AI_CHAT_INTERVAL_MINUTES  -> số phút giữa mỗi lần tự nhắn, mặc định 15
+  AI_REPLY_COOLDOWN_SECONDS -> giây cooldown/người khi trigger bằng reply, mặc định 20
 
 Cần cài thêm package:
-  pip install google-generativeai
+  pip install google-generativeai requests
 """
 import os
 import time
 import asyncio
 import discord
+import requests
 
 try:
     import google.generativeai as genai
@@ -35,26 +45,55 @@ except ImportError:
     genai = None
     _GENAI_AVAILABLE = False
 
+# ---------------------------------------------------------------------------
+# Cấu hình Gemini
+# ---------------------------------------------------------------------------
 GEMINI_API_KEY = os.environ.get('GEMINI_API_KEY', '').strip()
-MODEL_NAME = os.environ.get('GEMINI_MODEL', 'gemini-2.5-flash').strip()
+GEMINI_MODEL = os.environ.get('GEMINI_MODEL', 'gemini-2.5-flash').strip()
+_GEMINI_DEFAULT_FALLBACKS = ['gemini-2.5-flash', 'gemini-2.0-flash-lite', 'gemini-2.0-flash', 'gemini-1.5-flash']
 
-_DEFAULT_FALLBACKS = ['gemini-2.5-flash', 'gemini-2.0-flash-lite', 'gemini-2.0-flash', 'gemini-1.5-flash']
+if _GENAI_AVAILABLE and GEMINI_API_KEY:
+    genai.configure(api_key=GEMINI_API_KEY)
 
 
-def _parse_model_fallbacks():
-    raw = os.environ.get('GEMINI_MODEL_FALLBACKS', '').strip()
-    chain = [MODEL_NAME]
-    candidates = [p.strip() for p in raw.split(',') if p.strip()] if raw else _DEFAULT_FALLBACKS
+def _parse_fallback_chain(primary, env_var, defaults):
+    raw = os.environ.get(env_var, '').strip()
+    chain = [primary] if primary else []
+    candidates = [p.strip() for p in raw.split(',') if p.strip()] if raw else defaults
     for m in candidates:
-        if m not in chain:
+        if m and m not in chain:
             chain.append(m)
     return chain
 
 
-MODEL_FALLBACK_CHAIN = _parse_model_fallbacks()
+GEMINI_MODEL_CHAIN = _parse_fallback_chain(GEMINI_MODEL, 'GEMINI_MODEL_FALLBACKS', _GEMINI_DEFAULT_FALLBACKS)
 
-if _GENAI_AVAILABLE and GEMINI_API_KEY:
-    genai.configure(api_key=GEMINI_API_KEY)
+# ---------------------------------------------------------------------------
+# Cấu hình Groq
+# ---------------------------------------------------------------------------
+GROQ_API_KEY = os.environ.get('GROQ_API_KEY', '').strip()
+GROQ_MODEL = os.environ.get('GROQ_MODEL', 'llama-3.3-70b-versatile').strip()
+GROQ_API_URL = 'https://api.groq.com/openai/v1/chat/completions'
+_GROQ_DEFAULT_FALLBACKS = ['llama-3.3-70b-versatile', 'llama-3.1-8b-instant', 'gemma2-9b-it']
+
+GROQ_MODEL_CHAIN = _parse_fallback_chain(GROQ_MODEL, 'GROQ_MODEL_FALLBACKS', _GROQ_DEFAULT_FALLBACKS)
+
+# ---------------------------------------------------------------------------
+# Thứ tự provider (mặc định: Gemini trước, hết thì qua Groq)
+# ---------------------------------------------------------------------------
+_PROVIDER_ORDER_RAW = os.environ.get('AI_PROVIDER_ORDER', 'gemini,groq').strip()
+PROVIDER_ORDER = [p.strip().lower() for p in _PROVIDER_ORDER_RAW.split(',') if p.strip()]
+
+
+def _build_call_chain():
+    """Trả về danh sách (provider, model_name) theo đúng thứ tự cần thử."""
+    chain = []
+    for provider in PROVIDER_ORDER:
+        if provider == 'gemini' and _GENAI_AVAILABLE and GEMINI_API_KEY:
+            chain.extend(('gemini', m) for m in GEMINI_MODEL_CHAIN)
+        elif provider == 'groq' and GROQ_API_KEY:
+            chain.extend(('groq', m) for m in GROQ_MODEL_CHAIN)
+    return chain
 
 
 def _parse_channel_ids():
@@ -85,11 +124,11 @@ SYSTEM_PROMPT = (
 _last_auto_message_time = {}
 _lock = asyncio.Lock()
 
-# Cooldown chống 1 người spam reply liên tục làm tốn quota Gemini
+# Cooldown chống 1 người spam reply liên tục làm tốn quota
 REPLY_COOLDOWN_SECONDS = int(os.environ.get('AI_REPLY_COOLDOWN_SECONDS', '20'))
 _user_last_reply_time = {}
 
-RATE_LIMIT_COOLDOWN_MSG = '🤖 Mình đang gặp chút trục trặc khi trả lời (có thể do rate limit), chờ xíu rồi hỏi lại nha!'
+FALLBACK_ERROR_MSG = '🤖 Mình đang gặp chút trục trặc khi trả lời (có thể do rate limit), chờ xíu rồi hỏi lại nha!'
 
 
 def is_ai_channel(channel_id: int) -> bool:
@@ -115,24 +154,60 @@ async def fetch_recent_history(channel, limit=HISTORY_LIMIT):
     return msgs
 
 
-def _build_model(model_name):
-    return genai.GenerativeModel(model_name, system_instruction=SYSTEM_PROMPT)
+# ---------------------------------------------------------------------------
+# Gọi từng provider (đều chạy sync trong thread riêng, trả về (text, error_msg))
+# ---------------------------------------------------------------------------
+def _call_gemini_sync(model_name, prompt):
+    try:
+        model = genai.GenerativeModel(model_name, system_instruction=SYSTEM_PROMPT)
+        response = model.generate_content(prompt)
+        text = (getattr(response, 'text', '') or '').strip()
+        if not text:
+            return None, 'Response rỗng'
+        return text, None
+    except Exception as e:
+        return None, repr(e)
 
 
-def _is_rate_limit_error(e) -> bool:
-    name = type(e).__name__.lower()
-    msg = str(e).lower()
-    return 'resourceexhausted' in name or '429' in msg or 'quota' in msg or 'rate limit' in msg
+def _call_groq_sync(model_name, prompt):
+    headers = {
+        'Authorization': f'Bearer {GROQ_API_KEY}',
+        'Content-Type': 'application/json',
+    }
+    payload = {
+        'model': model_name,
+        'messages': [
+            {'role': 'system', 'content': SYSTEM_PROMPT},
+            {'role': 'user', 'content': prompt},
+        ],
+        'temperature': 0.8,
+        'max_tokens': 300,
+    }
+    try:
+        resp = requests.post(GROQ_API_URL, headers=headers, json=payload, timeout=30)
+    except requests.RequestException as e:
+        return None, repr(e)
+    if resp.status_code != 200:
+        return None, f'HTTP {resp.status_code}: {resp.text[:300]}'
+    try:
+        text = resp.json()['choices'][0]['message']['content'].strip()
+    except (KeyError, IndexError, TypeError, ValueError):
+        return None, 'Không parse được response'
+    if not text:
+        return None, 'Response rỗng'
+    return text, None
 
 
 async def generate_reply(channel, trigger_message=None):
-    """Gọi Gemini để tạo câu trả lời, dựa trên lịch sử đoạn chat của channel.
-    Tự động thử qua các model dự phòng trong MODEL_FALLBACK_CHAIN nếu bị rate-limit."""
-    if not _GENAI_AVAILABLE:
-        print('⚠️ Chưa cài package google-generativeai, bỏ qua AI chat.', flush=True)
-        return None
-    if not GEMINI_API_KEY:
-        print('⚠️ Thiếu GEMINI_API_KEY, bỏ qua AI chat.', flush=True)
+    """
+    Tạo câu trả lời, dựa trên lịch sử đoạn chat của channel.
+    Thử lần lượt từng (provider, model) trong _build_call_chain() theo đúng thứ tự
+    AI_PROVIDER_ORDER — hết Gemini thì tự rớt qua Groq (hoặc ngược lại), tới khi
+    có 1 câu trả lời thành công hoặc hết sạch lựa chọn.
+    """
+    call_chain = _build_call_chain()
+    if not call_chain:
+        print('⚠️ Không có provider AI nào được cấu hình đủ (thiếu API key?), bỏ qua AI chat.', flush=True)
         return None
 
     history_msgs = await fetch_recent_history(channel, limit=HISTORY_LIMIT)
@@ -154,30 +229,25 @@ async def generate_reply(channel, trigger_message=None):
         )
     prompt = '\n'.join(prompt_parts)
 
-    last_was_rate_limit = False
-    for model_name in MODEL_FALLBACK_CHAIN:
-        try:
-            model = _build_model(model_name)
-            response = await asyncio.to_thread(model.generate_content, prompt)
-            text = (getattr(response, 'text', '') or '').strip()
-            return text or None
-        except Exception as e:
-            if _is_rate_limit_error(e):
-                last_was_rate_limit = True
-                print(f"⚠️ Model '{model_name}' bị rate-limit, thử model kế tiếp...", flush=True)
-                continue
-            print(f'⚠️ Lỗi gọi Gemini API (model {model_name}): {e!r}', flush=True)
-            return None
+    for provider, model_name in call_chain:
+        if provider == 'gemini':
+            text, error = await asyncio.to_thread(_call_gemini_sync, model_name, prompt)
+        else:
+            text, error = await asyncio.to_thread(_call_groq_sync, model_name, prompt)
 
-    if last_was_rate_limit:
-        print('⚠️ Tất cả model đều bị rate-limit.', flush=True)
+        if error is None and text:
+            return text
+
+        print(f'⚠️ [{provider}:{model_name}] thất bại ({error}), thử tiếp trong chuỗi fallback...', flush=True)
+
+    print('⚠️ Đã thử hết toàn bộ chuỗi provider/model, không có câu trả lời.', flush=True)
     return None
 
 
 async def handle_reply_to_bot(bot, message) -> bool:
     """
-    Nếu `message` là reply vào một tin nhắn của bot, tạo câu trả lời bằng Gemini
-    và gửi lại ngay. Trả về True nếu đã xử lý (đã trả lời hoặc thử trả lời).
+    Nếu `message` là reply vào một tin nhắn của bot, tạo câu trả lời và gửi lại ngay.
+    Trả về True nếu đã xử lý (đã trả lời hoặc thử trả lời).
     """
     if message.reference is None:
         return False
@@ -211,7 +281,7 @@ async def handle_reply_to_bot(bot, message) -> bool:
         text = await generate_reply(message.channel, trigger_message=message)
 
     if text is None:
-        text = RATE_LIMIT_COOLDOWN_MSG
+        text = FALLBACK_ERROR_MSG
 
     if text:
         try:
@@ -270,10 +340,13 @@ def start_auto_chat_loop(bot):
             except Exception as e:
                 print(f'⚠️ Lỗi auto chat AI (channel {cid}): {e!r}', flush=True)
 
+    call_chain = _build_call_chain()
     if not AI_CHANNEL_IDS:
         print('ℹ️ AI_CHANNEL_IDS/AI_CHANNEL_ID chưa được cấu hình, tính năng AI chat tự động sẽ không chạy.', flush=True)
-    elif not GEMINI_API_KEY:
-        print('ℹ️ GEMINI_API_KEY chưa được cấu hình, tính năng AI chat sẽ không hoạt động.', flush=True)
+    elif not call_chain:
+        print('ℹ️ Chưa có provider AI nào đủ điều kiện (thiếu GEMINI_API_KEY/GROQ_API_KEY), AI chat sẽ không hoạt động.', flush=True)
     else:
+        provider_names = ' -> '.join(dict.fromkeys(p for p, _ in call_chain))
+        print(f'✅ AI chat sẵn sàng, thứ tự fallback: {provider_names}', flush=True)
         _auto_chat_task.start()
     return _auto_chat_task
