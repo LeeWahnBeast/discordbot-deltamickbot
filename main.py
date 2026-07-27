@@ -113,6 +113,12 @@ async def on_message(message):
                     return
             except Exception as e:
                 print(f'⚠️ Lỗi xử lý AI chat (channel {cid}): {e!r}')
+        try:
+            handled = await ai.handle_mention_to_bot(bot, message)
+            if handled:
+                return
+        except Exception as e:
+            print(f'⚠️ Lỗi xử lý AI chat mention (channel {cid}): {e!r}')
     await bot.process_commands(message)
 
 async def _get_display_name_no_ping(user_id):
@@ -1544,6 +1550,16 @@ async def vuon_slash(interaction: discord.Interaction):
     view = GardenView(interaction.user.id)
     await interaction.response.send_message(embed=_garden_embed(interaction.user.id, status), file=_garden_file(interaction.user.id, status), view=view)
     view.message = await interaction.original_response()
+
+@bot.tree.command(name='aichat', description='💬 Chat trực tiếp với AI (dựa vào lịch sử đoạn chat trong kênh)')
+@app_commands.describe(tin_nhan='Nội dung bạn muốn nói với AI')
+async def aichat_slash(interaction: discord.Interaction, tin_nhan: str):
+    await interaction.response.defer(thinking=True)
+    text, wait_left = await ai.reply_to_slash_command(interaction.channel, interaction.user.id, interaction.user.display_name, tin_nhan)
+    if text is None:
+        await interaction.followup.send(f'⏳ Chờ khoảng {wait_left}s nữa rồi hỏi tiếp nha, đỡ tốn quota!', ephemeral=True)
+        return
+    await interaction.followup.send(f'💬 **{interaction.user.display_name}:** {tin_nhan}\n\n🤖 {text}')
 
 @bot.tree.command(name='nhapcode', description='🎁 Nhập code để nhận thưởng Aura/Aura+/hạt giống')
 @app_commands.describe(code='Mã code (phân biệt hoa thường)')
