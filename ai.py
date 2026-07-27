@@ -10,11 +10,15 @@ Tính năng:
 
 Cấu hình qua biến môi trường:
   GEMINI_API_KEY   -> API key của Google Gemini (bắt buộc để tính năng hoạt động)
-  GEMINI_MODEL     -> tên model, mặc định "gemini-2.0-flash"
+  GEMINI_MODEL     -> tên model chính, mặc định "gemini-2.5-flash"
+  GEMINI_MODEL_FALLBACKS -> danh sách model dự phòng khi model chính bị rate-limit,
+                      phân tách bằng dấu phẩy. Mặc định tự thử qua vài model nhẹ hơn.
   AI_CHANNEL_IDS   -> danh sách channel ID, phân tách bằng dấu phẩy
                       (ví dụ: "123456789012345678,987654321098765432")
                       Có thể dùng AI_CHANNEL_ID (số ít) nếu chỉ có 1 kênh.
   AI_CHAT_INTERVAL_MINUTES -> số phút giữa mỗi lần tự nhắn, mặc định 15
+  AI_REPLY_COOLDOWN_SECONDS -> số giây chờ giữa 2 lần 1 người có thể trigger
+                      AI trả lời bằng reply, mặc định 20 (chống spam tốn quota)
 
 Cần cài thêm package:
   pip install google-generativeai
@@ -33,6 +37,21 @@ except ImportError:
 
 GEMINI_API_KEY = os.environ.get('GEMINI_API_KEY', '').strip()
 MODEL_NAME = os.environ.get('GEMINI_MODEL', 'gemini-2.5-flash').strip()
+
+_DEFAULT_FALLBACKS = ['gemini-2.5-flash', 'gemini-2.0-flash-lite', 'gemini-2.0-flash', 'gemini-1.5-flash']
+
+
+def _parse_model_fallbacks():
+    raw = os.environ.get('GEMINI_MODEL_FALLBACKS', '').strip()
+    chain = [MODEL_NAME]
+    candidates = [p.strip() for p in raw.split(',') if p.strip()] if raw else _DEFAULT_FALLBACKS
+    for m in candidates:
+        if m not in chain:
+            chain.append(m)
+    return chain
+
+
+MODEL_FALLBACK_CHAIN = _parse_model_fallbacks()
 
 if _GENAI_AVAILABLE and GEMINI_API_KEY:
     genai.configure(api_key=GEMINI_API_KEY)
@@ -66,6 +85,12 @@ SYSTEM_PROMPT = (
 _last_auto_message_time = {}
 _lock = asyncio.Lock()
 
+# Cooldown chống 1 người spam reply liên tục làm tốn quota Gemini
+REPLY_COOLDOWN_SECONDS = int(os.environ.get('AI_REPLY_COOLDOWN_SECONDS', '20'))
+_user_last_reply_time = {}
+
+RATE_LIMIT_COOLDOWN_MSG = '🤖 Mình đang gặp chút trục trặc khi trả lời (có thể do rate limit), chờ xíu rồi hỏi lại nha!'
+
 
 def is_ai_channel(channel_id: int) -> bool:
     return channel_id in AI_CHANNEL_IDS
@@ -90,12 +115,19 @@ async def fetch_recent_history(channel, limit=HISTORY_LIMIT):
     return msgs
 
 
-def _build_model():
-    return genai.GenerativeModel(MODEL_NAME, system_instruction=SYSTEM_PROMPT)
+def _build_model(model_name):
+    return genai.GenerativeModel(model_name, system_instruction=SYSTEM_PROMPT)
+
+
+def _is_rate_limit_error(e) -> bool:
+    name = type(e).__name__.lower()
+    msg = str(e).lower()
+    return 'resourceexhausted' in name or '429' in msg or 'quota' in msg or 'rate limit' in msg
 
 
 async def generate_reply(channel, trigger_message=None):
-    """Gọi Gemini để tạo câu trả lời, dựa trên lịch sử đoạn chat của channel."""
+    """Gọi Gemini để tạo câu trả lời, dựa trên lịch sử đoạn chat của channel.
+    Tự động thử qua các model dự phòng trong MODEL_FALLBACK_CHAIN nếu bị rate-limit."""
     if not _GENAI_AVAILABLE:
         print('⚠️ Chưa cài package google-generativeai, bỏ qua AI chat.', flush=True)
         return None
@@ -122,14 +154,24 @@ async def generate_reply(channel, trigger_message=None):
         )
     prompt = '\n'.join(prompt_parts)
 
-    try:
-        model = _build_model()
-        response = await asyncio.to_thread(model.generate_content, prompt)
-        text = (getattr(response, 'text', '') or '').strip()
-        return text or None
-    except Exception as e:
-        print(f'⚠️ Lỗi gọi Gemini API: {e!r}', flush=True)
-        return None
+    last_was_rate_limit = False
+    for model_name in MODEL_FALLBACK_CHAIN:
+        try:
+            model = _build_model(model_name)
+            response = await asyncio.to_thread(model.generate_content, prompt)
+            text = (getattr(response, 'text', '') or '').strip()
+            return text or None
+        except Exception as e:
+            if _is_rate_limit_error(e):
+                last_was_rate_limit = True
+                print(f"⚠️ Model '{model_name}' bị rate-limit, thử model kế tiếp...", flush=True)
+                continue
+            print(f'⚠️ Lỗi gọi Gemini API (model {model_name}): {e!r}', flush=True)
+            return None
+
+    if last_was_rate_limit:
+        print('⚠️ Tất cả model đều bị rate-limit.', flush=True)
+    return None
 
 
 async def handle_reply_to_bot(bot, message) -> bool:
@@ -150,11 +192,26 @@ async def handle_reply_to_bot(bot, message) -> bool:
     if replied is None or replied.author.id != bot.user.id:
         return False
 
+    now = time.time()
+    async with _lock:
+        last_time = _user_last_reply_time.get(message.author.id, 0)
+        if now - last_time < REPLY_COOLDOWN_SECONDS:
+            wait_left = int(REPLY_COOLDOWN_SECONDS - (now - last_time))
+            try:
+                await message.reply(f'⏳ Chờ khoảng {wait_left}s nữa rồi hỏi tiếp nha, đỡ tốn quota!', mention_author=False)
+            except discord.HTTPException:
+                pass
+            return True
+        _user_last_reply_time[message.author.id] = now
+
     try:
         async with message.channel.typing():
             text = await generate_reply(message.channel, trigger_message=message)
     except discord.HTTPException:
         text = await generate_reply(message.channel, trigger_message=message)
+
+    if text is None:
+        text = RATE_LIMIT_COOLDOWN_MSG
 
     if text:
         try:
