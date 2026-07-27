@@ -190,7 +190,7 @@ FLAG_POOLS = {'easy': FLAG_EASY, 'medium': FLAG_MEDIUM, 'hard': FLAG_HARD, 'insa
 FLAG_AURA_PER_DIFFICULTY = {'easy': 6, 'medium': 10, 'hard': 14, 'insane': 20, 'mythic': 28}
 FLAG_UNLOCK_SCORE_MYTHIC = 500
 ROUNDS_PER_GAME = 5
-DAILY_FREE_GAMES = {'flag': 5, 'chess_bot': 5, 'wordle': 5, 'minesweeper': 3}
+DAILY_FREE_GAMES = {'flag': 5, 'chess_bot': 5, 'wordle': 5, 'minesweeper': 10}
 _flag_games = {}
 _daily_usage = {}
 _flag_lifetime_score = {}
@@ -1876,14 +1876,17 @@ def minesweeper_parse_size(text, default=MINESWEEPER_DEFAULT_SIZE):
         return (None, False)
     return (w, True)
 
-def minesweeper_start(cid, owner_id, size=MINESWEEPER_DEFAULT_SIZE):
+def minesweeper_start(cid, owner_id, size=MINESWEEPER_DEFAULT_SIZE, seed=None):
     global _minesweeper_game_seq
     if daily_games_left_today('minesweeper', owner_id) <= 0:
-        return (None, False)
+        return (None, False, None)
     _consume_daily_slot('minesweeper', owner_id)
+    if seed is None:
+        seed = random.randint(10 ** 11, 10 ** 12 - 1)
+    rng = random.Random(seed)
     mine_count = minesweeper_mine_count(size)
     all_cells = [(r, c) for r in range(size) for c in range(size)]
-    mines = set(random.sample(all_cells, mine_count))
+    mines = set(rng.sample(all_cells, mine_count))
     board = [[0] * size for _ in range(size)]
     for r, c in mines:
         board[r][c] = -1
@@ -1895,8 +1898,19 @@ def minesweeper_start(cid, owner_id, size=MINESWEEPER_DEFAULT_SIZE):
             board[r][c] = count
     _minesweeper_game_seq += 1
     game_id = _minesweeper_game_seq
-    _minesweeper_games[cid] = {'game_id': game_id, 'owner_id': owner_id, 'board': board, 'mines': mines, 'mine_count': mine_count, 'revealed': set(), 'flags': set(), 'size': size, 'over': False, 'won': False}
-    return (game_id, True)
+    _minesweeper_games[cid] = {'game_id': game_id, 'owner_id': owner_id, 'board': board, 'mines': mines, 'mine_count': mine_count, 'revealed': set(), 'flags': set(), 'size': size, 'over': False, 'won': False, 'seed': seed, 'start_time': time.time()}
+    return (game_id, True, seed)
+
+def minesweeper_parse_seed(text):
+    if not text:
+        return (None, True)
+    text = text.strip()
+    if not text.isdigit():
+        return (None, False)
+    val = int(text)
+    if not 0 <= val <= 10 ** 15:
+        return (None, False)
+    return (val, True)
 
 def minesweeper_end(cid, game_id=None):
     if game_id is not None:
@@ -1993,8 +2007,8 @@ def _ms_digit_segments(digit):
     return segs.get(digit, '')
 
 def _ms_draw_7seg(draw, x, y, digit, w=22, h=38):
-    on_color = (237, 28, 36)
-    off_color = (60, 15, 15)
+    on_color = (255, 40, 40)
+    off_color = (35, 8, 8)
     seg_on = set(_ms_digit_segments(digit))
     t = 4
     coords = {'a': (x + t, y, x + w - t, y + t), 'g': (x + t, y + h // 2 - t // 2, x + w - t, y + h // 2 + t // 2), 'd': (x + t, y + h - t, x + w - t, y + h), 'f': (x, y + t, x + t, y + h // 2), 'b': (x + w - t, y + t, x + w, y + h // 2), 'e': (x, y + h // 2, x + t, y + h - t), 'c': (x + w - t, y + h // 2, x + w, y + h - t)}
@@ -2005,7 +2019,8 @@ def _ms_draw_counter(draw, x, y, value):
     value = max(-99, min(999, value))
     text = f'{value:03d}' if value >= 0 else f'-{abs(value):02d}'
     text = text[-3:].rjust(3, '0') if value >= 0 else text
-    _ms_bevel_rect(draw, x, y, x + 74, y + 46, raised=False)
+    draw.rectangle([x - 3, y - 3, x + 77, y + 49], fill=(20, 20, 22))
+    draw.rectangle([x, y, x + 74, y + 46], fill=(12, 12, 14))
     for i, ch in enumerate(text):
         _ms_draw_7seg(draw, x + 6 + i * 24, y + 4, ch)
 
