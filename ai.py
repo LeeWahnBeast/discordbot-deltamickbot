@@ -198,9 +198,13 @@ def _call_groq_sync(model_name, prompt):
     return text, None
 
 
-async def generate_reply(channel, trigger_message=None):
+async def generate_reply(channel, trigger_author_name=None, trigger_text=None):
     """
     Tạo câu trả lời, dựa trên lịch sử đoạn chat của channel.
+    Nếu có trigger_author_name/trigger_text, AI sẽ trả lời trực tiếp câu đó
+    (dùng cho: reply vào bot, tag bot, hoặc lệnh /aichat).
+    Nếu không, AI tự bắt chuyện/bình luận dựa trên lịch sử (dùng cho tự động 15 phút).
+
     Thử lần lượt từng (provider, model) trong _build_call_chain() theo đúng thứ tự
     AI_PROVIDER_ORDER — hết Gemini thì tự rớt qua Groq (hoặc ngược lại), tới khi
     có 1 câu trả lời thành công hoặc hết sạch lựa chọn.
@@ -214,11 +218,10 @@ async def generate_reply(channel, trigger_message=None):
     history_text = _format_history(history_msgs) or '(chưa có gì đáng chú ý)'
 
     prompt_parts = [f'Lịch sử đoạn chat gần đây trong kênh:\n{history_text}']
-    if trigger_message is not None:
-        author_name = trigger_message.author.display_name
+    if trigger_text is not None:
+        author_name = trigger_author_name or 'Một người dùng'
         prompt_parts.append(
-            f"\n{author_name} vừa reply trực tiếp vào tin nhắn của bạn với nội dung: "
-            f"\"{trigger_message.content.strip()}\"\n"
+            f"\n{author_name} vừa nhắn trực tiếp cho bạn: \"{trigger_text.strip()}\"\n"
             "Hãy trả lời trực tiếp câu đó, dựa trên ngữ cảnh lịch sử chat ở trên."
         )
     else:
@@ -244,6 +247,21 @@ async def generate_reply(channel, trigger_message=None):
     return None
 
 
+async def check_and_consume_cooldown(user_id: int):
+    """
+    Kiểm tra + cập nhật cooldown cho user_id.
+    Trả về (allowed, wait_left_seconds). Nếu allowed=True, cooldown đã được set luôn.
+    """
+    now = time.time()
+    async with _lock:
+        last_time = _user_last_reply_time.get(user_id, 0)
+        if now - last_time < REPLY_COOLDOWN_SECONDS:
+            wait_left = int(REPLY_COOLDOWN_SECONDS - (now - last_time))
+            return False, wait_left
+        _user_last_reply_time[user_id] = now
+    return True, 0
+
+
 async def handle_reply_to_bot(bot, message) -> bool:
     """
     Nếu `message` là reply vào một tin nhắn của bot, tạo câu trả lời và gửi lại ngay.
@@ -262,23 +280,19 @@ async def handle_reply_to_bot(bot, message) -> bool:
     if replied is None or replied.author.id != bot.user.id:
         return False
 
-    now = time.time()
-    async with _lock:
-        last_time = _user_last_reply_time.get(message.author.id, 0)
-        if now - last_time < REPLY_COOLDOWN_SECONDS:
-            wait_left = int(REPLY_COOLDOWN_SECONDS - (now - last_time))
-            try:
-                await message.reply(f'⏳ Chờ khoảng {wait_left}s nữa rồi hỏi tiếp nha, đỡ tốn quota!', mention_author=False)
-            except discord.HTTPException:
-                pass
-            return True
-        _user_last_reply_time[message.author.id] = now
+    allowed, wait_left = await check_and_consume_cooldown(message.author.id)
+    if not allowed:
+        try:
+            await message.reply(f'⏳ Chờ khoảng {wait_left}s nữa rồi hỏi tiếp nha, đỡ tốn quota!', mention_author=False)
+        except discord.HTTPException:
+            pass
+        return True
 
     try:
         async with message.channel.typing():
-            text = await generate_reply(message.channel, trigger_message=message)
+            text = await generate_reply(message.channel, trigger_author_name=message.author.display_name, trigger_text=message.content)
     except discord.HTTPException:
-        text = await generate_reply(message.channel, trigger_message=message)
+        text = await generate_reply(message.channel, trigger_author_name=message.author.display_name, trigger_text=message.content)
 
     if text is None:
         text = FALLBACK_ERROR_MSG
@@ -292,6 +306,68 @@ async def handle_reply_to_bot(bot, message) -> bool:
     async with _lock:
         _last_auto_message_time[message.channel.id] = time.time()
     return True
+
+
+def _strip_bot_mention(bot, content: str) -> str:
+    text = content.replace(f'<@{bot.user.id}>', '').replace(f'<@!{bot.user.id}>', '')
+    return text.strip()
+
+
+async def handle_mention_to_bot(bot, message) -> bool:
+    """
+    Nếu `message` có tag (mention) trực tiếp bot (không phải @everyone/@here/role),
+    tạo câu trả lời và gửi lại ngay. Trả về True nếu đã xử lý.
+    """
+    if bot.user not in message.mentions:
+        return False
+
+    allowed, wait_left = await check_and_consume_cooldown(message.author.id)
+    if not allowed:
+        try:
+            await message.reply(f'⏳ Chờ khoảng {wait_left}s nữa rồi hỏi tiếp nha, đỡ tốn quota!', mention_author=False)
+        except discord.HTTPException:
+            pass
+        return True
+
+    user_text = _strip_bot_mention(bot, message.content) or '(chào bot)'
+
+    try:
+        async with message.channel.typing():
+            text = await generate_reply(message.channel, trigger_author_name=message.author.display_name, trigger_text=user_text)
+    except discord.HTTPException:
+        text = await generate_reply(message.channel, trigger_author_name=message.author.display_name, trigger_text=user_text)
+
+    if text is None:
+        text = FALLBACK_ERROR_MSG
+
+    if text:
+        try:
+            await message.reply(text, mention_author=False)
+        except discord.HTTPException as e:
+            print(f'⚠️ Lỗi gửi reply AI chat (mention): {e!r}', flush=True)
+
+    async with _lock:
+        _last_auto_message_time[message.channel.id] = time.time()
+    return True
+
+
+async def reply_to_slash_command(channel, user_id: int, author_display_name: str, tin_nhan: str):
+    """
+    Dùng cho lệnh /aichat. Trả về (text, wait_left):
+      - Nếu bị cooldown: text=None, wait_left>0
+      - Nếu thành công/lỗi: text=chuỗi trả lời (có thể là FALLBACK_ERROR_MSG), wait_left=0
+    """
+    allowed, wait_left = await check_and_consume_cooldown(user_id)
+    if not allowed:
+        return None, wait_left
+
+    text = await generate_reply(channel, trigger_author_name=author_display_name, trigger_text=tin_nhan)
+    if text is None:
+        text = FALLBACK_ERROR_MSG
+
+    async with _lock:
+        _last_auto_message_time[channel.id] = time.time()
+    return text, 0
 
 
 async def maybe_send_auto_message(channel):
