@@ -1339,464 +1339,10 @@ def wiki_lookup(keyword):
         print(f"[wiki] Lỗi khi tra '{keyword}': {type(e).__name__}: {e}")
         return None
 
-FARM_FILE = 'farm_data.json'
-FARM_WATER_COOLDOWN = 3 * 3600
-FARM_WATERINGS_NEEDED = 3
-FARM_FARMER_DAILY_COST = 350
-FARM_FARMER_SELL_FEE = 0.10
-FARM_FARMER_CYCLE_SECONDS = 15 * 60
-FARM_PLOTS_PER_GARDEN = 3
-FARM_TOTAL_PLOTS = FARM_PLOTS_PER_GARDEN * 2
-FARM_RARITY_LABELS = {'common': '⚪ Common', 'uncommon': '🟢 Uncommon', 'legend': '🟡 Legend', 'secret': '🔴 Secret'}
-FARM_SEEDS = {
-    'oliver': {'name': 'Cây Oliver', 'rarity': 'common', 'price': 0.1, 'reusable': True, 'yield_aura': 0.1, 'yield_aura_plus': 0.0, 'colors': {'stem': (62, 142, 65), 'leaf': (76, 175, 80), 'leaf2': (102, 187, 106), 'crown': (255, 193, 7)}},
-    'phonk': {'name': 'Phonk Seed', 'rarity': 'common', 'price': 0.1, 'reusable': False, 'yield_aura': 2, 'yield_aura_plus': 0.01, 'colors': {'stem': (90, 62, 142), 'leaf': (124, 77, 175), 'leaf2': (149, 102, 187), 'crown': (216, 27, 96)}},
-    'folkvalley': {'name': 'Folk Valley Seed', 'rarity': 'uncommon', 'price': 0.5, 'reusable': False, 'yield_aura': 5.5, 'yield_aura_plus': 0.2, 'colors': {'stem': (62, 110, 142), 'leaf': (76, 145, 175), 'leaf2': (102, 165, 187), 'crown': (255, 235, 59)}},
-    'skibidi': {'name': 'Skibidi Seed', 'rarity': 'uncommon', 'price': 0.9, 'reusable': False, 'yield_aura': 10.9, 'yield_aura_plus': 0.5, 'colors': {'stem': (142, 100, 62), 'leaf': (175, 130, 76), 'leaf2': (187, 150, 102), 'crown': (244, 67, 54)}},
-    'delta': {'name': 'Delta Seed', 'rarity': 'legend', 'price': 1.9, 'reusable': True, 'yield_aura': 100, 'yield_aura_plus': 0.9, 'colors': {'stem': (62, 142, 120), 'leaf': (76, 175, 150), 'leaf2': (102, 187, 165), 'crown': (0, 230, 200)}},
-    'penado': {'name': 'Penado Pesta', 'rarity': 'legend', 'price': 40, 'reusable': True, 'yield_aura': 500, 'yield_aura_plus': 30, 'colors': {'stem': (142, 62, 62), 'leaf': (175, 76, 76), 'leaf2': (187, 102, 102), 'crown': (255, 111, 0)}},
-    'beast': {'name': 'Beast Seed', 'rarity': 'secret', 'price': 100, 'reusable': False, 'yield_aura': 5000, 'yield_aura_plus': 190, 'colors': {'stem': (40, 40, 45), 'leaf': (90, 20, 110), 'leaf2': (140, 30, 160), 'crown': (255, 0, 200)}},
-}
-FARM_WEATHERS = {
-    'sunny': {'label': '☀️ Nắng', 'desc': 'Cây lớn nhanh hơn — giảm 1 lần tưới cần thiết.'},
-    'rainy': {'label': '🌧️ Mưa', 'desc': 'Trời mưa tự tưới miễn phí 1 lần cho mọi cây đang trồng!'},
-    'storm': {'label': '⛈️ Bão', 'desc': 'Bão có thể làm hỏng cây non — cẩn thận mất trắng!'},
-}
-FARM_WEATHER_WEIGHTS = {'sunny': 0.4, 'rainy': 0.4, 'storm': 0.2}
-FARM_STORM_DESTROY_CHANCE = 0.15
-_farm_cache = {int(uid): d for uid, d in _firestore_load_collection('farm', FARM_FILE).items()}
-
-def _farm_empty_plot():
-    return {'seed': None, 'waterings': 0, 'last_water': 0}
-
-def _farm_get(user_id):
-    d = _farm_cache.setdefault(user_id, {})
-    if not isinstance(d.get('seeds'), dict):
-        d['seeds'] = {}
-    if not isinstance(d.get('fruits'), dict):
-        d['fruits'] = {}
-    d.pop('planted', None)
-    d.pop('waterings', None)
-    d.pop('last_water', None)
-    if not isinstance(d.get('plots'), list) or len(d['plots']) != FARM_TOTAL_PLOTS:
-        old_seed = d.get('plot_seed')
-        old_waterings = d.get('plot_waterings', 0)
-        old_last_water = d.get('plot_last_water', 0)
-        plots = [_farm_empty_plot() for _ in range(FARM_TOTAL_PLOTS)]
-        if old_seed:
-            plots[0] = {'seed': old_seed, 'waterings': old_waterings, 'last_water': old_last_water}
-        d['plots'] = plots
-    d.pop('plot_seed', None)
-    d.pop('plot_waterings', None)
-    d.pop('plot_last_water', None)
-    d.setdefault('farmer', False)
-    d.setdefault('farmer_next_charge', 0)
-    d.setdefault('farmer_next_tick', 0)
-    d.setdefault('weather', None)
-    d.setdefault('weather_rolled_at', 0)
-    return d
-
-def _farm_save(user_id):
-    _firestore_save_doc('farm', user_id, _farm_cache[user_id])
-
-FARM_WEATHER_REFRESH_SECONDS = 3600
-
-def _farm_roll_weather(d):
-    now = time.time()
-    if d['weather'] and now - d['weather_rolled_at'] < FARM_WEATHER_REFRESH_SECONDS:
-        return False
-    keys = list(FARM_WEATHER_WEIGHTS.keys())
-    weights = list(FARM_WEATHER_WEIGHTS.values())
-    new_weather = random.choices(keys, weights=weights, k=1)[0]
-    d['weather'] = new_weather
-    d['weather_rolled_at'] = now
-    if new_weather == 'rainy':
-        for plot in d['plots']:
-            if plot['seed']:
-                needed = _farm_needed_waterings(d, plot)
-                if plot['waterings'] < needed:
-                    plot['waterings'] += 1
-                    plot['last_water'] = now
-    elif new_weather == 'storm':
-        for plot in d['plots']:
-            if plot['seed'] and random.random() < FARM_STORM_DESTROY_CHANCE:
-                plot['seed'] = None
-                plot['waterings'] = 0
-                plot['last_water'] = 0
-    return True
-
-def _farm_needed_waterings(d, plot=None):
-    needed = FARM_WATERINGS_NEEDED
-    if d.get('weather') == 'sunny':
-        needed = max(1, needed - 1)
-    return needed
-
-def _farm_settle_farmer(d, user_id):
-    if not d['farmer']:
-        return False
-    changed = False
-    now = time.time()
-    while d['farmer'] and d['farmer_next_charge'] <= now:
-        if get_aura(user_id) < FARM_FARMER_DAILY_COST:
-            d['farmer'] = False
-            changed = True
-            break
-        add_aura(user_id, -FARM_FARMER_DAILY_COST)
-        d['farmer_next_charge'] += 86400
-        changed = True
-    if not d['farmer']:
-        return changed
-    if d['farmer_next_tick'] <= 0:
-        d['farmer_next_tick'] = now + FARM_FARMER_CYCLE_SECONDS
-        return True
-    while d['farmer_next_tick'] <= now:
-        changed = True
-        for plot in d['plots']:
-            if not plot['seed']:
-                continue
-            needed = _farm_needed_waterings(d, plot)
-            if plot['waterings'] < needed:
-                plot['waterings'] += 1
-                plot['last_water'] = now
-            else:
-                seed = FARM_SEEDS[plot['seed']]
-                net_aura = seed['yield_aura'] * (1 - FARM_FARMER_SELL_FEE)
-                net_aura_plus = round(seed['yield_aura_plus'] * (1 - FARM_FARMER_SELL_FEE), 2)
-                add_aura(user_id, int(round(net_aura)))
-                if net_aura_plus:
-                    add_aura_plus(user_id, net_aura_plus)
-                if seed['reusable']:
-                    plot['waterings'] = 0
-                    plot['last_water'] = now
-                else:
-                    plot['seed'] = None
-                    plot['waterings'] = 0
-                    plot['last_water'] = 0
-        d['farmer_next_tick'] += FARM_FARMER_CYCLE_SECONDS
-    return changed
-
-def farm_status(user_id):
-    d = _farm_get(user_id)
-    changed = _farm_settle_farmer(d, user_id)
-    changed = _farm_roll_weather(d) or changed
-    if changed:
-        _farm_save(user_id)
-    return dict(d)
-
-def farm_buy_seed(user_id, seed_key):
-    seed = FARM_SEEDS.get(seed_key)
-    if seed is None:
-        return {'ok': False, 'reason': '❌ Hạt giống không tồn tại.'}
-    price = seed['price']
-    balance = get_aura_plus(user_id)
-    if balance < price:
-        return {'ok': False, 'reason': f"❌ Không đủ Aura+! Cần **{price}** Aura+, bạn có **{balance}** Aura+."}
-    add_aura_plus(user_id, -price)
-    d = _farm_get(user_id)
-    d['seeds'][seed_key] = d['seeds'].get(seed_key, 0) + 1
-    _farm_save(user_id)
-    return {'ok': True, 'seed': seed, 'count': d['seeds'][seed_key]}
-
-def farm_plant(user_id, seed_key, plot_index):
-    d = _farm_get(user_id)
-    _farm_settle_farmer(d, user_id)
-    if not 0 <= plot_index < FARM_TOTAL_PLOTS:
-        return {'ok': False, 'reason': '❌ Ô đất không hợp lệ.'}
-    plot = d['plots'][plot_index]
-    if plot['seed']:
-        return {'ok': False, 'reason': '❌ Ô đất này đang có cây trồng rồi, thu hoạch trước đã!'}
-    if d['seeds'].get(seed_key, 0) <= 0:
-        return {'ok': False, 'reason': '❌ Bạn không có hạt giống này! Mua trong Shop trước.'}
-    d['seeds'][seed_key] -= 1
-    if d['seeds'][seed_key] <= 0:
-        del d['seeds'][seed_key]
-    plot['seed'] = seed_key
-    plot['waterings'] = 0
-    plot['last_water'] = 0
-    _farm_save(user_id)
-    return {'ok': True, 'seed': FARM_SEEDS[seed_key], 'plot_index': plot_index}
-
-def farm_water(user_id, plot_index):
-    d = _farm_get(user_id)
-    _farm_settle_farmer(d, user_id)
-    if not 0 <= plot_index < FARM_TOTAL_PLOTS:
-        return {'ok': False, 'reason': '❌ Ô đất không hợp lệ.'}
-    plot = d['plots'][plot_index]
-    if not plot['seed']:
-        return {'ok': False, 'reason': '❌ Ô đất này chưa trồng cây nào!'}
-    needed = _farm_needed_waterings(d, plot)
-    if plot['waterings'] >= needed:
-        return {'ok': False, 'reason': '✅ Cây đã đủ nước rồi, thu hoạch thôi!'}
-    now = time.time()
-    remain = plot['last_water'] + FARM_WATER_COOLDOWN - now
-    if remain > 0:
-        return {'ok': False, 'reason': f'⏳ Chưa tới giờ tưới tiếp — còn **{int(remain // 3600)}h{int((remain % 3600) // 60)}p**.'}
-    plot['waterings'] += 1
-    plot['last_water'] = now
-    _farm_save(user_id)
-    return {'ok': True, 'waterings': plot['waterings'], 'needed': needed}
-
-def farm_harvest(user_id, plot_index):
-    d = _farm_get(user_id)
-    _farm_settle_farmer(d, user_id)
-    if not 0 <= plot_index < FARM_TOTAL_PLOTS:
-        return {'ok': False, 'reason': '❌ Ô đất không hợp lệ.'}
-    plot = d['plots'][plot_index]
-    seed_key = plot['seed']
-    if not seed_key:
-        return {'ok': False, 'reason': '❌ Ô đất này chưa trồng cây nào!'}
-    needed = _farm_needed_waterings(d, plot)
-    if plot['waterings'] < needed:
-        return {'ok': False, 'reason': f"⏳ Cây chưa đủ nước ({plot['waterings']}/{needed})."}
-    seed = FARM_SEEDS[seed_key]
-    d['fruits'][seed_key] = d['fruits'].get(seed_key, 0) + 1
-    if seed['reusable']:
-        plot['waterings'] = 0
-        plot['last_water'] = 0
-    else:
-        plot['seed'] = None
-        plot['waterings'] = 0
-        plot['last_water'] = 0
-    _farm_save(user_id)
-    return {'ok': True, 'seed': seed, 'fruit_count': d['fruits'][seed_key]}
-
-def farm_hire_farmer(user_id):
-    d = _farm_get(user_id)
-    if d['farmer']:
-        return {'ok': False, 'reason': '❌ Bạn đã thuê nông dân rồi!'}
-    balance = get_aura(user_id)
-    if balance < FARM_FARMER_DAILY_COST:
-        return {'ok': False, 'reason': f'❌ Không đủ Aura để trả công ngày đầu! Cần **{FARM_FARMER_DAILY_COST}**, bạn có **{balance}**.'}
-    add_aura(user_id, -FARM_FARMER_DAILY_COST)
-    d['farmer'] = True
-    d['farmer_next_charge'] = time.time() + 86400
-    d['farmer_next_tick'] = time.time() + FARM_FARMER_CYCLE_SECONDS
-    _farm_save(user_id)
-    return {'ok': True}
-
-def farm_sell(user_id, seed_keys=None):
-    d = _farm_get(user_id)
-    keys = list(d['fruits'].keys()) if seed_keys is None else [k for k in seed_keys if d['fruits'].get(k, 0) > 0]
-    if not keys:
-        return {'ok': False, 'reason': '❌ Không có trái nào để bán.'}
-    total_aura, total_aura_plus, sold = 0, 0.0, []
-    for k in keys:
-        qty = d['fruits'].pop(k, 0)
-        if qty <= 0:
-            continue
-        seed = FARM_SEEDS[k]
-        total_aura += seed['yield_aura'] * qty
-        total_aura_plus = round(total_aura_plus + seed['yield_aura_plus'] * qty, 2)
-        sold.append((seed['name'], qty))
-    _farm_save(user_id)
-    if total_aura:
-        add_aura(user_id, int(round(total_aura)))
-    if total_aura_plus:
-        add_aura_plus(user_id, total_aura_plus)
-    return {'ok': True, 'sold': sold, 'aura': int(round(total_aura)), 'aura_plus': total_aura_plus}
-
-_FARM_PX_W, _FARM_PX_H, _FARM_SCALE = 112, 52, 8
-_FARM_SKY_DAY_TOP = (120, 190, 235)
-_FARM_SKY_DAY_BOT = (176, 224, 245)
-_FARM_SKY_RAIN_TOP = (96, 112, 132)
-_FARM_SKY_RAIN_BOT = (140, 155, 170)
-_FARM_SKY_STORM_TOP = (48, 50, 62)
-_FARM_SKY_STORM_BOT = (85, 88, 102)
-_FARM_HILL_DARK = (78, 156, 92)
-_FARM_HILL = (111, 191, 115)
-_FARM_HILL_LIGHT = (139, 209, 128)
-_FARM_GRASS_DARK = (72, 138, 82)
-_FARM_GRASS = (98, 178, 102)
-_FARM_GRASS_LIGHT = (128, 198, 120)
-_FARM_DIRT_DARK = (110, 74, 42)
-_FARM_DIRT = (155, 106, 62)
-_FARM_DIRT_LIGHT = (178, 130, 82)
-_FARM_FURROW = (98, 64, 36)
-_FARM_HOLE = (74, 46, 26)
-_FARM_FENCE = (150, 104, 66)
-_FARM_FENCE_LIGHT = (176, 130, 88)
-_FARM_FENCE_DARK = (94, 62, 38)
-_FARM_BUSH_DARK = (46, 110, 58)
-_FARM_BUSH = (66, 140, 76)
-_FARM_BUSH_LIGHT = (94, 168, 92)
-_FARM_ROCK = (140, 140, 148)
-_FARM_ROCK_DARK = (104, 104, 114)
-_FARM_ROCK_LIGHT = (168, 168, 176)
-_FARM_FLOWER = (255, 193, 7)
-_FARM_FLOWER2 = (255, 235, 59)
-_FARM_SHADOW = (0, 0, 0)
-_FARM_PLOT_W = 30
-_FARM_PLOT_GAP = 8
-_FARM_PLOT_Y0 = 16
-_FARM_PLOT_Y1 = 48
-
-def _farm_set(px, x, y, color, alpha=1.0):
-    if 0 <= x < _FARM_PX_W and 0 <= y < _FARM_PX_H:
-        if alpha >= 1.0:
-            px[x, y] = color
-        else:
-            r0, g0, b0 = px[x, y]
-            r1, g1, b1 = color
-            px[x, y] = (int(r0 + (r1 - r0) * alpha), int(g0 + (g1 - g0) * alpha), int(b0 + (b1 - b0) * alpha))
-
-def _farm_vgradient(px, x0, x1, y0, y1, top, bot):
-    span = max(1, y1 - y0)
-    for y in range(y0, y1):
-        t = (y - y0) / span
-        col = tuple(int(top[i] + (bot[i] - top[i]) * t) for i in range(3))
-        for x in range(x0, x1):
-            _farm_set(px, x, y, col)
-
-def _farm_dither(px, x0, x1, y0, y1, base, dark, light, seed_val, density=0.35):
-    rnd = random.Random(seed_val)
-    for y in range(y0, y1):
-        for x in range(x0, x1):
-            _farm_set(px, x, y, base)
-            r = rnd.random()
-            if r < density * 0.4:
-                _farm_set(px, x, y, dark)
-            elif r < density:
-                _farm_set(px, x, y, light)
-
-def _farm_draw_bush(px, cx, base_y, rnd, w=5, h=4):
-    for dy in range(h):
-        row_w = w - abs(dy - h // 2)
-        for dx in range(-row_w, row_w + 1):
-            x, y = cx + dx, base_y - dy
-            r = rnd.random()
-            col = _FARM_BUSH_DARK if r < 0.25 else (_FARM_BUSH_LIGHT if r < 0.5 else _FARM_BUSH)
-            _farm_set(px, x, y, col)
-    if rnd.random() < 0.6:
-        _farm_set(px, cx + rnd.choice([-1, 0, 1]), base_y - h, _FARM_FLOWER if rnd.random() < 0.5 else _FARM_FLOWER2)
-
-def _farm_draw_rock(px, cx, base_y, rnd):
-    for dx, dy, col in [(-1, 0, _FARM_ROCK_DARK), (0, 0, _FARM_ROCK), (1, 0, _FARM_ROCK_DARK), (0, -1, _FARM_ROCK_LIGHT), (-1, -1, _FARM_ROCK)]:
-        _farm_set(px, cx + dx, base_y + dy, col)
-
-def _farm_draw_border_foliage(px, x0, x1, base_y, seed_val):
-    rnd = random.Random(seed_val)
-    x = x0
-    while x < x1:
-        step = rnd.randint(3, 5)
-        if rnd.random() < 0.75:
-            _farm_draw_bush(px, x, base_y, rnd, w=rnd.choice([2, 3]), h=rnd.choice([2, 3]))
-        else:
-            _farm_draw_rock(px, x, base_y, rnd)
-        x += step
-
-def _farm_draw_fence_segment(px, x0, x1, y_top):
-    for x in range(x0, x1 + 1):
-        _farm_set(px, x, y_top, _FARM_FENCE_DARK)
-        _farm_set(px, x, y_top + 1, _FARM_FENCE)
-        _farm_set(px, x, y_top + 2, _FARM_FENCE_DARK)
-    for x in range(x0, x1 + 1, 4):
-        _farm_set(px, x, y_top - 1, _FARM_FENCE_DARK)
-        _farm_set(px, x, y_top - 2, _FARM_FENCE_LIGHT)
-
-def _farm_draw_plant(px, cx, base_y, seed_key, waterings, needed):
-    _farm_set(px, cx, base_y + 1, _FARM_SHADOW, alpha=0.28)
-    _farm_set(px, cx - 1, base_y + 1, _FARM_SHADOW, alpha=0.16)
-    _farm_set(px, cx + 1, base_y + 1, _FARM_SHADOW, alpha=0.16)
-    if seed_key is None:
-        _farm_set(px, cx, base_y, _FARM_HOLE)
-        _farm_set(px, cx - 1, base_y, _FARM_HOLE)
-        _farm_set(px, cx + 1, base_y, _FARM_HOLE)
-        return
-    colors = FARM_SEEDS[seed_key]['colors']
-    w = min(waterings, needed)
-    ratio = w / max(needed, 1)
-    stem_top = base_y - int(3 + ratio * 14)
-    for y in range(stem_top, base_y + 1):
-        _farm_set(px, cx, y, colors['stem'])
-    if ratio >= 1 / 4:
-        _farm_set(px, cx - 1, stem_top + 3, colors['leaf'])
-        _farm_set(px, cx + 1, stem_top + 3, colors['leaf'])
-    if ratio >= 2 / 4:
-        _farm_set(px, cx - 2, stem_top + 6, colors['leaf2'])
-        _farm_set(px, cx + 2, stem_top + 6, colors['leaf2'])
-        _farm_set(px, cx - 1, stem_top + 2, colors['leaf'])
-        _farm_set(px, cx + 1, stem_top + 2, colors['leaf'])
-    if ratio >= 3 / 4:
-        _farm_set(px, cx - 2, stem_top + 2, colors['leaf2'])
-        _farm_set(px, cx + 2, stem_top + 2, colors['leaf2'])
-        _farm_set(px, cx - 1, stem_top, colors['leaf'])
-        _farm_set(px, cx + 1, stem_top, colors['leaf'])
-    if w >= needed:
-        for fx, fy in [(cx, stem_top - 2), (cx - 1, stem_top - 1), (cx + 1, stem_top - 1), (cx - 1, stem_top), (cx + 1, stem_top)]:
-            _farm_set(px, fx, fy, colors['crown'])
-        _farm_set(px, cx, stem_top - 1, colors.get('crown2', colors['crown']))
-        _farm_set(px, cx, stem_top, colors.get('crown2', colors['crown']))
-
-def _farm_draw_rain(px, seed_val):
-    rnd = random.Random(seed_val)
-    for _ in range(60):
-        x = rnd.randint(0, _FARM_PX_W - 1)
-        y = rnd.randint(0, _FARM_PX_H - 1)
-        _farm_set(px, x, y, (180, 200, 230), alpha=0.7)
-
-def farm_render_image(user_id, status=None):
-    d = status or farm_status(user_id)
-    weather = d.get('weather') or 'sunny'
-    sky_top, sky_bot = {
-        'sunny': (_FARM_SKY_DAY_TOP, _FARM_SKY_DAY_BOT),
-        'rainy': (_FARM_SKY_RAIN_TOP, _FARM_SKY_RAIN_BOT),
-        'storm': (_FARM_SKY_STORM_TOP, _FARM_SKY_STORM_BOT),
-    }[weather]
-    img = Image.new('RGB', (_FARM_PX_W, _FARM_PX_H), sky_bot)
-    px = img.load()
-    _farm_vgradient(px, 0, _FARM_PX_W, 0, 10, sky_top, sky_bot)
-    seed_val = int(d.get('weather_rolled_at', 0)) or user_id
-    _farm_dither(px, 0, _FARM_PX_W, 10, _FARM_PX_H, _FARM_GRASS, _FARM_GRASS_DARK, _FARM_GRASS_LIGHT, seed_val, density=0.3)
-    for y in (10, 11):
-        for x in range(_FARM_PX_W):
-            r = random.Random(seed_val + x * 7 + y).random()
-            col = _FARM_HILL_DARK if r < 0.3 else (_FARM_HILL_LIGHT if r < 0.55 else _FARM_HILL)
-            _farm_set(px, x, y, col)
-    border_rnd_seed = seed_val + 1
-    _farm_draw_border_foliage(px, 0, _FARM_PX_W, 13, border_rnd_seed)
-    _farm_draw_border_foliage(px, 0, _FARM_PX_W, _FARM_PX_H - 1, border_rnd_seed + 99)
-    garden_x_starts = [3, 3 + _FARM_PLOT_W + _FARM_PLOT_GAP]
-    for gi, gx in enumerate(garden_x_starts):
-        _farm_dither(px, gx, gx + _FARM_PLOT_W, _FARM_PLOT_Y0, _FARM_PLOT_Y1, _FARM_DIRT, _FARM_DIRT_DARK, _FARM_DIRT_LIGHT, seed_val + gi * 31, density=0.4)
-        for y in range(_FARM_PLOT_Y0 + 2, _FARM_PLOT_Y1, 4):
-            for x in range(gx + 1, gx + _FARM_PLOT_W - 1):
-                _farm_set(px, x, y, _FARM_FURROW)
-                _farm_set(px, x, y + 1, _FARM_SHADOW, alpha=0.12)
-        _farm_draw_fence_segment(px, gx - 1, gx + _FARM_PLOT_W, _FARM_PLOT_Y0 - 2)
-        for y in range(_FARM_PLOT_Y0 - 1, _FARM_PLOT_Y1 + 1):
-            _farm_set(px, gx - 1, y, _FARM_FENCE_DARK)
-            _farm_set(px, gx + _FARM_PLOT_W, y, _FARM_FENCE_DARK)
-        _farm_draw_fence_segment(px, gx - 1, gx + _FARM_PLOT_W, _FARM_PLOT_Y1)
-        for bx in range(gx - 2, gx + _FARM_PLOT_W + 3, 5):
-            _farm_draw_bush(px, bx, _FARM_PLOT_Y0 - 3, random.Random(seed_val + gi * 17 + bx), w=2, h=2)
-    if d['farmer']:
-        fx = garden_x_starts[0] - 1
-        for y in range(_FARM_PLOT_Y0 - 6, _FARM_PLOT_Y0 - 2):
-            _farm_set(px, fx, y, (66, 99, 176))
-        _farm_set(px, fx, _FARM_PLOT_Y0 - 7, (255, 224, 189))
-    plots = d['plots']
-    needed = _farm_needed_waterings(d)
-    plot_i = 0
-    for gx in garden_x_starts:
-        slot_w = _FARM_PLOT_W // FARM_PLOTS_PER_GARDEN
-        for s in range(FARM_PLOTS_PER_GARDEN):
-            cx = gx + s * slot_w + slot_w // 2
-            plot = plots[plot_i]
-            _farm_draw_plant(px, cx, _FARM_PLOT_Y1 - 3, plot['seed'], plot['waterings'], needed if plot['seed'] else FARM_WATERINGS_NEEDED)
-            plot_i += 1
-    if weather == 'rainy':
-        _farm_draw_rain(px, int(d.get('weather_rolled_at', 0)))
-    img = img.resize((_FARM_PX_W * _FARM_SCALE, _FARM_PX_H * _FARM_SCALE), Image.NEAREST)
-    buf = io.BytesIO()
-    img.save(buf, format='PNG')
-    buf.seek(0)
-    return buf
-
 REDEEM_FILE = 'redeem_data.json'
 REDEEM_CODES = {
     'ChaoNgayMoiVuiVe': {'aura': 50, 'aura_plus': 0.9},
     'DeltaMickLaConCho': {'aura': 190, 'aura_plus': 5},
-    'PleaseFruit': {'seed': 'folkvalley', 'seed_qty': 1},
 }
 _redeem_cache = {int(uid): d for uid, d in _firestore_load_collection('redeem_codes', REDEEM_FILE).items()}
 
@@ -1815,12 +1361,6 @@ def redeem_code(user_id, code):
     if 'aura_plus' in entry:
         add_aura_plus(user_id, entry['aura_plus'])
         reward_lines.append(f"+{entry['aura_plus']} Aura+")
-    if 'seed' in entry:
-        d = _farm_get(user_id)
-        qty = entry.get('seed_qty', 1)
-        d['seeds'][entry['seed']] = d['seeds'].get(entry['seed'], 0) + qty
-        _farm_save(user_id)
-        reward_lines.append(f"+{qty} 🌱 {FARM_SEEDS[entry['seed']]['name']}")
     used['codes'].append(code)
     _firestore_save_doc('redeem_codes', user_id, used)
     return {'ok': True, 'reward_lines': reward_lines}
@@ -1842,8 +1382,13 @@ MINESWEEPER_DEFAULT_SIZE = 8
 MINESWEEPER_MINE_RATIO = 0.15625
 MINESWEEPER_AURA_REWARD = 2000
 MINESWEEPER_AURA_PLUS_REWARD = 10
+MINESWEEPER_BASE_MINE_COUNT = max(3, round(MINESWEEPER_DEFAULT_SIZE * MINESWEEPER_DEFAULT_SIZE * MINESWEEPER_MINE_RATIO))
+MINESWEEPER_FAST_MULT = 1.3
+MINESWEEPER_QUICK_MULT = 1.1
 _minesweeper_games = {}
 _minesweeper_game_seq = 0
+MINESWEEPER_STATS_FILE = 'minesweeper_stats.json'
+_minesweeper_stats_cache = {int(uid): d for uid, d in _firestore_load_collection('minesweeper_stats', MINESWEEPER_STATS_FILE).items()}
 
 def minesweeper_mine_count(size):
     return max(3, round(size * size * MINESWEEPER_MINE_RATIO))
@@ -1883,22 +1428,12 @@ def minesweeper_start(cid, owner_id, size=MINESWEEPER_DEFAULT_SIZE, seed=None):
     _consume_daily_slot('minesweeper', owner_id)
     if seed is None:
         seed = random.randint(10 ** 11, 10 ** 12 - 1)
-    rng = random.Random(seed)
     mine_count = minesweeper_mine_count(size)
-    all_cells = [(r, c) for r in range(size) for c in range(size)]
-    mines = set(rng.sample(all_cells, mine_count))
     board = [[0] * size for _ in range(size)]
-    for r, c in mines:
-        board[r][c] = -1
-    for r in range(size):
-        for c in range(size):
-            if board[r][c] == -1:
-                continue
-            count = sum(((r + dr, c + dc) in mines for dr in (-1, 0, 1) for dc in (-1, 0, 1) if not (dr == 0 and dc == 0)))
-            board[r][c] = count
     _minesweeper_game_seq += 1
     game_id = _minesweeper_game_seq
-    _minesweeper_games[cid] = {'game_id': game_id, 'owner_id': owner_id, 'board': board, 'mines': mines, 'mine_count': mine_count, 'revealed': set(), 'flags': set(), 'size': size, 'over': False, 'won': False, 'seed': seed, 'start_time': time.time()}
+    # Mìn chưa được đặt ngay — sẽ sinh ra khi mở ô đầu tiên, đảm bảo luôn an toàn (chuẩn Minesweeper cổ điển).
+    _minesweeper_games[cid] = {'game_id': game_id, 'owner_id': owner_id, 'board': board, 'mines': set(), 'mine_count': mine_count, 'revealed': set(), 'flags': set(), 'size': size, 'over': False, 'won': False, 'seed': seed, 'created_at': time.time(), 'start_time': None, 'elapsed': None, 'first_click_done': False}
     return (game_id, True, seed)
 
 def minesweeper_parse_seed(text):
@@ -1925,6 +1460,29 @@ def minesweeper_force_reset(cid):
 def minesweeper_game(cid):
     return _minesweeper_games.get(cid)
 
+def _minesweeper_generate_board(game, safe_r, safe_c):
+    """Sinh bãi mìn ngay khi người chơi mở ô đầu tiên, loại trừ ô đó và 8 ô lân cận để không bao giờ thua ngay phát đầu."""
+    size = game['size']
+    rng = random.Random(game['seed'])
+    safe_zone = {(safe_r + dr, safe_c + dc) for dr in (-1, 0, 1) for dc in (-1, 0, 1)}
+    candidates = [(r, c) for r in range(size) for c in range(size) if (r, c) not in safe_zone]
+    mine_count = min(game['mine_count'], len(candidates))
+    mines = set(rng.sample(candidates, mine_count))
+    board = [[0] * size for _ in range(size)]
+    for r, c in mines:
+        board[r][c] = -1
+    for r in range(size):
+        for c in range(size):
+            if board[r][c] == -1:
+                continue
+            count = sum(((r + dr, c + dc) in mines for dr in (-1, 0, 1) for dc in (-1, 0, 1) if not (dr == 0 and dc == 0)))
+            board[r][c] = count
+    game['board'] = board
+    game['mines'] = mines
+    game['mine_count'] = mine_count
+    game['first_click_done'] = True
+    game['start_time'] = time.time()
+
 def _minesweeper_flood_reveal(game, r, c):
     size = game['size']
     stack = [(r, c)]
@@ -1944,6 +1502,16 @@ def _minesweeper_flood_reveal(game, r, c):
                     if (nr, nc) not in game['revealed'] and 0 <= nr < size and (0 <= nc < size):
                         stack.append((nr, nc))
 
+def _minesweeper_finish_check(game):
+    size = game['size']
+    total_safe = size * size - len(game['mines'])
+    if len(game['revealed']) >= total_safe:
+        game['over'] = True
+        game['won'] = True
+        game['elapsed'] = round(time.time() - game['start_time'], 1) if game['start_time'] else None
+        return True
+    return False
+
 def minesweeper_reveal(cid, game_id, r, c):
     game = _minesweeper_games.get(cid)
     if game is None or game.get('game_id') != game_id:
@@ -1951,19 +1519,39 @@ def minesweeper_reveal(cid, game_id, r, c):
     size = game['size']
     if not (0 <= r < size and 0 <= c < size):
         return 'invalid'
-    if (r, c) in game['flags'] or (r, c) in game['revealed']:
+    if (r, c) in game['flags']:
         return 'noop'
+    if (r, c) in game['revealed']:
+        # Ô đã mở rồi → thử "chord": nếu số cờ quanh ô khớp với số ghi trên ô, tự mở hết các ô lân cận còn lại.
+        val = game['board'][r][c]
+        if val <= 0:
+            return 'noop'
+        neighbors = [(r + dr, c + dc) for dr in (-1, 0, 1) for dc in (-1, 0, 1) if not (dr == 0 and dc == 0)]
+        neighbors = [(nr, nc) for nr, nc in neighbors if 0 <= nr < size and 0 <= nc < size]
+        flagged = sum((1 for n in neighbors if n in game['flags']))
+        if flagged != val:
+            return 'noop'
+        hit_mine = False
+        for nr, nc in neighbors:
+            if (nr, nc) in game['flags'] or (nr, nc) in game['revealed']:
+                continue
+            if (nr, nc) in game['mines']:
+                game['revealed'].add((nr, nc))
+                hit_mine = True
+            else:
+                _minesweeper_flood_reveal(game, nr, nc)
+        if hit_mine:
+            game['over'] = True
+            return 'boom'
+        return 'win' if _minesweeper_finish_check(game) else 'ok'
+    if not game['first_click_done']:
+        _minesweeper_generate_board(game, r, c)
     if game['board'][r][c] == -1:
         game['revealed'].add((r, c))
         game['over'] = True
         return 'boom'
     _minesweeper_flood_reveal(game, r, c)
-    total_safe = size * size - len(game['mines'])
-    if len(game['revealed']) >= total_safe:
-        game['over'] = True
-        game['won'] = True
-        return 'win'
-    return 'ok'
+    return 'win' if _minesweeper_finish_check(game) else 'ok'
 
 def minesweeper_toggle_flag(cid, game_id, r, c):
     game = _minesweeper_games.get(cid)
@@ -1980,10 +1568,44 @@ def minesweeper_toggle_flag(cid, game_id, r, c):
         game['flags'].add((r, c))
     return 'ok'
 
-def award_minesweeper_win(user_id):
-    new_aura = add_aura(user_id, MINESWEEPER_AURA_REWARD)
-    new_aura_plus = add_aura_plus(user_id, MINESWEEPER_AURA_PLUS_REWARD)
-    return (new_aura, new_aura_plus)
+def minesweeper_reward(game):
+    """Thưởng tăng theo độ khó (số mìn) so với bàn mặc định 8x8, cộng thêm bonus tốc độ nếu thắng nhanh."""
+    scale = game['mine_count'] / MINESWEEPER_BASE_MINE_COUNT
+    elapsed = game.get('elapsed')
+    mult = 1.0
+    if elapsed is not None:
+        allowance = game['size'] * game['size'] * 1.5
+        if elapsed <= allowance * 0.5:
+            mult = MINESWEEPER_FAST_MULT
+        elif elapsed <= allowance:
+            mult = MINESWEEPER_QUICK_MULT
+    aura = max(1, round(MINESWEEPER_AURA_REWARD * scale * mult))
+    aura_plus = round(MINESWEEPER_AURA_PLUS_REWARD * scale * mult, 2)
+    return (aura, aura_plus, elapsed, mult)
+
+def _minesweeper_stats_get(user_id):
+    return _minesweeper_stats_cache.setdefault(user_id, {'wins': 0, 'total_aura': 0, 'best_time': None, 'best_time_size': None})
+
+def _minesweeper_record_win(user_id, game, aura, elapsed):
+    stats = _minesweeper_stats_get(user_id)
+    stats['wins'] = stats.get('wins', 0) + 1
+    stats['total_aura'] = stats.get('total_aura', 0) + aura
+    if elapsed is not None and (stats.get('best_time') is None or elapsed < stats['best_time']):
+        stats['best_time'] = elapsed
+        stats['best_time_size'] = game['size']
+    _firestore_save_doc('minesweeper_stats', user_id, stats)
+
+def award_minesweeper_win(user_id, game):
+    aura, aura_plus, elapsed, mult = minesweeper_reward(game)
+    new_aura = add_aura(user_id, aura)
+    new_aura_plus = add_aura_plus(user_id, aura_plus)
+    _minesweeper_record_win(user_id, game, aura, elapsed)
+    return (new_aura, new_aura_plus, aura, aura_plus, elapsed, mult)
+
+def top_minesweeper(n=10):
+    items = [(uid, d.get('wins', 0), d.get('total_aura', 0)) for uid, d in _minesweeper_stats_cache.items() if d.get('wins', 0) > 0]
+    items.sort(key=lambda x: (x[1], x[2]), reverse=True)
+    return items[:n]
 
 _MS_CELL_PX = 48
 _MS_BORDER_PX = 22
