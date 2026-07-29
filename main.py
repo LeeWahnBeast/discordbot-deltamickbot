@@ -549,7 +549,8 @@ async def minesweeper_slash(interaction: discord.Interaction, size: str=None, se
         game = games.minesweeper_game(cid)
         img_buf = games.minesweeper_render_image(cid)
         file = discord.File(img_buf, filename='minesweeper.png')
-        embed = discord.Embed(title='💣 Dò Mìn — Trò Chơi Cổ Đại', description=f"Một trò chơi trí tuệ cổ xưa được lưu truyền qua nhiều thế hệ, thử thách sự tính toán và may rủi của người chơi.\n\nBàn {board_size}x{board_size}, có {game['mine_count']} quả mìn ẩn.\nBấm ⌨️ để nhập tọa độ (VD: `B3`), hoặc bấm 🚩 để bật/tắt chế độ cắm cờ.\n🏆 Thắng: **+{games.MINESWEEPER_AURA_REWARD} Aura** và **+{games.MINESWEEPER_AURA_PLUS_REWARD} Aura+**.\n\n🌱 Seed: `{used_seed}` (dùng lại seed này ở lệnh `/minesweeper` để chơi đúng bàn này)\n🎟️ Vé chơi còn lại hôm nay: **{left}**", color=3447003)
+        est_aura, est_aura_plus, _, _ = games.minesweeper_reward(game)
+        embed = discord.Embed(title='💣 Dò Mìn — Trò Chơi Cổ Đại', description=f"Một trò chơi trí tuệ cổ xưa được lưu truyền qua nhiều thế hệ, thử thách sự tính toán và may rủi của người chơi.\n\nBàn {board_size}x{board_size}, có {game['mine_count']} quả mìn ẩn (mìn chỉ xuất hiện sau ô mở đầu tiên, đảm bảo không bao giờ 'toang' ngay phát đầu).\nBấm ⌨️ để nhập tọa độ (VD: `B3`), hoặc bấm 🚩 để bật/tắt chế độ cắm cờ. Nhập lại tọa độ một ô số đã mở (đủ cờ xung quanh) để tự mở nhanh các ô lân cận.\n🏆 Thắng: **~{est_aura} Aura** và **~{est_aura_plus} Aura+** (thưởng tăng theo độ khó, cộng bonus nếu thắng nhanh).\n\n🌱 Seed: `{used_seed}` (dùng lại seed này ở lệnh `/minesweeper` để chơi đúng bàn này)\n🎟️ Vé chơi còn lại hôm nay: **{left}**", color=3447003)
         embed.set_image(url='attachment://minesweeper.png')
         view = MinesweeperView(cid, interaction.user.id, game_id)
         await interaction.response.send_message(embed=embed, file=file, view=view)
@@ -570,6 +571,20 @@ async def minesweeper_reset_slash(interaction: discord.Interaction):
         return
     await interaction.response.send_message('🧹 Đã xóa ván Dò Mìn bị kẹt. Chơi ván mới với `/minesweeper`!', ephemeral=True)
 
+
+@bot.tree.command(name='minesweeper_top', description='🏆 Bảng xếp hạng Dò Mìn — theo số ván thắng')
+async def minesweeper_top_slash(interaction: discord.Interaction):
+    top = games.top_minesweeper(10)
+    if not top:
+        await interaction.response.send_message('_(Chưa có ai thắng ván Dò Mìn nào cả)_', ephemeral=True)
+        return
+    medals = ['🥇', '🥈', '🥉']
+    lines = []
+    for i, (uid, wins, total_aura) in enumerate(top):
+        rank = medals[i] if i < 3 else f'#{i + 1}'
+        lines.append(f'{rank} <@{uid}> — **{wins}** ván thắng ({total_aura} Aura kiếm được)')
+    embed = discord.Embed(title='🏆 Top 10 Dò Mìn', description='\n'.join(lines), color=15844367)
+    await interaction.response.send_message(embed=embed)
 
 
 @bot.tree.command(name='wordle', description='Bắt đầu ván Wordle — chat thẳng 5 chữ để đoán')
@@ -1120,232 +1135,6 @@ async def kiemtra_veso_slash(interaction: discord.Interaction, ma_ve: int):
         embed = discord.Embed(title='😢 Chúc bạn may mắn lần sau', description=f"Vé **#{ticket['id']}** (`{ticket['number']}` - {ticket['province']}) không trúng gì.", color=8359053)
     await interaction.response.send_message(embed=embed)
 
-def _garden_embed(user_id, status=None):
-    d = status or games.farm_status(user_id)
-    weather = games.FARM_WEATHERS.get(d.get('weather'), {})
-    weather_line = f"{weather.get('label', '❔')} — {weather.get('desc', '')}"
-    plot_lines = []
-    needed = games._farm_needed_waterings(d)
-    for i, plot in enumerate(d['plots']):
-        garden_label = 'Trái' if i < games.FARM_PLOTS_PER_GARDEN else 'Phải'
-        slot_no = i % games.FARM_PLOTS_PER_GARDEN + 1
-        if not plot['seed']:
-            plot_lines.append(f"`Ô {i + 1}` (Vườn {garden_label} #{slot_no}) — 🕳️ Đất trống")
-        else:
-            seed_name = games.FARM_SEEDS[plot['seed']]['name']
-            if plot['waterings'] >= needed:
-                plot_lines.append(f"`Ô {i + 1}` (Vườn {garden_label} #{slot_no}) — ✅ **{seed_name}** đã chín!")
-            else:
-                plot_lines.append(f"`Ô {i + 1}` (Vườn {garden_label} #{slot_no}) — 🌱 **{seed_name}** ({plot['waterings']}/{needed} nước)")
-    embed = discord.Embed(title='🌾 Khu Vườn Của Bạn', description=f'{weather_line}\n\n' + '\n'.join(plot_lines), color=6584896)
-    seeds_txt = ', '.join(f"{games.FARM_SEEDS[k]['name']} x{v}" for k, v in d['seeds'].items() if v > 0) or '_(trống)_'
-    fruits_txt = ', '.join(f"{games.FARM_SEEDS[k]['name']} x{v}" for k, v in d['fruits'].items() if v > 0) or '_(trống)_'
-    embed.add_field(name='🎒 Túi hạt giống', value=seeds_txt, inline=False)
-    embed.add_field(name='🧺 Kho trái (chưa bán)', value=fruits_txt, inline=False)
-    embed.add_field(name='👨‍🌾 Nông dân', value='✅ Đã thuê' if d['farmer'] else '❌ Chưa thuê', inline=True)
-    embed.set_image(url='attachment://nongtrai.png')
-    return embed
-
-def _garden_file(user_id, status=None):
-    return discord.File(games.farm_render_image(user_id, status), filename='nongtrai.png')
-
-async def _refresh_garden_message(garden_message, owner_id):
-    if garden_message is None:
-        return
-    try:
-        await garden_message.edit(embed=_garden_embed(owner_id), attachments=[_garden_file(owner_id)])
-    except (discord.NotFound, discord.HTTPException):
-        pass
-
-def _seed_option_desc(seed_key):
-    seed = games.FARM_SEEDS[seed_key]
-    dung = 'nhiều lần' if seed['reusable'] else '1 lần'
-    return f"{games.FARM_RARITY_LABELS[seed['rarity']]} • Giá {seed['price']} Aura+ • Thu {seed['yield_aura']} Aura+{seed['yield_aura_plus']} Aura+ ({dung})"
-
-class SeedShopSelect(discord.ui.Select):
-    def __init__(self, owner_id):
-        self.owner_id = owner_id
-        options = [discord.SelectOption(label=seed['name'], value=key, description=_seed_option_desc(key)[:100]) for key, seed in games.FARM_SEEDS.items()]
-        super().__init__(placeholder='Chọn hạt giống để mua...', options=options)
-
-    async def callback(self, interaction: discord.Interaction):
-        result = games.farm_buy_seed(self.owner_id, self.values[0])
-        if not result['ok']:
-            await interaction.response.send_message(result['reason'], ephemeral=True)
-            return
-        await interaction.response.send_message(f"✅ Đã mua **{result['seed']['name']}**! Bạn hiện có **{result['count']}** hạt loại này. Trồng bằng nút 🌱 Trồng trong `/vuon`.", ephemeral=True)
-
-class SeedShopView(discord.ui.View):
-    def __init__(self, owner_id):
-        super().__init__(timeout=120)
-        self.add_item(SeedShopSelect(owner_id))
-
-def _seed_shop_embed():
-    embed = discord.Embed(title='🛒 Shop Hạt Giống', description='Giá tính bằng **Aura+** — chọn trong danh sách bên dưới để mua 1 hạt.', color=15277667)
-    for rarity, label in games.FARM_RARITY_LABELS.items():
-        seeds = [s for s in games.FARM_SEEDS.values() if s['rarity'] == rarity]
-        if not seeds:
-            continue
-        lines = [f"**{s['name']}** — {s['price']} Aura+ → thu {s['yield_aura']} Aura + {s['yield_aura_plus']} Aura+ ({'nhiều lần' if s['reusable'] else '1 lần'})" for s in seeds]
-        embed.add_field(name=label, value='\n'.join(lines), inline=False)
-    return embed
-
-def _empty_plot_options(status):
-    options = []
-    for i, plot in enumerate(status['plots']):
-        if plot['seed']:
-            continue
-        garden_label = 'Trái' if i < games.FARM_PLOTS_PER_GARDEN else 'Phải'
-        slot_no = i % games.FARM_PLOTS_PER_GARDEN + 1
-        options.append(discord.SelectOption(label=f'Ô {i + 1} — Vườn {garden_label} #{slot_no}', value=str(i)))
-    return options
-
-class SeedPickSelect(discord.ui.Select):
-    def __init__(self, owned, parent_view):
-        self.parent_view = parent_view
-        options = [discord.SelectOption(label=f"{games.FARM_SEEDS[k]['name']} (x{v})", value=k, description=_seed_option_desc(k)[:100]) for k, v in owned.items()]
-        super().__init__(placeholder='1️⃣ Chọn hạt giống...', options=options)
-
-    async def callback(self, interaction: discord.Interaction):
-        self.parent_view.chosen_seed = self.values[0]
-        await interaction.response.defer(ephemeral=True)
-
-class PlotPickSelect(discord.ui.Select):
-    def __init__(self, status, parent_view):
-        self.parent_view = parent_view
-        options = _empty_plot_options(status)
-        super().__init__(placeholder='2️⃣ Chọn ô đất trống...', options=options)
-
-    async def callback(self, interaction: discord.Interaction):
-        self.parent_view.chosen_plot = int(self.values[0])
-        await interaction.response.defer(ephemeral=True)
-
-class ConfirmPlantButton(discord.ui.Button):
-    def __init__(self, parent_view):
-        self.parent_view = parent_view
-        super().__init__(label='✅ Xác nhận trồng', style=discord.ButtonStyle.success)
-
-    async def callback(self, interaction: discord.Interaction):
-        pv = self.parent_view
-        if pv.chosen_seed is None or pv.chosen_plot is None:
-            await interaction.response.send_message('❌ Chọn cả hạt giống lẫn ô đất trước đã!', ephemeral=True)
-            return
-        result = games.farm_plant(pv.owner_id, pv.chosen_seed, pv.chosen_plot)
-        if not result['ok']:
-            await interaction.response.send_message(result['reason'], ephemeral=True)
-            return
-        needed = games._farm_needed_waterings(games.farm_status(pv.owner_id))
-        await interaction.response.send_message(f"🌾 Đã trồng **{result['seed']['name']}** vào Ô {pv.chosen_plot + 1}! Tưới nước bằng nút 💧 trong `/vuon`, cần **{needed} lần** để thu hoạch.", file=_garden_file(pv.owner_id), ephemeral=True)
-        await _refresh_garden_message(pv.garden_message, pv.owner_id)
-
-class PlantSelectView(discord.ui.View):
-    def __init__(self, owner_id, owned, status, garden_message):
-        super().__init__(timeout=120)
-        self.owner_id = owner_id
-        self.garden_message = garden_message
-        self.chosen_seed = None
-        self.chosen_plot = None
-        self.add_item(SeedPickSelect(owned, self))
-        self.add_item(PlotPickSelect(status, self))
-        self.add_item(ConfirmPlantButton(self))
-
-class SellSelect(discord.ui.Select):
-    def __init__(self, owner_id, fruits, garden_message):
-        self.owner_id = owner_id
-        self.garden_message = garden_message
-        options = [discord.SelectOption(label=f"{games.FARM_SEEDS[k]['name']} (x{v})", value=k) for k, v in fruits.items() if v > 0]
-        super().__init__(placeholder='Chọn trái muốn bán (có thể chọn nhiều)...', options=options, min_values=1, max_values=len(options))
-
-    async def callback(self, interaction: discord.Interaction):
-        result = games.farm_sell(self.owner_id, self.values)
-        if not result['ok']:
-            await interaction.response.send_message(result['reason'], ephemeral=True)
-            return
-        sold_txt = ', '.join(f'{name} x{qty}' for name, qty in result['sold'])
-        await interaction.response.send_message(f"💰 Đã bán: {sold_txt}\nNhận được: {games.AURA_ICON} +{result['aura']} Aura, +{result['aura_plus']} Aura+", ephemeral=True)
-        await _refresh_garden_message(self.garden_message, self.owner_id)
-
-class SellAllButton(discord.ui.Button):
-    def __init__(self, owner_id, garden_message):
-        self.owner_id = owner_id
-        self.garden_message = garden_message
-        super().__init__(label='💰 Bán tất cả', style=discord.ButtonStyle.danger)
-
-    async def callback(self, interaction: discord.Interaction):
-        result = games.farm_sell(self.owner_id, None)
-        if not result['ok']:
-            await interaction.response.send_message(result['reason'], ephemeral=True)
-            return
-        sold_txt = ', '.join(f'{name} x{qty}' for name, qty in result['sold'])
-        await interaction.response.send_message(f"💰 Đã bán tất cả: {sold_txt}\nNhận được: {games.AURA_ICON} +{result['aura']} Aura, +{result['aura_plus']} Aura+", ephemeral=True)
-        await _refresh_garden_message(self.garden_message, self.owner_id)
-
-class SellView(discord.ui.View):
-    def __init__(self, owner_id, fruits, garden_message):
-        super().__init__(timeout=120)
-        self.add_item(SellSelect(owner_id, fruits, garden_message))
-        self.add_item(SellAllButton(owner_id, garden_message))
-
-def _fruit_inventory_embed(user_id):
-    d = games.farm_status(user_id)
-    lines = [f"**{games.FARM_SEEDS[k]['name']}** x{v} → bán được {games.FARM_SEEDS[k]['yield_aura'] * v} Aura + {round(games.FARM_SEEDS[k]['yield_aura_plus'] * v, 2)} Aura+" for k, v in d['fruits'].items() if v > 0]
-    embed = discord.Embed(title='🧺 Kho Trái Của Bạn', description='\n'.join(lines) or '_(trống)_', color=15844367)
-    return embed
-
-def _plot_display(d, i, needed):
-    plot = d['plots'][i]
-    garden_label = 'Trái' if i < games.FARM_PLOTS_PER_GARDEN else 'Phải'
-    slot_no = i % games.FARM_PLOTS_PER_GARDEN + 1
-    seed_name = games.FARM_SEEDS[plot['seed']]['name']
-    return f"Ô {i + 1} (Vườn {garden_label} #{slot_no}) — {seed_name} ({plot['waterings']}/{needed})"
-
-class WaterSelect(discord.ui.Select):
-    def __init__(self, owner_id, status, garden_message):
-        self.owner_id = owner_id
-        self.garden_message = garden_message
-        needed = games._farm_needed_waterings(status)
-        options = [discord.SelectOption(label=_plot_display(status, i, needed), value=str(i), emoji='💧') for i, plot in enumerate(status['plots']) if plot['seed'] and plot['waterings'] < needed]
-        super().__init__(placeholder='Chọn ô muốn tưới nước...', options=options)
-
-    async def callback(self, interaction: discord.Interaction):
-        plot_index = int(self.values[0])
-        result = games.farm_water(self.owner_id, plot_index)
-        if not result['ok']:
-            await interaction.response.send_message(result['reason'], ephemeral=True)
-            return
-        done = result['waterings'] >= result['needed']
-        msg = '✅ Sẵn sàng thu hoạch — bấm 🧺!' if done else 'Tưới tiếp sau 3 tiếng nữa nhé.'
-        await interaction.response.send_message(f"💧 Đã tưới Ô {plot_index + 1}! ({result['waterings']}/{result['needed']}) — {msg}", file=_garden_file(self.owner_id), ephemeral=True)
-        await _refresh_garden_message(self.garden_message, self.owner_id)
-
-class WaterSelectView(discord.ui.View):
-    def __init__(self, owner_id, status, garden_message):
-        super().__init__(timeout=120)
-        self.add_item(WaterSelect(owner_id, status, garden_message))
-
-class HarvestSelect(discord.ui.Select):
-    def __init__(self, owner_id, status, garden_message):
-        self.owner_id = owner_id
-        self.garden_message = garden_message
-        needed = games._farm_needed_waterings(status)
-        options = [discord.SelectOption(label=_plot_display(status, i, needed), value=str(i), emoji='🧺') for i, plot in enumerate(status['plots']) if plot['seed'] and plot['waterings'] >= needed]
-        super().__init__(placeholder='Chọn ô muốn thu hoạch...', options=options)
-
-    async def callback(self, interaction: discord.Interaction):
-        plot_index = int(self.values[0])
-        result = games.farm_harvest(self.owner_id, plot_index)
-        if not result['ok']:
-            await interaction.response.send_message(result['reason'], ephemeral=True)
-            return
-        note = ' (cây tiếp tục sống, tưới lại để thu vòng sau)' if result['seed']['reusable'] else ' (hạt đã dùng hết, trồng hạt mới nhé)'
-        await interaction.response.send_message(f"🧺 Đã thu thập **{result['seed']['name']}** từ Ô {plot_index + 1}! Đã có **{result['fruit_count']}** trái trong kho{note}. Bán bằng nút 💰 Bán.", file=_garden_file(self.owner_id), ephemeral=True)
-        await _refresh_garden_message(self.garden_message, self.owner_id)
-
-class HarvestView(discord.ui.View):
-    def __init__(self, owner_id, status, garden_message):
-        super().__init__(timeout=120)
-        self.add_item(HarvestSelect(owner_id, status, garden_message))
-
 def _minesweeper_status_embed(game, footer_extra=''):
     if game['over'] and (not game['won']):
         title, color, desc = ('💥 DÒ MÌN — Nổ mìn rồi!', 15158332, 'Bạn đã đạp trúng mìn. Chơi lại với `/minesweeper`!')
@@ -1422,8 +1211,14 @@ class MinesweeperView(discord.ui.View):
                 item.disabled = True
             games.minesweeper_end(self.cid, self.game_id)
             if game['won']:
-                new_aura, new_aura_plus = games.award_minesweeper_win(self.owner_id)
-                embed.description += f"\n\n{games.AURA_ICON} +{games.MINESWEEPER_AURA_REWARD} Aura (số dư: {new_aura})\n{games.AURA_PLUS_ICON} +{games.MINESWEEPER_AURA_PLUS_REWARD} Aura+ (số dư: {new_aura_plus})"
+                new_aura, new_aura_plus, aura_gain, aura_plus_gain, elapsed, mult = games.award_minesweeper_win(self.owner_id, game)
+                bonus_txt = ''
+                if mult >= games.MINESWEEPER_FAST_MULT:
+                    bonus_txt = ' ⚡ (bonus thắng siêu tốc!)'
+                elif mult >= games.MINESWEEPER_QUICK_MULT:
+                    bonus_txt = ' ⚡ (bonus thắng nhanh!)'
+                time_txt = f'\n⏱️ Thời gian: **{elapsed}s**{bonus_txt}' if elapsed is not None else ''
+                embed.description += f"\n\n{games.AURA_ICON} +{aura_gain} Aura (số dư: {new_aura})\n{games.AURA_PLUS_ICON} +{aura_plus_gain} Aura+ (số dư: {new_aura_plus}){time_txt}"
         await interaction.response.edit_message(content=None, embed=embed, attachments=[file], view=self)
 
     async def handle_coord(self, interaction, raw_text):
@@ -1446,7 +1241,7 @@ class MinesweeperView(discord.ui.View):
                 await interaction.response.send_message('⌛ Ván đã kết thúc hoặc tọa độ không hợp lệ.', ephemeral=True)
                 return
             if result == 'noop':
-                await interaction.response.send_message('ℹ️ Ô này đã mở rồi hoặc đang cắm cờ (tắt chế độ cắm cờ để mở).', ephemeral=True)
+                await interaction.response.send_message('ℹ️ Ô này đang cắm cờ, hoặc đã mở nhưng số cờ xung quanh chưa khớp số ghi trên ô (cắm đủ cờ rồi nhập lại tọa độ này để tự mở nhanh các ô còn lại).', ephemeral=True)
                 return
             await self._refresh(interaction)
         except Exception:
@@ -1480,76 +1275,6 @@ class MinesweeperView(discord.ui.View):
     async def on_timeout(self):
         games.minesweeper_end(self.cid, self.game_id)
 
-class GardenView(discord.ui.View):
-
-    def __init__(self, owner_id):
-        super().__init__(timeout=300)
-        self.owner_id = owner_id
-        self.message = None
-
-    async def interaction_check(self, interaction: discord.Interaction):
-        if interaction.user.id != self.owner_id:
-            await interaction.response.send_message('❌ Đây không phải khu vườn của bạn! Gõ `/vuon` để mở vườn của riêng bạn.', ephemeral=True)
-            return False
-        return True
-
-    @discord.ui.button(label='🛒 Shop', style=discord.ButtonStyle.primary)
-    async def shop_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await interaction.response.send_message(embed=_seed_shop_embed(), view=SeedShopView(self.owner_id), ephemeral=True)
-
-    @discord.ui.button(label='🌱 Trồng', style=discord.ButtonStyle.success)
-    async def plant_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
-        d = games.farm_status(self.owner_id)
-        if not any(p['seed'] is None for p in d['plots']):
-            await interaction.response.send_message('❌ Cả 6 ô đất đều đang có cây rồi, thu hoạch trước đã!', ephemeral=True)
-            return
-        owned = {k: v for k, v in d['seeds'].items() if v > 0}
-        if not owned:
-            await interaction.response.send_message('❌ Bạn chưa có hạt giống nào — mua trong 🛒 Shop trước!', ephemeral=True)
-            return
-        await interaction.response.send_message('Chọn hạt giống và ô đất để trồng:', view=PlantSelectView(self.owner_id, owned, d, self.message), ephemeral=True)
-
-    @discord.ui.button(label='💧 Tưới nước', style=discord.ButtonStyle.secondary)
-    async def water_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
-        d = games.farm_status(self.owner_id)
-        needed = games._farm_needed_waterings(d)
-        if not any(p['seed'] and p['waterings'] < needed for p in d['plots']):
-            await interaction.response.send_message('❌ Không có ô nào cần tưới lúc này!', ephemeral=True)
-            return
-        await interaction.response.send_message('Chọn ô muốn tưới:', view=WaterSelectView(self.owner_id, d, self.message), ephemeral=True)
-
-    @discord.ui.button(label='🧺 Thu thập', style=discord.ButtonStyle.success)
-    async def harvest_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
-        d = games.farm_status(self.owner_id)
-        needed = games._farm_needed_waterings(d)
-        if not any(p['seed'] and p['waterings'] >= needed for p in d['plots']):
-            await interaction.response.send_message('❌ Chưa có ô nào chín để thu hoạch!', ephemeral=True)
-            return
-        await interaction.response.send_message('Chọn ô muốn thu hoạch:', view=HarvestView(self.owner_id, d, self.message), ephemeral=True)
-
-    @discord.ui.button(label='👨\u200d🌾 Thuê nông dân', style=discord.ButtonStyle.secondary)
-    async def hire_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
-        result = games.farm_hire_farmer(self.owner_id)
-        if not result['ok']:
-            await interaction.response.send_message(result['reason'], ephemeral=True)
-            return
-        await interaction.response.send_message(f"👨‍🌾 Đã thuê nông dân! Nông dân sẽ tự tưới + thu hoạch + **bán giúp bạn mỗi ~15 phút** (thu phí **{int(games.FARM_FARMER_SELL_FEE * 100)}%** trên mỗi lần bán). Trừ **{games.FARM_FARMER_DAILY_COST} Aura/ngày** từ số dư — không đủ Aura quá lâu trong ngày thì nông dân sẽ tự bỏ đi.", ephemeral=True)
-        await _refresh_garden_message(self.message, self.owner_id)
-
-    @discord.ui.button(label='💰 Bán', style=discord.ButtonStyle.danger)
-    async def sell_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
-        d = games.farm_status(self.owner_id)
-        if not any(v > 0 for v in d['fruits'].values()):
-            await interaction.response.send_message('❌ Kho trái của bạn đang trống, chưa có gì để bán.', ephemeral=True)
-            return
-        await interaction.response.send_message(embed=_fruit_inventory_embed(self.owner_id), view=SellView(self.owner_id, d['fruits'], self.message), ephemeral=True)
-
-@bot.tree.command(name='vuon', description='🌾 Mở khu vườn của bạn — mua hạt, trồng, tưới, thu hoạch, bán')
-async def vuon_slash(interaction: discord.Interaction):
-    status = games.farm_status(interaction.user.id)
-    view = GardenView(interaction.user.id)
-    await interaction.response.send_message(embed=_garden_embed(interaction.user.id, status), file=_garden_file(interaction.user.id, status), view=view)
-    view.message = await interaction.original_response()
 
 @bot.tree.command(name='aichat', description='💬 Chat trực tiếp với AI (dựa vào lịch sử đoạn chat trong kênh)')
 @app_commands.describe(tin_nhan='Nội dung bạn muốn nói với AI')
@@ -1572,7 +1297,7 @@ async def aichat_slash(interaction: discord.Interaction, tin_nhan: str):
         return
     await interaction.followup.send(f'💬 **{interaction.user.display_name}:** {tin_nhan}\n\n🤖 {text}')
 
-@bot.tree.command(name='nhapcode', description='🎁 Nhập code để nhận thưởng Aura/Aura+/hạt giống')
+@bot.tree.command(name='nhapcode', description='🎁 Nhập code để nhận thưởng Aura/Aura+')
 @app_commands.describe(code='Mã code (phân biệt hoa thường)')
 async def nhapcode_slash(interaction: discord.Interaction, code: str):
     result = games.redeem_code(interaction.user.id, code)
