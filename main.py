@@ -7,6 +7,7 @@ import io
 import asyncio
 import web_server
 import games
+import games_ext as gx
 import ai
 from discord.ext import commands
 from discord import app_commands
@@ -823,6 +824,319 @@ async def help_slash(interaction: discord.Interaction):
         embed.add_field(name=f'Lệnh (phần {part})', value='\n'.join(chunk), inline=False)
     embed.set_footer(text='Made by TVPixel')
     await interaction.response.send_message(embed=embed, ephemeral=True)
+
+# ============================================================
+# 🎟️ /ve — xem số vé hiện có
+# ============================================================
+@bot.tree.command(name='ve', description='🎟️ Xem số Vé hiện có (dùng để mua thêm lượt chơi minigame)')
+async def ve_slash(interaction: discord.Interaction):
+    count = gx.get_ve(interaction.user.id)
+    await interaction.response.send_message(f'🎟️ Bạn đang có **{count} Vé**.\nMua thêm ở `/tạp-hoá` → 🛒 Shop nhé!', ephemeral=True)
+
+
+# ============================================================
+# 🟩 WORDLE
+# ============================================================
+class WordleGuessModal(discord.ui.Modal, title='Đoán từ Wordle (5 chữ)'):
+    guess_input = discord.ui.TextInput(label='Nhập 1 từ có đúng 5 chữ cái', placeholder='VÍ DỤ: MANGO', min_length=5, max_length=5)
+
+    def __init__(self, cid, user_id):
+        super().__init__()
+        self.cid = cid
+        self.user_id = user_id
+
+    async def on_submit(self, interaction: discord.Interaction):
+        ok, reason, feedback, done, won = gx.wordle_guess(self.cid, self.user_id, self.guess_input.value)
+        if not ok:
+            await interaction.response.send_message(reason, ephemeral=True)
+            return
+        if done:
+            answer = gx.wordle_answer(self.cid, self.user_id)
+            board = gx.wordle_render(self.cid, self.user_id)
+            gx.wordle_end(self.cid, self.user_id)
+            if won:
+                text = f'🎉 **CHÍNH XÁC!** Bạn đoán đúng từ **{answer}**!\n\n{board}'
+            else:
+                text = f'💀 Hết lượt rồi! Từ đúng là **{answer}**.\n\n{board}'
+            await interaction.response.edit_message(content=text, view=None)
+            return
+        board = gx.wordle_render(self.cid, self.user_id)
+        view = WordleView(self.cid, self.user_id)
+        await interaction.response.edit_message(content=f'🟩 **WORDLE** — đoán từ tiếng Anh 5 chữ cái!\n\n{board}', view=view)
+
+class WordleView(discord.ui.View):
+    def __init__(self, cid, user_id):
+        super().__init__(timeout=300)
+        self.cid = cid
+        self.user_id = user_id
+
+    @discord.ui.button(label='✏️ Nhập chữ', style=discord.ButtonStyle.primary)
+    async def guess_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if await _deny_unless(interaction, interaction.user.id == self.user_id, '❌ Đây không phải ván Wordle của bạn!'):
+            return
+        if not gx.wordle_active(self.cid, self.user_id):
+            await interaction.response.send_message('❌ Ván này đã kết thúc rồi.', ephemeral=True)
+            return
+        await interaction.response.send_modal(WordleGuessModal(self.cid, self.user_id))
+
+    async def on_timeout(self):
+        gx.wordle_end(self.cid, self.user_id)
+
+@bot.tree.command(name='wordle', description=f'🟩 Chơi Wordle — đoán từ 5 chữ cái ({gx.GAME_VE_COST["wordle"]} Vé nếu hết lượt free)')
+async def wordle_slash(interaction: discord.Interaction):
+    cid, uid = interaction.channel.id, interaction.user.id
+    if gx.wordle_active(cid, uid):
+        await interaction.response.send_message('⚠️ Bạn đang có ván Wordle chưa xong ở kênh này rồi!', ephemeral=True)
+        return
+    can_play, note = gx.can_play_or_reason('wordle', uid)
+    if not can_play:
+        await interaction.response.send_message(note, ephemeral=True)
+        return
+    gx.wordle_start(cid, uid)
+    board = gx.wordle_render(cid, uid)
+    ve_note = '\n_(Đã dùng 1 🎟️ Vé vì hết lượt free hôm nay)_' if note == 've' else ''
+    view = WordleView(cid, uid)
+    await interaction.response.send_message(f'🟩 **WORDLE** — đoán từ tiếng Anh 5 chữ cái!\n\n{board}{ve_note}', view=view)
+
+
+# ============================================================
+# 💣 MINESWEEPER
+# ============================================================
+def _mine_coord_to_rc(text):
+    """Parse 'B3' hoặc 'b3' -> (row=2, col=1). Trả None nếu sai định dạng."""
+    text = text.strip().upper()
+    if len(text) < 2:
+        return None
+    col_char = text[0]
+    row_part = text[1:]
+    if not col_char.isalpha() or not row_part.isdigit():
+        return None
+    col = ord(col_char) - 65
+    row = int(row_part) - 1
+    return (row, col)
+
+class MinesweeperCoordModal(discord.ui.Modal, title='Mở ô Minesweeper'):
+    coord_input = discord.ui.TextInput(label='Tọa độ ô (VD: B3)', placeholder='Cột (A-I) + Hàng (1-9), VD: B3', min_length=2, max_length=3)
+
+    def __init__(self, cid, user_id, flag_mode=False):
+        super().__init__(title='Cắm/gỡ cờ ô Minesweeper' if flag_mode else 'Mở ô Minesweeper')
+        self.cid = cid
+        self.user_id = user_id
+        self.flag_mode = flag_mode
+
+    async def on_submit(self, interaction: discord.Interaction):
+        rc = _mine_coord_to_rc(self.coord_input.value)
+        if rc is None:
+            await interaction.response.send_message(f'❌ Tọa độ sai định dạng. Dùng kiểu **B3** (cột A-{chr(64 + gx.MINE_COLS)}, hàng 1-{gx.MINE_ROWS}).', ephemeral=True)
+            return
+        row, col = rc
+        if self.flag_mode:
+            ok, msg = gx.minesweeper_toggle_flag(self.cid, self.user_id, row, col)
+            if not ok:
+                await interaction.response.send_message(msg, ephemeral=True)
+                return
+            image = gx.minesweeper_board_image(self.cid, self.user_id)
+            file = discord.File(image, filename='mine.png')
+            embed = discord.Embed(description=f'💣 **MINESWEEPER**\n{msg}', color=8421504)
+            embed.set_image(url='attachment://mine.png')
+            view = MinesweeperView(self.cid, self.user_id)
+            await interaction.response.edit_message(embed=embed, attachments=[file], view=view)
+            return
+        ok, reason, exploded, won = gx.minesweeper_reveal(self.cid, self.user_id, row, col)
+        if not ok:
+            await interaction.response.send_message(reason, ephemeral=True)
+            return
+        image = gx.minesweeper_board_image(self.cid, self.user_id)
+        file = discord.File(image, filename='mine.png')
+        if exploded:
+            gx.minesweeper_end(self.cid, self.user_id)
+            embed = discord.Embed(description='💥 **BÙM!** Bạn đạp trúng bom rồi, thua ván này!', color=15158332)
+            embed.set_image(url='attachment://mine.png')
+            await interaction.response.edit_message(embed=embed, attachments=[file], view=None)
+        elif won:
+            gx.minesweeper_end(self.cid, self.user_id)
+            embed = discord.Embed(description='🎉 **THẮNG RỒI!** Bạn đã mở hết ô an toàn!', color=3066993)
+            embed.set_image(url='attachment://mine.png')
+            await interaction.response.edit_message(embed=embed, attachments=[file], view=None)
+        else:
+            embed = discord.Embed(description='💣 **MINESWEEPER** — bấm nút bên dưới để mở/cắm cờ ô tiếp theo.', color=8421504)
+            embed.set_image(url='attachment://mine.png')
+            view = MinesweeperView(self.cid, self.user_id)
+            await interaction.response.edit_message(embed=embed, attachments=[file], view=view)
+
+class MinesweeperView(discord.ui.View):
+    def __init__(self, cid, user_id):
+        super().__init__(timeout=300)
+        self.cid = cid
+        self.user_id = user_id
+
+    @discord.ui.button(label='🔓 Mở ô', style=discord.ButtonStyle.primary)
+    async def open_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if await _deny_unless(interaction, interaction.user.id == self.user_id, '❌ Đây không phải ván Minesweeper của bạn!'):
+            return
+        if not gx.minesweeper_active(self.cid, self.user_id):
+            await interaction.response.send_message('❌ Ván này đã kết thúc rồi.', ephemeral=True)
+            return
+        await interaction.response.send_modal(MinesweeperCoordModal(self.cid, self.user_id, flag_mode=False))
+
+    @discord.ui.button(label='🚩 Cắm/gỡ cờ', style=discord.ButtonStyle.secondary)
+    async def flag_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if await _deny_unless(interaction, interaction.user.id == self.user_id, '❌ Đây không phải ván Minesweeper của bạn!'):
+            return
+        if not gx.minesweeper_active(self.cid, self.user_id):
+            await interaction.response.send_message('❌ Ván này đã kết thúc rồi.', ephemeral=True)
+            return
+        await interaction.response.send_modal(MinesweeperCoordModal(self.cid, self.user_id, flag_mode=True))
+
+    async def on_timeout(self):
+        gx.minesweeper_end(self.cid, self.user_id)
+
+@bot.tree.command(name='minesweeper', description=f'💣 Chơi Dò Mìn 9x9 ({gx.GAME_VE_COST["minesweeper"]} Vé nếu hết lượt free)')
+async def minesweeper_slash(interaction: discord.Interaction):
+    cid, uid = interaction.channel.id, interaction.user.id
+    if gx.minesweeper_active(cid, uid):
+        await interaction.response.send_message('⚠️ Bạn đang có ván Minesweeper chưa xong ở kênh này rồi!', ephemeral=True)
+        return
+    can_play, note = gx.can_play_or_reason('minesweeper', uid)
+    if not can_play:
+        await interaction.response.send_message(note, ephemeral=True)
+        return
+    gx.minesweeper_start(cid, uid)
+    image = gx.minesweeper_board_image(cid, uid)
+    file = discord.File(image, filename='mine.png')
+    ve_note = '\n_(Đã dùng 5 🎟️ Vé vì hết lượt free hôm nay)_' if note == 've' else ''
+    embed = discord.Embed(description=f'💣 **MINESWEEPER** — bấm nút bên dưới để mở/cắm cờ ô.{ve_note}', color=8421504)
+    embed.set_image(url='attachment://mine.png')
+    view = MinesweeperView(cid, uid)
+    await interaction.response.send_message(embed=embed, file=file, view=view)
+
+
+# ============================================================
+# 🌍 GUESS-COUNTRY
+# ============================================================
+class CountryGuessModal(discord.ui.Modal, title='Đoán tên quốc gia'):
+    guess_input = discord.ui.TextInput(label='Tên quốc gia', placeholder='VÍ DỤ: Việt Nam', max_length=50)
+
+    def __init__(self, cid, user_id):
+        super().__init__()
+        self.cid = cid
+        self.user_id = user_id
+
+    async def on_submit(self, interaction: discord.Interaction):
+        ok, reason, correct, done, won, answer = gx.guess_country_guess(self.cid, self.user_id, self.guess_input.value)
+        if not ok:
+            await interaction.response.send_message(reason, ephemeral=True)
+            return
+        if won:
+            gx.guess_country_end(self.cid, self.user_id)
+            text = f'🎉 **CHÍNH XÁC!** Đáp án là **{answer}**!'
+            await interaction.response.edit_message(content=text, view=None)
+            return
+        if done:
+            gx.guess_country_end(self.cid, self.user_id)
+            text = f'💀 Hết lượt đoán rồi! Đáp án đúng là **{answer}**.'
+            await interaction.response.edit_message(content=text, view=None)
+            return
+        hints = gx.guess_country_current_hints(self.cid, self.user_id)
+        hint_text = '\n'.join(f'💡 {h}' for h in hints)
+        text = f'🌍 **ĐOÁN QUỐC GIA**\n\n{hint_text}\n\n❌ Sai rồi, thử lại nhé!'
+        view = CountryView(self.cid, self.user_id)
+        await interaction.response.edit_message(content=text, view=view)
+
+class CountryView(discord.ui.View):
+    def __init__(self, cid, user_id):
+        super().__init__(timeout=300)
+        self.cid = cid
+        self.user_id = user_id
+
+    @discord.ui.button(label='✏️ Đoán quốc gia', style=discord.ButtonStyle.primary)
+    async def guess_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if await _deny_unless(interaction, interaction.user.id == self.user_id, '❌ Đây không phải ván của bạn!'):
+            return
+        if not gx.guess_country_active(self.cid, self.user_id):
+            await interaction.response.send_message('❌ Ván này đã kết thúc rồi.', ephemeral=True)
+            return
+        await interaction.response.send_modal(CountryGuessModal(self.cid, self.user_id))
+
+    async def on_timeout(self):
+        gx.guess_country_end(self.cid, self.user_id)
+
+@bot.tree.command(name='guess-country', description=f'🌍 Đoán quốc gia qua gợi ý ({gx.GAME_VE_COST["guess_country"]} Vé nếu hết lượt free)')
+async def guess_country_slash(interaction: discord.Interaction):
+    cid, uid = interaction.channel.id, interaction.user.id
+    if gx.guess_country_active(cid, uid):
+        await interaction.response.send_message('⚠️ Bạn đang có ván Đoán Quốc Gia chưa xong ở kênh này rồi!', ephemeral=True)
+        return
+    can_play, note = gx.can_play_or_reason('guess_country', uid)
+    if not can_play:
+        await interaction.response.send_message(note, ephemeral=True)
+        return
+    gx.guess_country_start(cid, uid)
+    hints = gx.guess_country_current_hints(cid, uid)
+    hint_text = '\n'.join(f'💡 {h}' for h in hints)
+    ve_note = '\n_(Đã dùng 10 🎟️ Vé vì hết lượt free hôm nay)_' if note == 've' else ''
+    view = CountryView(cid, uid)
+    await interaction.response.send_message(f'🌍 **ĐOÁN QUỐC GIA**\n\n{hint_text}{ve_note}', view=view)
+
+
+# ============================================================
+# 🏪 /tạp-hoá — gộp nhapcode + hoadon + shop
+# ============================================================
+class NhapCodeModal(discord.ui.Modal, title='Nhập Code Nhận Thưởng'):
+    code_input = discord.ui.TextInput(label='Mã code (phân biệt hoa thường)', placeholder='VÍ DỤ: ChaoNgayMoiVuiVe')
+
+    async def on_submit(self, interaction: discord.Interaction):
+        result = games.redeem_code(interaction.user.id, self.code_input.value)
+        if not result['ok']:
+            await interaction.response.send_message(result['reason'], ephemeral=True)
+            return
+        await interaction.response.send_message(f"🎁 Nhập code thành công! Nhận được: {' , '.join(result['reward_lines'])}", ephemeral=True)
+
+class TapHoaView(discord.ui.View):
+    def __init__(self, user_id):
+        super().__init__(timeout=180)
+        self.user_id = user_id
+
+    @discord.ui.button(label='🎁 Nhập Code', style=discord.ButtonStyle.success)
+    async def nhapcode_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if await _deny_unless(interaction, interaction.user.id == self.user_id, '❌ Đây không phải tạp hoá của bạn, dùng `/tạp-hoá` để mở cái riêng!'):
+            return
+        await interaction.response.send_modal(NhapCodeModal())
+
+    @discord.ui.button(label='🧾 Hóa Đơn', style=discord.ButtonStyle.secondary)
+    async def hoadon_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if await _deny_unless(interaction, interaction.user.id == self.user_id, '❌ Đây không phải tạp hoá của bạn, dùng `/tạp-hoá` để mở cái riêng!'):
+            return
+        receipts = games.get_receipts(interaction.user.id)
+        if not receipts:
+            await interaction.response.send_message('🧾 Bạn chưa mua gì ở Delta Shop cả. Sạch sẽ, minh bạch 😇', ephemeral=True)
+            return
+        lines = ['```', '===== LỊCH SỬ MUA HÀNG DELTA SHOP =====', f'Khách hàng: {interaction.user.display_name}', '-----------------------------------------']
+        for i, r in enumerate(receipts[:15], start=1):
+            ts = time.strftime('%d/%m/%Y %H:%M', time.localtime(r['time']))
+            currency_label = 'Deion' if r['currency'] == 'deion' else 'Elo'
+            lines.append(f"#{i:02d} [{ts}] {r['emoji']} {r['item_name']}  -{r['cost']} {currency_label}")
+        lines.append('-----------------------------------------')
+        if len(receipts) > 15:
+            lines.append(f'(...còn {len(receipts) - 15} hóa đơn cũ hơn không hiện)')
+        lines.append('=========================================')
+        lines.append('```')
+        await interaction.response.send_message('🧾 Hóa đơn Delta Shop của bạn:\n' + '\n'.join(lines), ephemeral=True)
+
+    @discord.ui.button(label='🛒 Shop', style=discord.ButtonStyle.primary)
+    async def shop_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if await _deny_unless(interaction, interaction.user.id == self.user_id, '❌ Đây không phải tạp hoá của bạn, dùng `/tạp-hoá` để mở cái riêng!'):
+            return
+        embed = _shop_embed(0)
+        view = ShopView(interaction.user.id, 0)
+        await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
+
+@bot.tree.command(name='tạp-hoá', description='🏪 Nhập code / Xem hóa đơn / Mở Shop — tất cả trong 1 lệnh')
+async def taphoa_slash(interaction: discord.Interaction):
+    embed = discord.Embed(title='🏪 Tạp Hoá Delta', description='Chọn 1 trong 3 chức năng bên dưới:\n\n🎁 **Nhập Code** — đổi mã lấy Deion\n🧾 **Hóa Đơn** — xem lịch sử mua hàng\n🛒 **Shop** — mở Delta Shop mua đồ', color=3447003)
+    view = TapHoaView(interaction.user.id)
+    await interaction.response.send_message(embed=embed, view=view)
+
 
 web_server.keep_alive()
 bot.run(os.environ['DISCORD_KEY'])
