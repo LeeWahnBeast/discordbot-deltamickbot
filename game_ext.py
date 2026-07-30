@@ -48,12 +48,22 @@ GAME_VE_COST = {
     'wordle': 1,
     'minesweeper': 5,
     'guess_country': 10,
+    'guess_meme': 3,
+}
+
+# Thưởng Deion khi thắng minigame (rất thấp vì 1 Aura cũ = 0.0001 Deion, không phải game chính như Chess)
+GAME_WIN_REWARD = {
+    'wordle': 0.15,
+    'minesweeper': 0.1,
+    'guess_country': 0.0010,
+    'guess_meme': 0.0010,
 }
 
 # Số lượt chơi FREE mỗi ngày cho mỗi game (tái dùng hệ _daily_usage của games.py)
 _g.DAILY_FREE_GAMES.setdefault('wordle', 3)
 _g.DAILY_FREE_GAMES.setdefault('minesweeper', 3)
 _g.DAILY_FREE_GAMES.setdefault('guess_country', 3)
+_g.DAILY_FREE_GAMES.setdefault('guess_meme', 3)
 
 def can_play_or_reason(game_type, user_id):
     """
@@ -415,3 +425,123 @@ def guess_country_guess(cid, user_id, guess):
     game['won'] = False
     answer = game['entry']['name'] if done else None
     return (True, None, False, done, False, answer)
+
+
+# ============================================================
+# 🖼️ GUESS-MEME (dựa vào https://api.imgflip.com/get_memes)
+# ============================================================
+import urllib.request
+import json as _json
+
+IMGFLIP_API = 'https://api.imgflip.com/get_memes'
+_meme_list_cache = []
+_meme_list_fetched_at = 0
+MEME_LIST_TTL = 6 * 3600  # cache 6 tiếng, khỏi spam API
+
+def _fetch_meme_list():
+    """Lấy danh sách meme phổ biến từ imgflip, có cache theo thời gian."""
+    global _meme_list_cache, _meme_list_fetched_at
+    if _meme_list_cache and time.time() - _meme_list_fetched_at < MEME_LIST_TTL:
+        return _meme_list_cache
+    try:
+        req = urllib.request.Request(IMGFLIP_API, headers={'User-Agent': 'Mozilla/5.0'})
+        with urllib.request.urlopen(req, timeout=8) as resp:
+            data = _json.loads(resp.read())
+        if data.get('success'):
+            memes = data['data']['memes']
+            _meme_list_cache = memes
+            _meme_list_fetched_at = time.time()
+            return memes
+    except Exception as e:
+        print(f'[guess_meme] Lỗi lấy danh sách meme: {type(e).__name__}: {e}')
+    return _meme_list_cache  # trả cache cũ (có thể rỗng) nếu fetch lỗi
+
+_meme_games = {}  # key: (channel_id, user_id) -> state
+MEME_MAX_GUESSES = 6
+# Chỉ lấy trong top N meme phổ biến nhất để tránh mấy cái tên meme quá lạ/khó đoán
+MEME_POOL_SIZE = 60
+
+def _meme_key(cid, user_id):
+    return (cid, user_id)
+
+def _meme_masked_name(name, revealed_count):
+    """Che tên meme bằng dấu _ , chỉ lộ revealed_count ký tự đầu của mỗi từ dần dần."""
+    words = name.split(' ')
+    total_letters = sum(len(w) for w in words)
+    shown = 0
+    out_words = []
+    for w in words:
+        out_chars = []
+        for ch in w:
+            if not ch.isalnum():
+                out_chars.append(ch)
+                continue
+            if shown < revealed_count:
+                out_chars.append(ch)
+                shown += 1
+            else:
+                out_chars.append('▢')
+        out_words.append(''.join(out_chars))
+    return ' '.join(out_words)
+
+def guess_meme_start(cid, user_id):
+    """Trả None nếu không lấy được danh sách meme (lỗi mạng/API)."""
+    memes = _fetch_meme_list()
+    if not memes:
+        return None
+    pool = memes[:MEME_POOL_SIZE]
+    entry = random.choice(pool)
+    _meme_games[_meme_key(cid, user_id)] = {
+        'name': entry['name'],
+        'url': entry['url'],
+        'guesses': [],
+        'revealed_letters': 0,
+        'done': False,
+        'won': False,
+    }
+    return entry
+
+def guess_meme_active(cid, user_id):
+    game = _meme_games.get(_meme_key(cid, user_id))
+    return game is not None and not game['done']
+
+def guess_meme_end(cid, user_id):
+    _meme_games.pop(_meme_key(cid, user_id), None)
+
+def guess_meme_masked(cid, user_id):
+    game = _meme_games.get(_meme_key(cid, user_id))
+    if game is None:
+        return ''
+    return _meme_masked_name(game['name'], game['revealed_letters'])
+
+def guess_meme_url(cid, user_id):
+    game = _meme_games.get(_meme_key(cid, user_id))
+    return game['url'] if game else None
+
+def guess_meme_guess(cid, user_id, guess):
+    """Trả (ok, reason, correct, done, won, answer)."""
+    game = _meme_games.get(_meme_key(cid, user_id))
+    if game is None or game['done']:
+        return (False, '❌ Không có ván Đoán Meme nào đang chơi.', False, True, False, None)
+    guess = guess.strip()
+    if not guess:
+        return (False, '❌ Nhập tên meme đi bạn ơi.', False, False, False, None)
+
+    correct = _strip_accents(guess) == _strip_accents(game['name'])
+    game['guesses'].append(guess)
+    if correct:
+        game['done'] = True
+        game['won'] = True
+        return (True, None, True, True, True, game['name'])
+
+    # lộ thêm ~1/6 số chữ cái mỗi lần đoán sai
+    total_letters = sum(1 for c in game['name'] if c.isalnum())
+    step = max(1, total_letters // MEME_MAX_GUESSES)
+    game['revealed_letters'] = min(total_letters, game['revealed_letters'] + step)
+
+    done = len(game['guesses']) >= MEME_MAX_GUESSES
+    game['done'] = done
+    game['won'] = False
+    answer = game['name'] if done else None
+    return (True, None, False, done, False, answer)
+
