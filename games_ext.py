@@ -522,37 +522,42 @@ def minesweeper_board_image(cid, user_id):
 
 
 # ============================================================
-# 🌍 GUESS-COUNTRY
+# 🌍 GUESS-COUNTRY (v2 — đếm ngược 15s/gợi ý, hết gợi ý là thua)
 # ============================================================
 _country_games = {}  # key: (channel_id, user_id) -> state
-COUNTRY_MAX_GUESSES = 6
+COUNTRY_TIME_LIMIT = 15  # giây mỗi gợi ý
 
-# name, gợi ý theo thứ tự tăng dần độ dễ (được lộ dần mỗi lần đoán sai)
+# name, gợi ý theo thứ tự tăng dần độ dễ (được lộ dần mỗi 15 giây)
 COUNTRY_DATA = [
-    {'name': 'Việt Nam', 'hints': ['Có món phở nổi tiếng thế giới', 'Hình chữ S trên bản đồ', 'Thủ đô là Hà Nội']},
-    {'name': 'Nhật Bản', 'hints': ['Biểu tượng hoa anh đào', 'Có núi Phú Sĩ', 'Thủ đô là Tokyo']},
-    {'name': 'Hàn Quốc', 'hints': ['Nổi tiếng với K-pop', 'Món kim chi truyền thống', 'Thủ đô là Seoul']},
-    {'name': 'Trung Quốc', 'hints': ['Có Vạn Lý Trường Thành', 'Dân số đông nhất nhì thế giới', 'Thủ đô là Bắc Kinh']},
-    {'name': 'Thái Lan', 'hints': ['Được gọi là đất nước Chùa Vàng', 'Món Tom Yum cay nồng', 'Thủ đô là Bangkok']},
-    {'name': 'Pháp', 'hints': ['Có tháp Eiffel', 'Nổi tiếng bánh mì baguette và rượu vang', 'Thủ đô là Paris']},
-    {'name': 'Ý', 'hints': ['Quê hương của pizza và pasta', 'Hình dáng như chiếc ủng trên bản đồ', 'Thủ đô là Roma']},
-    {'name': 'Đức', 'hints': ['Nổi tiếng xe hơi và bia', 'Có lễ hội Oktoberfest', 'Thủ đô là Berlin']},
-    {'name': 'Tây Ban Nha', 'hints': ['Nổi tiếng đấu bò và flamenco', 'Món paella truyền thống', 'Thủ đô là Madrid']},
-    {'name': 'Anh', 'hints': ['Có đồng hồ Big Ben', 'Uống trà chiều là văn hóa đặc trưng', 'Thủ đô là London']},
-    {'name': 'Mỹ', 'hints': ['Có tượng Nữ thần Tự do', 'Quê hương Hollywood', 'Thủ đô là Washington D.C.'] },
-    {'name': 'Brazil', 'hints': ['Nổi tiếng bóng đá và Carnival', 'Có tượng Chúa Cứu Thế khổng lồ', 'Thủ đô là Brasília']},
-    {'name': 'Ai Cập', 'hints': ['Có kim tự tháp cổ đại', 'Sông Nile chảy qua', 'Thủ đô là Cairo']},
-    {'name': 'Ấn Độ', 'hints': ['Có đền Taj Mahal', 'Món cà ri cay đặc trưng', 'Thủ đô là New Delhi']},
-    {'name': 'Nga', 'hints': ['Quốc gia rộng nhất thế giới', 'Có Quảng trường Đỏ', 'Thủ đô là Moscow']},
-    {'name': 'Úc', 'hints': ['Có chuột túi kangaroo', 'Nhà hát Opera Sydney nổi tiếng', 'Vừa là quốc gia vừa là lục địa']},
-    {'name': 'Canada', 'hints': ['Nổi tiếng lá phong đỏ', 'Có thác Niagara', 'Thủ đô là Ottawa']},
-    {'name': 'Mexico', 'hints': ['Món taco và burrito nổi tiếng', 'Có kim tự tháp Maya cổ', 'Thủ đô là Mexico City']},
-    {'name': 'Indonesia', 'hints': ['Quốc gia vạn đảo', 'Có đền Borobudur', 'Thủ đô là Jakarta']},
-    {'name': 'Singapore', 'hints': ['Tượng Sư Tử Biển Merlion', 'Đảo quốc nhỏ nhưng cực giàu', 'Còn gọi là Đảo Quốc Sư Tử']},
+    {'name': 'Việt Nam', 'flag': '🇻🇳', 'hints': ['Có món phở nổi tiếng thế giới', 'Hình chữ S trên bản đồ', 'Thủ đô là Hà Nội']},
+    {'name': 'Nhật Bản', 'flag': '🇯🇵', 'hints': ['Biểu tượng hoa anh đào', 'Có núi Phú Sĩ', 'Thủ đô là Tokyo']},
+    {'name': 'Hàn Quốc', 'flag': '🇰🇷', 'hints': ['Nổi tiếng với K-pop', 'Món kim chi truyền thống', 'Thủ đô là Seoul']},
+    {'name': 'Trung Quốc', 'flag': '🇨🇳', 'hints': ['Có Vạn Lý Trường Thành', 'Dân số đông nhất nhì thế giới', 'Thủ đô là Bắc Kinh']},
+    {'name': 'Thái Lan', 'flag': '🇹🇭', 'hints': ['Được gọi là đất nước Chùa Vàng', 'Món Tom Yum cay nồng', 'Thủ đô là Bangkok']},
+    {'name': 'Pháp', 'flag': '🇫🇷', 'hints': ['Có tháp Eiffel', 'Nổi tiếng bánh mì baguette và rượu vang', 'Thủ đô là Paris']},
+    {'name': 'Ý', 'flag': '🇮🇹', 'hints': ['Quê hương của pizza và pasta', 'Hình dáng như chiếc ủng trên bản đồ', 'Thủ đô là Roma']},
+    {'name': 'Đức', 'flag': '🇩🇪', 'hints': ['Nổi tiếng xe hơi và bia', 'Có lễ hội Oktoberfest', 'Thủ đô là Berlin']},
+    {'name': 'Tây Ban Nha', 'flag': '🇪🇸', 'hints': ['Nổi tiếng đấu bò và flamenco', 'Món paella truyền thống', 'Thủ đô là Madrid']},
+    {'name': 'Anh', 'flag': '🇬🇧', 'hints': ['Có đồng hồ Big Ben', 'Uống trà chiều là văn hóa đặc trưng', 'Thủ đô là London']},
+    {'name': 'Mỹ', 'flag': '🇺🇸', 'hints': ['Có tượng Nữ thần Tự do', 'Quê hương Hollywood', 'Thủ đô là Washington D.C.'] },
+    {'name': 'Brazil', 'flag': '🇧🇷', 'hints': ['Nổi tiếng bóng đá và Carnival', 'Có tượng Chúa Cứu Thế khổng lồ', 'Thủ đô là Brasília']},
+    {'name': 'Ai Cập', 'flag': '🇪🇬', 'hints': ['Có kim tự tháp cổ đại', 'Sông Nile chảy qua', 'Thủ đô là Cairo']},
+    {'name': 'Ấn Độ', 'flag': '🇮🇳', 'hints': ['Có đền Taj Mahal', 'Món cà ri cay đặc trưng', 'Thủ đô là New Delhi']},
+    {'name': 'Nga', 'flag': '🇷🇺', 'hints': ['Quốc gia rộng nhất thế giới', 'Có Quảng trường Đỏ', 'Thủ đô là Moscow']},
+    {'name': 'Úc', 'flag': '🇦🇺', 'hints': ['Có chuột túi kangaroo', 'Nhà hát Opera Sydney nổi tiếng', 'Vừa là quốc gia vừa là lục địa']},
+    {'name': 'Canada', 'flag': '🇨🇦', 'hints': ['Nổi tiếng lá phong đỏ', 'Có thác Niagara', 'Thủ đô là Ottawa']},
+    {'name': 'Mexico', 'flag': '🇲🇽', 'hints': ['Món taco và burrito nổi tiếng', 'Có kim tự tháp Maya cổ', 'Thủ đô là Mexico City']},
+    {'name': 'Indonesia', 'flag': '🇮🇩', 'hints': ['Quốc gia vạn đảo', 'Có đền Borobudur', 'Thủ đô là Jakarta']},
+    {'name': 'Singapore', 'flag': '🇸🇬', 'hints': ['Tượng Sư Tử Biển Merlion', 'Đảo quốc nhỏ nhưng cực giàu', 'Còn gọi là Đảo Quốc Sư Tử']},
 ]
 
 def _country_key(cid, user_id):
     return (cid, user_id)
+
+_COUNTRY_FLAG_BY_NAME = {e['name']: e['flag'] for e in COUNTRY_DATA}
+
+def guess_country_flag(name):
+    return _COUNTRY_FLAG_BY_NAME.get(name, '🌍')
 
 def _strip_accents(s):
     s = unicodedata.normalize('NFD', s)
@@ -583,7 +588,8 @@ def guess_country_current_hints(cid, user_id):
     return game['entry']['hints'][:game['hints_revealed']]
 
 def guess_country_guess(cid, user_id, guess):
-    """Trả (ok, reason, correct, done, won, answer)."""
+    """Trả (ok, reason, correct, done, won, answer). Đoán sai KHÔNG kết thúc ván
+    (đồng hồ đếm ngược mới là thứ quyết định thắng/thua qua guess_country_tick)."""
     game = _country_games.get(_country_key(cid, user_id))
     if game is None or game['done']:
         return (False, '❌ Không có ván Đoán Quốc Gia nào đang chơi.', False, True, False, None)
@@ -597,14 +603,25 @@ def guess_country_guess(cid, user_id, guess):
         game['done'] = True
         game['won'] = True
         return (True, None, True, True, True, game['entry']['name'])
+    return (True, None, False, False, False, None)
 
-    if game['hints_revealed'] < len(game['entry']['hints']):
+def guess_country_tick(cid, user_id):
+    """
+    Gọi mỗi COUNTRY_TIME_LIMIT (15s) khi chưa đoán ra. Trả (done, revealed_new, answer):
+    - hết gợi ý để lộ thêm  -> (True, False, tên_đúng)  : ván kết thúc, thua.
+    - còn gợi ý             -> (False, True, None)       : vừa lộ thêm 1 gợi ý mới.
+    - ván đã kết thúc rồi   -> (True, False, None)
+    """
+    game = _country_games.get(_country_key(cid, user_id))
+    if game is None or game['done']:
+        return (True, False, None)
+    total_hints = len(game['entry']['hints'])
+    if game['hints_revealed'] < total_hints:
         game['hints_revealed'] += 1
-    done = len(game['guesses']) >= COUNTRY_MAX_GUESSES
-    game['done'] = done
+        return (False, True, None)
+    game['done'] = True
     game['won'] = False
-    answer = game['entry']['name'] if done else None
-    return (True, None, False, done, False, answer)
+    return (True, False, game['entry']['name'])
 
 
 # ============================================================
@@ -637,7 +654,8 @@ def _fetch_meme_list():
     return _meme_list_cache  # trả cache cũ (có thể rỗng) nếu fetch lỗi
 
 _meme_games = {}  # key: (channel_id, user_id) -> state
-MEME_MAX_GUESSES = 6
+MEME_TIME_LIMIT = 15  # giây mỗi lần lộ thêm chữ
+MEME_REVEAL_STEPS = 6  # tổng số lần lộ chữ cho tới khi lộ hết (~ mỗi 15s 1 lần)
 # Chỉ lấy trong top N meme phổ biến nhất để tránh mấy cái tên meme quá lạ/khó đoán
 MEME_POOL_SIZE = 60
 
@@ -699,7 +717,8 @@ def guess_meme_url(cid, user_id):
     return game['url'] if game else None
 
 def guess_meme_guess(cid, user_id, guess):
-    """Trả (ok, reason, correct, done, won, answer)."""
+    """Trả (ok, reason, correct, done, won, answer). Đoán sai KHÔNG kết thúc ván
+    (đồng hồ đếm ngược mới là thứ quyết định thắng/thua qua guess_meme_tick)."""
     game = _meme_games.get(_meme_key(cid, user_id))
     if game is None or game['done']:
         return (False, '❌ Không có ván Đoán Meme nào đang chơi.', False, True, False, None)
@@ -713,17 +732,26 @@ def guess_meme_guess(cid, user_id, guess):
         game['done'] = True
         game['won'] = True
         return (True, None, True, True, True, game['name'])
+    return (True, None, False, False, False, None)
 
-    # lộ thêm ~1/6 số chữ cái mỗi lần đoán sai
+def guess_meme_tick(cid, user_id):
+    """
+    Gọi mỗi MEME_TIME_LIMIT (15s) khi chưa đoán ra. Trả (done, revealed_new, answer):
+    - đã lộ hết chữ cái  -> (True, False, tên_đúng) : ván kết thúc, thua.
+    - còn chữ để lộ      -> (False, True, None)      : vừa lộ thêm chữ.
+    - ván đã kết thúc rồi -> (True, False, None)
+    """
+    game = _meme_games.get(_meme_key(cid, user_id))
+    if game is None or game['done']:
+        return (True, False, None)
     total_letters = sum(1 for c in game['name'] if c.isalnum())
-    step = max(1, total_letters // MEME_MAX_GUESSES)
-    game['revealed_letters'] = min(total_letters, game['revealed_letters'] + step)
-
-    done = len(game['guesses']) >= MEME_MAX_GUESSES
-    game['done'] = done
+    if game['revealed_letters'] < total_letters:
+        step = max(1, total_letters // MEME_REVEAL_STEPS)
+        game['revealed_letters'] = min(total_letters, game['revealed_letters'] + step)
+        return (False, True, None)
+    game['done'] = True
     game['won'] = False
-    answer = game['name'] if done else None
-    return (True, None, False, done, False, answer)
+    return (True, False, game['name'])
 
 
 # ============================================================
