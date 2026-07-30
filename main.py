@@ -855,7 +855,9 @@ class WordleGuessModal(discord.ui.Modal, title='Đoán từ Wordle (5 chữ)'):
             board = gx.wordle_render(self.cid, self.user_id)
             gx.wordle_end(self.cid, self.user_id)
             if won:
-                text = f'🎉 **CHÍNH XÁC!** Bạn đoán đúng từ **{answer}**!\n\n{board}'
+                reward = gx.GAME_WIN_REWARD['wordle']
+                new_balance = games.add_deion(self.user_id, reward)
+                text = f'🎉 **CHÍNH XÁC!** Bạn đoán đúng từ **{answer}**!\n\n{board}\n\n{games.DEION_ICON} +{reward} Deion (số dư: {new_balance})'
             else:
                 text = f'💀 Hết lượt rồi! Từ đúng là **{answer}**.\n\n{board}'
             await interaction.response.edit_message(content=text, view=None)
@@ -955,7 +957,9 @@ class MinesweeperCoordModal(discord.ui.Modal, title='Mở ô Minesweeper'):
             await interaction.response.edit_message(embed=embed, attachments=[file], view=None)
         elif won:
             gx.minesweeper_end(self.cid, self.user_id)
-            embed = discord.Embed(description='🎉 **THẮNG RỒI!** Bạn đã mở hết ô an toàn!', color=3066993)
+            reward = gx.GAME_WIN_REWARD['minesweeper']
+            new_balance = games.add_deion(self.user_id, reward)
+            embed = discord.Embed(description=f'🎉 **THẮNG RỒI!** Bạn đã mở hết ô an toàn!\n\n{games.DEION_ICON} +{reward} Deion (số dư: {new_balance})', color=3066993)
             embed.set_image(url='attachment://mine.png')
             await interaction.response.edit_message(embed=embed, attachments=[file], view=None)
         else:
@@ -1029,7 +1033,9 @@ class CountryGuessModal(discord.ui.Modal, title='Đoán tên quốc gia'):
             return
         if won:
             gx.guess_country_end(self.cid, self.user_id)
-            text = f'🎉 **CHÍNH XÁC!** Đáp án là **{answer}**!'
+            reward = gx.GAME_WIN_REWARD['guess_country']
+            new_balance = games.add_deion(self.user_id, reward)
+            text = f'🎉 **CHÍNH XÁC!** Đáp án là **{answer}**!\n\n{games.DEION_ICON} +{reward} Deion (số dư: {new_balance})'
             await interaction.response.edit_message(content=text, view=None)
             return
         if done:
@@ -1097,7 +1103,9 @@ class MemeGuessModal(discord.ui.Modal, title='Đoán tên meme'):
             return
         if won:
             gx.guess_meme_end(self.cid, self.user_id)
-            embed = discord.Embed(description=f'🎉 **CHÍNH XÁC!** Đây là meme **{answer}**!', color=3066993)
+            reward = gx.GAME_WIN_REWARD['guess_meme']
+            new_balance = games.add_deion(self.user_id, reward)
+            embed = discord.Embed(description=f'🎉 **CHÍNH XÁC!** Đây là meme **{answer}**!\n\n{games.DEION_ICON} +{reward} Deion (số dư: {new_balance})', color=3066993)
             await interaction.response.edit_message(embed=embed, view=None)
             return
         if done:
