@@ -1080,6 +1080,79 @@ async def guess_country_slash(interaction: discord.Interaction):
 
 
 # ============================================================
+# 🖼️ GUESS-MEME
+# ============================================================
+class MemeGuessModal(discord.ui.Modal, title='Đoán tên meme'):
+    guess_input = discord.ui.TextInput(label='Tên meme (tiếng Anh)', placeholder='VÍ DỤ: Distracted Boyfriend', max_length=80)
+
+    def __init__(self, cid, user_id):
+        super().__init__()
+        self.cid = cid
+        self.user_id = user_id
+
+    async def on_submit(self, interaction: discord.Interaction):
+        ok, reason, correct, done, won, answer = gx.guess_meme_guess(self.cid, self.user_id, self.guess_input.value)
+        if not ok:
+            await interaction.response.send_message(reason, ephemeral=True)
+            return
+        if won:
+            gx.guess_meme_end(self.cid, self.user_id)
+            embed = discord.Embed(description=f'🎉 **CHÍNH XÁC!** Đây là meme **{answer}**!', color=3066993)
+            await interaction.response.edit_message(embed=embed, view=None)
+            return
+        if done:
+            gx.guess_meme_end(self.cid, self.user_id)
+            embed = discord.Embed(description=f'💀 Hết lượt đoán rồi! Đáp án đúng là **{answer}**.', color=15158332)
+            await interaction.response.edit_message(embed=embed, view=None)
+            return
+        masked = gx.guess_meme_masked(self.cid, self.user_id)
+        embed = discord.Embed(description=f'🖼️ **ĐOÁN MEME**\n\nTên: `{masked}`\n\n❌ Sai rồi, thử lại nhé!', color=3447003)
+        embed.set_image(url=gx.guess_meme_url(self.cid, self.user_id))
+        view = MemeView(self.cid, self.user_id)
+        await interaction.response.edit_message(embed=embed, view=view)
+
+class MemeView(discord.ui.View):
+    def __init__(self, cid, user_id):
+        super().__init__(timeout=300)
+        self.cid = cid
+        self.user_id = user_id
+
+    @discord.ui.button(label='✏️ Đoán tên meme', style=discord.ButtonStyle.primary)
+    async def guess_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if await _deny_unless(interaction, interaction.user.id == self.user_id, '❌ Đây không phải ván của bạn!'):
+            return
+        if not gx.guess_meme_active(self.cid, self.user_id):
+            await interaction.response.send_message('❌ Ván này đã kết thúc rồi.', ephemeral=True)
+            return
+        await interaction.response.send_modal(MemeGuessModal(self.cid, self.user_id))
+
+    async def on_timeout(self):
+        gx.guess_meme_end(self.cid, self.user_id)
+
+@bot.tree.command(name='guess-meme', description=f'🖼️ Đoán tên meme qua hình ({gx.GAME_VE_COST["guess_meme"]} Vé nếu hết lượt free)')
+async def guess_meme_slash(interaction: discord.Interaction):
+    cid, uid = interaction.channel.id, interaction.user.id
+    if gx.guess_meme_active(cid, uid):
+        await interaction.response.send_message('⚠️ Bạn đang có ván Đoán Meme chưa xong ở kênh này rồi!', ephemeral=True)
+        return
+    can_play, note = gx.can_play_or_reason('guess_meme', uid)
+    if not can_play:
+        await interaction.response.send_message(note, ephemeral=True)
+        return
+    await interaction.response.defer(thinking=True)
+    entry = gx.guess_meme_start(cid, uid)
+    if entry is None:
+        await interaction.followup.send('⚠️ Không lấy được danh sách meme từ imgflip lúc này, thử lại sau nhé.')
+        return
+    masked = gx.guess_meme_masked(cid, uid)
+    ve_note = f'\n_(Đã dùng {gx.GAME_VE_COST["guess_meme"]} 🎟️ Vé vì hết lượt free hôm nay)_' if note == 've' else ''
+    embed = discord.Embed(description=f'🖼️ **ĐOÁN MEME**\n\nTên: `{masked}`{ve_note}', color=3447003)
+    embed.set_image(url=entry['url'])
+    view = MemeView(cid, uid)
+    await interaction.followup.send(embed=embed, view=view)
+
+
+# ============================================================
 # 🏪 /tạp-hoá — gộp nhapcode + hoadon + shop
 # ============================================================
 class NhapCodeModal(discord.ui.Modal, title='Nhập Code Nhận Thưởng'):
