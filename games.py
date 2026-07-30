@@ -56,8 +56,8 @@ def _firestore_delete_doc(collection_name, doc_id):
         _firestore_db.collection(collection_name).document(str(doc_id)).delete()
     except Exception as e:
         print(f"[firestore] Lỗi xóa '{collection_name}/{doc_id}': {e!r}")
-AURA_FILE = 'aura_data.json'
-AURA_ICON = '<:mango:1529287058072408195>'
+DEION_FILE = 'deion_data.json'
+DEION_ICON = '<:deltamickcoin:1532181698995818728>'
 TAX_RATE = 0.05
 TAX_RECIPIENT_ID = 1210771747889090571
 BOT_OWNER_ID = TAX_RECIPIENT_ID
@@ -65,135 +65,27 @@ INFINITE_AMOUNT = 999999999
 
 def _apply_purchase_tax(price):
     tax = max(1, round(price * TAX_RATE))
-    add_aura(TAX_RECIPIENT_ID, tax)
+    add_deion(TAX_RECIPIENT_ID, tax)
     return tax
-_aura_cache = {uid: d.get('balance', 0) for uid, d in _firestore_load_collection('aura', AURA_FILE).items()}
+_deion_cache = {uid: d.get('balance', 0) for uid, d in _firestore_load_collection('deion', DEION_FILE).items()}
 
-def get_aura(user_id):
+def get_deion(user_id):
     if user_id == BOT_OWNER_ID:
         return INFINITE_AMOUNT
-    return _aura_cache.get(user_id, 0)
+    return round(_deion_cache.get(user_id, 0), 2)
 
-def add_aura(user_id, amount):
+def add_deion(user_id, amount):
     if user_id == BOT_OWNER_ID:
         return INFINITE_AMOUNT
-    if amount > 0 and _has_double_aura_buff(user_id):
+    if amount > 0 and _has_double_deion_buff(user_id):
         amount *= 2
-    new_balance = get_aura(user_id) + amount
-    _aura_cache[user_id] = new_balance
-    _firestore_save_doc('aura', user_id, {'balance': new_balance})
+    new_balance = round(get_deion(user_id) + amount, 2)
+    _deion_cache[user_id] = new_balance
+    _firestore_save_doc('deion', user_id, {'balance': new_balance})
     return new_balance
 
-AURA_PLUS_FILE = 'aura_plus_data.json'
-AURA_PLUS_ICON = AURA_ICON
-AURA_PLUS_PER_GAME = 0.1
-AURA_PLUS_EXCHANGE_RATE = 10
-AURA_PLUS_EXCHANGE_FEE = 0.8
-_aura_plus_cache = {uid: d.get('balance', 0.0) for uid, d in _firestore_load_collection('aura_plus', AURA_PLUS_FILE).items()}
-
-def get_aura_plus(user_id):
-    if user_id == BOT_OWNER_ID:
-        return INFINITE_AMOUNT
-    return round(_aura_plus_cache.get(user_id, 0.0), 2)
-
-def add_aura_plus(user_id, amount):
-    if user_id == BOT_OWNER_ID:
-        return INFINITE_AMOUNT
-    new_balance = round(get_aura_plus(user_id) + amount, 2)
-    _aura_plus_cache[user_id] = new_balance
-    _firestore_save_doc('aura_plus', user_id, {'balance': new_balance})
-    return new_balance
-
-def award_game_completion_aura_plus(user_id):
-    return add_aura_plus(user_id, AURA_PLUS_PER_GAME)
-
-def exchange_aura_plus_to_aura(user_id, aura_plus_amount):
-    if aura_plus_amount <= 0 or get_aura_plus(user_id) < aura_plus_amount:
-        return None
-    gross_aura = aura_plus_amount * AURA_PLUS_EXCHANGE_RATE
-    net_aura = gross_aura * (1 - AURA_PLUS_EXCHANGE_FEE)
-    add_aura_plus(user_id, -aura_plus_amount)
-    new_aura_balance = add_aura(user_id, net_aura)
-    return {'spent': aura_plus_amount, 'received': net_aura, 'aura_after': new_aura_balance, 'aura_plus_after': get_aura_plus(user_id)}
-
-def exchange_aura_to_aura_plus(user_id, aura_amount):
-    if aura_amount <= 0 or get_aura(user_id) < aura_amount:
-        return None
-    gross_aura_plus = aura_amount / AURA_PLUS_EXCHANGE_RATE
-    net_aura_plus = round(gross_aura_plus * (1 - AURA_PLUS_EXCHANGE_FEE), 2)
-    add_aura(user_id, -aura_amount)
-    new_aura_plus_balance = add_aura_plus(user_id, net_aura_plus)
-    return {'spent': aura_amount, 'received': net_aura_plus, 'aura_after': get_aura(user_id), 'aura_plus_after': new_aura_plus_balance}
-
-def folk_valley_rank(score, total=5):
-    if score <= 1:
-        return ('🐓 GÀ', 'Con gà mổ lúa cũng đoán giỏi hơn thế này.\n*"Gieo hạt sai mùa // rồi trách đất không màu mỡ."*', 9133628)
-    elif score == 2:
-        return ('🌽 TẬP SỰ ĐỒNG QUÊ', 'Còn non như bắp mới trổ, nhưng có tương lai.\n*"Cày chưa hết ruộng // mà đã mơ mùa gặt."*', 13934615)
-    elif score == 3:
-        return ('🌾 ỔN ÁP', 'Không tệ! Cỏ trong Folk Valley cũng gật gù đồng ý.\n*"Đo hai lần, đoán một lần // rồi hỏi con bò xem nó nhớ gì."*', 7315504)
-    elif score == 4:
-        return ('🚜 LÃO NÔNG THẦN TỐC', 'Gần chạm đỉnh! Kho thóc đang thì thầm tên bạn.\n*"Nếu chưa hỏng thì cũng nên nâng cấp phần mềm chuồng trại."*', 4160800)
-    else:
-        return ('✨ THẦN THÁNH FOLK VALLEY', 'Hoàn hảo. Đến chim trong Folk Valley cũng ngừng hót để cúi đầu.\n*"Gốc rễ vẫn nhớ // dù dữ liệu đã đổi mùa."*', 16766720)
-WORDS = ['apple', 'beach', 'chair', 'dance', 'eagle', 'flame', 'grape', 'house', 'input', 'juice', 'knife', 'lemon', 'mango', 'night', 'ocean', 'piano', 'queen', 'river', 'stone', 'table', 'unity', 'voice', 'water', 'youth', 'zebra', 'bread', 'cloud', 'dream', 'fruit', 'glass', 'heart', 'image', 'koala', 'light', 'music', 'novel', 'orbit', 'peach', 'quiet', 'robot', 'smile', 'trust', 'value', 'world', 'brave', 'crown', 'delta', 'earth', 'faith', 'giant']
-WORDLE_MAX_GUESSES = 6
-_wordle_games = {}
-
-def wordle_active(cid):
-    return cid in _wordle_games
-
-def wordle_start(cid, owner_id):
-    if daily_games_left_today('wordle', owner_id) <= 0:
-        return (None, False)
-    _consume_daily_slot('wordle', owner_id)
-    word = random.choice(WORDS)
-    _wordle_games[cid] = {'word': word, 'guesses': 0, 'owner_id': owner_id}
-    return (word, True)
-
-def wordle_word(cid):
-    return _wordle_games[cid]['word']
-
-def wordle_end(cid):
-    _wordle_games.pop(cid, None)
-
-def wordle_check(cid, guess):
-    game = _wordle_games[cid]
-    word = game['word']
-    guess = guess.lower()
-    result = []
-    chars = list(word)
-    for i, ch in enumerate(guess):
-        if ch == word[i]:
-            result.append('🟩')
-            chars[i] = None
-        else:
-            result.append(None)
-    for i, ch in enumerate(guess):
-        if result[i] is not None:
-            continue
-        if ch in chars:
-            result[i] = '🟨'
-            chars[chars.index(ch)] = None
-        else:
-            result[i] = '⬜'
-    game['guesses'] += 1
-    correct = guess == word
-    done = game['guesses'] >= WORDLE_MAX_GUESSES
-    return (''.join(result), correct, done)
-FLAG_EASY = {'vietnam': 'vn', 'japan': 'jp', 'china': 'cn', 'usa': 'us', 'united states': 'us', 'france': 'fr', 'germany': 'de', 'italy': 'it', 'spain': 'es', 'uk': 'gb', 'united kingdom': 'gb', 'brazil': 'br', 'canada': 'ca', 'russia': 'ru', 'india': 'in', 'korea': 'kr', 'australia': 'au', 'mexico': 'mx', 'egypt': 'eg', 'thailand': 'th'}
-FLAG_MEDIUM = {'portugal': 'pt', 'netherlands': 'nl', 'belgium': 'be', 'switzerland': 'ch', 'sweden': 'se', 'norway': 'no', 'poland': 'pl', 'greece': 'gr', 'turkey': 'tr', 'indonesia': 'id', 'malaysia': 'my', 'philippines': 'ph', 'singapore': 'sg', 'argentina': 'ar', 'chile': 'cl', 'colombia': 'co', 'saudi arabia': 'sa', 'south africa': 'za', 'new zealand': 'nz', 'ukraine': 'ua'}
-FLAG_HARD = {'finland': 'fi', 'denmark': 'dk', 'austria': 'at', 'czech republic': 'cz', 'hungary': 'hu', 'romania': 'ro', 'iceland': 'is', 'peru': 'pe', 'cuba': 'cu', 'nigeria': 'ng', 'pakistan': 'pk', 'bangladesh': 'bd', 'iran': 'ir', 'iraq': 'iq', 'israel': 'il', 'uae': 'ae', 'morocco': 'ma', 'kenya': 'ke', 'ethiopia': 'et', 'myanmar': 'mm'}
-FLAG_INSANE = {'bhutan': 'bt', 'brunei': 'bn', 'eswatini': 'sz', 'lesotho': 'ls', 'tuvalu': 'tv', 'nauru': 'nr', 'kiribati': 'ki', 'palau': 'pw', 'andorra': 'ad', 'liechtenstein': 'li', 'san marino': 'sm', 'monaco': 'mc', 'moldova': 'md', 'tajikistan': 'tj', 'kyrgyzstan': 'kg', 'turkmenistan': 'tm', 'djibouti': 'dj', 'comoros': 'km', 'suriname': 'sr', 'guyana': 'gy'}
-FLAG_MYTHIC = {'tonga': 'to', 'micronesia': 'fm', 'marshall islands': 'mh', 'sao tome and principe': 'st', 'vanuatu': 'vu', 'solomon islands': 'sb', 'niue': 'nu', 'cook islands': 'ck', 'transnistria': 'md', 'abkhazia': 'ge', 'somaliland': 'so', 'western sahara': 'eh'}
-FLAG_POOLS = {'easy': FLAG_EASY, 'medium': FLAG_MEDIUM, 'hard': FLAG_HARD, 'insane': FLAG_INSANE, 'mythic': FLAG_MYTHIC}
-FLAG_AURA_PER_DIFFICULTY = {'easy': 6, 'medium': 10, 'hard': 14, 'insane': 20, 'mythic': 28}
-FLAG_UNLOCK_SCORE_MYTHIC = 500
-ROUNDS_PER_GAME = 5
-DAILY_FREE_GAMES = {'flag': 5, 'chess_bot': 5, 'wordle': 5, 'minesweeper': 10}
-_flag_games = {}
+DAILY_FREE_GAMES = {'chess_bot': 5}
 _daily_usage = {}
-_flag_lifetime_score = {}
 
 def _today_key():
     return time.strftime('%Y-%m-%d', time.gmtime())
@@ -227,277 +119,6 @@ def daily_add_slot(game_type, user_id):
 def _consume_daily_slot(game_type, user_id):
     _get_daily_usage(game_type, user_id)['count'] += 1
 
-def flag_games_played_today(user_id):
-    return daily_games_played_today('flag', user_id)
-
-def flag_games_left_today(user_id):
-    return daily_games_left_today('flag', user_id)
-
-def flag_add_daily_slot(user_id):
-    daily_add_slot('flag', user_id)
-
-def flag_active(cid):
-    return cid in _flag_games
-
-def flag_start(cid, owner_id, difficulty):
-    if difficulty == 'mythic' and (not flag_mythic_unlocked(owner_id)):
-        return (None, False)
-    if daily_games_left_today('flag', owner_id) <= 0:
-        return (None, False)
-    _consume_daily_slot('flag', owner_id)
-    _flag_games[cid] = {'pool': FLAG_POOLS[difficulty], 'round': 0, 'score': 0, 'country': None, 'owner_id': owner_id, 'difficulty': difficulty}
-    return (flag_next(cid), True)
-
-def flag_next(cid):
-    game = _flag_games[cid]
-    if game['round'] >= ROUNDS_PER_GAME:
-        return None
-    country = random.choice(list(game['pool'].keys()))
-    game['country'] = country
-    game['round'] += 1
-    return f'https://flagcdn.com/w320/{game['pool'][country]}.png'
-
-def flag_check(cid, guesser_id, guess):
-    game = _flag_games[cid]
-    if guesser_id != game['owner_id']:
-        return ('not_owner', game['round'] < ROUNDS_PER_GAME)
-    correct = guess.strip().lower() == game['country']
-    if correct:
-        game['score'] += 1
-        _flag_lifetime_score[guesser_id] = _flag_lifetime_score.get(guesser_id, 0) + 1
-    return (correct, game['round'] < ROUNDS_PER_GAME)
-
-def flag_aura_reward(cid):
-    return FLAG_AURA_PER_DIFFICULTY[_flag_games[cid]['difficulty']]
-
-def flag_answer(cid):
-    return _flag_games[cid]['country']
-
-def flag_progress(cid):
-    g = _flag_games[cid]
-    return (g['round'], ROUNDS_PER_GAME, g['score'])
-
-def flag_owner(cid):
-    return _flag_games[cid]['owner_id']
-
-def flag_end(cid):
-    _flag_games.pop(cid, None)
-
-# ==================== ĐÁNH GIÁ ẢNH (/danhgia) ====================
-DANHGIA_LOW_COMMENTS = ['💀 Bố cục hơi lụi, ánh sáng cũng chưa tới, cần chỉnh lại nhiều.', '😬 Màu sắc bị ám, khung hình chưa cân, làm lại đi bạn ơi.', '📉 Thiếu điểm nhấn, nhìn hơi phẳng, chưa có gì bắt mắt.', '🫠 Ánh sáng gắt quá làm mất chi tiết, bố cục cũng lệch tâm.', '🥲 Ảnh bị rung nhẹ, độ tương phản chưa tốt, cần cải thiện kỹ thuật.']
-DANHGIA_MID_COMMENTS = ['🙂 Ổn áp, bố cục tạm được nhưng ánh sáng có thể chỉnh thêm chút.', '📸 Màu sắc hài hoà, chỉ tiếc góc chụp chưa tối ưu lắm.', '👌 Khá là ổn, thêm chút chỉnh sáng là lên hạng ngay.', '😌 Chủ thể rõ ràng, nhưng phông nền hơi rối, có thể tối giản hơn.', '🌤️ Ánh sáng tự nhiên đẹp, bố cục theo quy tắc 1/3 khá chuẩn rồi đó.']
-DANHGIA_HIGH_COMMENTS = ['🔥 Bố cục cực chuẩn, ánh sáng mềm mại, không có gì để chê!', '✨ Màu sắc hài hoà xuất sắc, chủ thể nổi bật rõ ràng.', '🏆 Đỉnh của chóp! Góc chụp sáng tạo, ánh sáng và bố cục đều top.', '💎 Cân bằng sáng tối cực kỳ tinh tế, nhìn như ảnh chuyên nghiệp.', '🌟 Từng chi tiết đều được chăm chút, đây là ảnh xịn thật sự!']
-DANHGIA_TIER_LABEL = {'low': ('📉 Cần cải thiện', 15158332), 'mid': ('🙂 Ổn áp', 15844367), 'high': ('🏆 Xuất sắc', 3066993)}
-
-def danhgia_generate(image_url):
-    score = random.randint(1, 10)
-    if score <= 4:
-        tier = 'low'
-        comment = random.choice(DANHGIA_LOW_COMMENTS)
-    elif score <= 7:
-        tier = 'mid'
-        comment = random.choice(DANHGIA_MID_COMMENTS)
-    else:
-        tier = 'high'
-        comment = random.choice(DANHGIA_HIGH_COMMENTS)
-    tier_label, color = DANHGIA_TIER_LABEL[tier]
-    return {'score': score, 'comment': comment, 'tier_label': tier_label, 'color': color, 'image_url': image_url}
-# ==================== HẾT ĐÁNH GIÁ ẢNH ====================
-
-# ==================== TỰ ĐỘNG CHẤM ART TRONG FORUM ====================
-ART_FORUM_CHANNEL_ID = 1528613139027988649
-ART_RATED_THREADS_FILE = 'art_rated_threads.json'
-_art_rated_threads = set(_firestore_load_collection('art_rated_threads', ART_RATED_THREADS_FILE).keys())
-
-def art_thread_already_rated(thread_id):
-    return int(thread_id) in _art_rated_threads
-
-def art_thread_mark_rated(thread_id):
-    _art_rated_threads.add(int(thread_id))
-    _firestore_save_doc('art_rated_threads', thread_id, {'rated': True})
-# ==================== HẾT TỰ ĐỘNG CHẤM ART TRONG FORUM ====================
-
-LOTTERY_PROVINCES = ['Folk Valley', 'Ohio', 'Thành phố Delta', 'Shess Cex', 'Larp', 'Oliver Mango', 'Penaldo Pasta', 'Tỉnh Beast', 'Sinecraft Mex', 'Meow Meow']
-LOTTERY_WEEKDAY_LABELS = ['Thứ hai', 'Thứ ba', 'Thứ tư', 'Thứ năm', 'Thứ sáu', 'Thứ bảy', 'Chủ nhật']
-LOTTERY_WEEKDAY_PROVINCES = {
-    0: ['Folk Valley', 'Ohio', 'Thành phố Delta'],
-    1: ['Shess Cex', 'Larp', 'Oliver Mango'],
-    2: ['Penaldo Pasta', 'Tỉnh Beast', 'Sinecraft Mex'],
-    3: ['Meow Meow', 'Folk Valley', 'Ohio'],
-    4: ['Thành phố Delta', 'Shess Cex', 'Larp'],
-    5: ['Oliver Mango', 'Penaldo Pasta', 'Tỉnh Beast'],
-    6: ['Sinecraft Mex', 'Meow Meow', 'Folk Valley'],
-}
-LOTTERY_TICKET_PRICE = 10
-LOTTERY_CHECK_PRICE = 50
-LOTTERY_STOCK_TOTAL = 150
-LOTTERY_SALE_CLOSE_HOUR = 16
-LOTTERY_WIN_CHANCE = 0.02
-LOTTERY_PRIZES = [
-    ('dac_biet', 'Giải Đặc Biệt', 50000),
-    ('nhat', 'Giải Nhất', 10000),
-    ('nhi', 'Giải Nhì', 5000),
-    ('ba', 'Giải Ba', 1000),
-    ('bon', 'Giải Bốn', 500),
-    ('nam', 'Giải Năm', 20),
-]
-LOTTERY_BOARD_STRUCTURE = [
-    ('Giải tám', 1, 2), ('Giải bảy', 1, 3), ('Giải sáu', 3, 4), ('Giải năm', 1, 4),
-    ('Giải tư', 7, 5), ('Giải ba', 2, 5), ('Giải nhì', 1, 5), ('Giải nhất', 1, 5),
-    ('Giải Đặc Biệt', 1, 6),
-]
-LOTTERY_TICKETS_FILE = 'lottery_tickets.json'
-LOTTERY_STOCK_FILE = 'lottery_stock.json'
-_lottery_tickets = _firestore_load_collection('lottery_tickets', LOTTERY_TICKETS_FILE)
-_lottery_stock_state = _firestore_load_collection('lottery_stock', LOTTERY_STOCK_FILE)
-_lottery_next_ticket_id = max(_lottery_tickets.keys(), default=0) + 1
-
-def _vn_today_key():
-    return time.strftime('%Y-%m-%d', time.gmtime(time.time() + 7 * 3600))
-
-def _vn_now():
-    return time.gmtime(time.time() + 7 * 3600)
-
-def lottery_today_provinces():
-    return LOTTERY_WEEKDAY_PROVINCES[_vn_now().tm_wday]
-
-def lottery_today_label():
-    now = _vn_now()
-    weekday = LOTTERY_WEEKDAY_LABELS[now.tm_wday]
-    date_str = time.strftime('%d/%m/%Y', now)
-    return (weekday, date_str)
-
-def lottery_sale_open():
-    return _vn_now().tm_hour < LOTTERY_SALE_CLOSE_HOUR
-
-def lottery_seconds_until_sale_change():
-    now_vn = time.time() + 7 * 3600
-    day_start_vn = now_vn - (now_vn % 86400)
-    close_ts_vn = day_start_vn + LOTTERY_SALE_CLOSE_HOUR * 3600
-    if now_vn < close_ts_vn:
-        target = close_ts_vn
-    else:
-        target = day_start_vn + 86400
-    return max(0, int(target - now_vn))
-
-def _lottery_province_board(province, day_key):
-    rng = random.Random(f'{province}|{day_key}')
-    board = []
-    for label, count, digits in LOTTERY_BOARD_STRUCTURE:
-        numbers = [f'{rng.randint(0, 10 ** digits - 1):0{digits}d}' for _ in range(count)]
-        board.append((label, numbers))
-    return board
-
-def _lottery_ensure_stock_cycle():
-    day_key = _vn_today_key()
-    state = _lottery_stock_state.get(0)
-    if state is None or state.get('day_key') != day_key:
-        state = {'remaining': LOTTERY_STOCK_TOTAL, 'day_key': day_key}
-        _lottery_stock_state[0] = state
-        _firestore_save_doc('lottery_stock', 0, state)
-    return state
-
-def lottery_stock_remaining():
-    return _lottery_ensure_stock_cycle()['remaining']
-
-def lottery_seconds_until_restock():
-    return lottery_seconds_until_sale_change()
-
-def lottery_buy(user_id):
-    global _lottery_next_ticket_id
-    if not lottery_sale_open():
-        return {'ok': False, 'reason': f'❌ Đại lý vé số đã đóng cửa lúc {LOTTERY_SALE_CLOSE_HOUR}h chiều rồi! Quay lại vào **0h ngày mai** nhé. (còn **{lottery_seconds_until_sale_change() // 3600}h{(lottery_seconds_until_sale_change() % 3600) // 60}p**)'}
-    state = _lottery_ensure_stock_cycle()
-    if state['remaining'] <= 0:
-        return {'ok': False, 'reason': '❌ Hết vé số hôm nay rồi! Mai quay lại nhé.'}
-    balance = get_aura(user_id)
-    if balance < LOTTERY_TICKET_PRICE:
-        return {'ok': False, 'reason': f'❌ Không đủ Aura! Cần **{LOTTERY_TICKET_PRICE}**, bạn có **{balance}**.'}
-    add_aura(user_id, -LOTTERY_TICKET_PRICE)
-    _apply_purchase_tax(LOTTERY_TICKET_PRICE)
-    state['remaining'] -= 1
-    _firestore_save_doc('lottery_stock', 0, state)
-    province = random.choice(lottery_today_provinces())
-    number = f'{random.randint(0, 999999):06d}'
-    ticket_id = _lottery_next_ticket_id
-    _lottery_next_ticket_id += 1
-    ticket = {'id': ticket_id, 'owner_id': user_id, 'province': province, 'number': number, 'day_key': _vn_today_key(), 'bought_at': time.time(), 'checked': False, 'prize_label': None, 'prize_amount': 0}
-    _lottery_tickets[ticket_id] = ticket
-    _firestore_save_doc('lottery_tickets', ticket_id, ticket)
-    return {'ok': True, 'ticket': ticket, 'remaining': state['remaining']}
-
-def lottery_user_tickets(user_id, unchecked_only=False):
-    tickets = [t for t in _lottery_tickets.values() if t['owner_id'] == user_id]
-    if unchecked_only:
-        tickets = [t for t in tickets if not t['checked']]
-    tickets.sort(key=lambda t: t['bought_at'])
-    return tickets
-
-def lottery_get_ticket(ticket_id):
-    return _lottery_tickets.get(ticket_id)
-
-def lottery_result_announced(ticket):
-    if ticket['day_key'] != _vn_today_key():
-        return True
-    return not lottery_sale_open()
-
-def lottery_board_table(province, day_key):
-    board = _lottery_province_board(province, day_key)
-    label_width = max((len(label) for label, _ in board))
-    rows = [f'{label.ljust(label_width)} : {"  ".join(numbers)}' for label, numbers in board]
-    return '```\n' + '\n'.join(rows) + '\n```'
-
-def lottery_check_ticket(ticket_id):
-    ticket = _lottery_tickets.get(ticket_id)
-    if ticket is None:
-        return None
-    if ticket['checked']:
-        return ticket
-    if not lottery_result_announced(ticket):
-        return None
-    rng = random.Random(f"draw|{ticket['id']}|{ticket['province']}|{ticket['day_key']}|{ticket['number']}")
-    won = rng.random() < LOTTERY_WIN_CHANCE
-    if won:
-        prize_key, label, amount = rng.choice(LOTTERY_PRIZES)
-    else:
-        label, amount = (None, 0)
-    ticket['checked'] = True
-    ticket['prize_label'] = label
-    ticket['prize_amount'] = amount
-    if amount > 0:
-        add_aura(ticket['owner_id'], amount)
-    _firestore_save_doc('lottery_tickets', ticket_id, ticket)
-    return ticket
-
-def lottery_check_all(user_id):
-    tickets = lottery_user_tickets(user_id, unchecked_only=True)
-    results = [lottery_check_ticket(t['id']) for t in tickets]
-    return [r for r in results if r is not None]
-
-def lottery_check_by_id(user_id, ticket_id):
-    ticket = _lottery_tickets.get(ticket_id)
-    if ticket is None:
-        return {'ok': False, 'reason': f'❌ Không tìm thấy vé số **#{ticket_id}**.'}
-    if ticket['owner_id'] != user_id:
-        return {'ok': False, 'reason': '❌ Đây không phải vé số của bạn!'}
-    if ticket['checked']:
-        return {'ok': False, 'reason': f"⚠️ Vé **#{ticket_id}** đã được dò rồi (kết quả: {ticket['prize_label'] or 'không trúng'})."}
-    if not lottery_result_announced(ticket):
-        remain = lottery_seconds_until_sale_change()
-        return {'ok': False, 'reason': f'⏳ Vé **#{ticket_id}** chưa có kết quả — KQXS công bố lúc {LOTTERY_SALE_CLOSE_HOUR}h chiều nay (còn **{remain // 3600}h{(remain % 3600) // 60}p**).'}
-    balance = get_aura(user_id)
-    if balance < LOTTERY_CHECK_PRICE:
-        return {'ok': False, 'reason': f'❌ Không đủ Aura để kiểm tra! Cần **{LOTTERY_CHECK_PRICE}**, bạn có **{balance}**.'}
-    add_aura(user_id, -LOTTERY_CHECK_PRICE)
-    ticket = lottery_check_ticket(ticket_id)
-    return {'ok': True, 'ticket': ticket}
-
-WHATUINTO_LABELS = [('Femboy', 'Mềm mại bên ngoài, hỗn loạn bên trong. Bạn là hiện thân của "tưởng vậy mà không phải vậy".'), ('Tomboy', 'Năng lượng xắn tay áo, không ngại dơ. Bạn chọn hành động thay vì drama.'), ('Tsundere', '"Không phải tôi thích đâu nhé!" — trong khi tay đã làm sẵn hết rồi.'), ('Mommy ASMR', 'Giọng nói của bạn có thể ru cả server ngủ. Năng lượng chăm sóc tối thượng.'), ('Yandere ASMR', 'Ngọt ngào đến đáng ngờ. Ai chọc bạn giận thì... thôi khỏi nói.'), ('Vợ hàng xóm', 'Huyền thoại khu phố, ai cũng biết tên nhưng chẳng ai dám hỏi thẳng.'), ('Folk Valley', 'Bạn thuộc về nơi cỏ cây biết nói và gà biết deploy code.'), ('Scambodia', 'Chuyên gia lừa đảo... tình cảm. Cẩn thận, coi chừng mất ví lẫn mất tim.')]
-
-def whatuinto_roll():
-    label, caption = random.choice(WHATUINTO_LABELS)
-    percent = random.randint(60, 99)
-    return (label, caption, percent)
 _chess_games = {}
 _PIECE_VALUES = {chess.PAWN: 1, chess.KNIGHT: 3, chess.BISHOP: 3, chess.ROOK: 5, chess.QUEEN: 9}
 CHESS_STALE_SECONDS = 30 * 60
@@ -603,18 +224,18 @@ def _set_elo(user_id, new_elo):
     return new_elo
 SHOP_RESTOCK_SECONDS = 5 * 60
 SHOP_ITEMS = {
-    'elo_100': {'emoji': '🥶', 'name': 'Mua Tài (100 Elo)', 'currency': 'aura', 'price': 50, 'stock': 8, 'rarity': 'common', 'appear_chance': 1.0, 'desc': '📈 +100 Elo ngay lập tức, không cần thắng, không cần chơi, không cần liêm sỉ.\n🐐 Messi mà thấy giá này chắc cũng phải khóc vì rẻ.'},
-    'elo10': {'emoji': '💠', 'name': '10 Elo', 'currency': 'aura', 'price': 5, 'stock': 20, 'rarity': 'common', 'appear_chance': 1.0, 'desc': '📈 +10 Elo bé xíu, dành cho người mua tài mà vẫn muốn giữ chút liêm sỉ.\n🐜 Chưa đủ để flex nhưng đủ để tự lừa bản thân là đang tiến bộ.'},
-    'hint_free': {'emoji': '💡', 'name': 'Gợi Ý Miễn Phí', 'currency': 'aura', 'price': 120, 'stock': 5, 'rarity': 'common', 'appear_chance': 1.0, 'desc': '🎯 Dùng 1 lần — hỏi bài mà không bị trừ điểm, sung sướng như quay cóp trót lọt.\n🧠 Não bạn nghỉ hưu sớm, bot lo hết.'},
-    'flag_slot': {'emoji': '🎟️', 'name': 'Slot Vé Game', 'currency': 'aura', 'price': 80, 'stock': 6, 'rarity': 'common', 'appear_chance': 1.0, 'desc': '📈 +1 lượt chơi hôm nay cho /wordle, /flag VÀ cờ vua vs Bot (vượt giới hạn 5 vé/ngày mỗi loại).\n🌾 Nghiện game thì Folk Valley không cản, chỉ cần trả tiền vé.'},
-    'aura_500': {'emoji': '💰', 'name': 'Túi Aura (500)', 'currency': 'elo', 'price': 250, 'stock': 5, 'rarity': 'uncommon', 'appear_chance': 0.75, 'desc': '💸 Bán 250 Elo lấy 500 Aura — vay nóng lãi cắt cổ nhưng tự nguyện.\n🏦 Tín dụng đen phiên bản cờ vua, không ai ép bạn cả.'},
-    'shield_timeout': {'emoji': '🛡️', 'name': 'Khiên Hết Giờ', 'currency': 'aura', 'price': 350, 'stock': 3, 'rarity': 'uncommon', 'appear_chance': 0.75, 'desc': '🎯 Dùng 1 lần — cộng free 60 giây để nghĩ nước đi cho thiên tài chậm tiêu.\n🐢 Rùa cũng có ngày về đích, miễn là mua đủ khiên.'},
-    'trong_tai': {'emoji': '⚖️', 'name': 'Trọng Tài Chess (PvP)', 'currency': 'aura', 'price': 450, 'stock': 3, 'rarity': 'uncommon', 'appear_chance': 0.6, 'desc': '🎯 Dùng 1 lần — mua đứt ông trọng tài trận PvP tiếp theo.\n🛡️ Thổi còi thiên vị bạn công khai giữa thanh thiên bạch nhật.\n🤫 "Đây là quyết định cuối cùng, không khiếu nại" — trọng tài, vừa nhận phong bì.'},
-    'double_aura': {'emoji': '✨', 'name': 'Nhân Đôi Aura (24 giờ)', 'currency': 'elo', 'price': 300, 'stock': 4, 'rarity': 'rare', 'appear_chance': 0.4, 'desc': '⏳ x2 Aura trong 24 giờ — bán Elo lấy Aura như bán nhà lấy vàng mã.\n🤑 Tư bản đích thực, không màng liêm sỉ chỉ màng lợi nhuận.'},
-    'cu_cai': {'emoji': '🥕', 'name': 'Củ Cải', 'currency': 'aura', 'price': 500, 'stock': 2, 'rarity': 'rare', 'appear_chance': 0.35, 'desc': '🎯 Dùng 1 lần — nhét củ cải vào não Chess Bot:\n🤯 IQ bot rớt về âm, đi cờ như đang say rượu ngoài quán nhậu.\n♟️ Thua ván này thì thôi khỏi chơi cờ luôn đi bạn ơi. 💀🥶'},
-    'mango_mustard': {'emoji': '🥭', 'name': 'Mango Mustard', 'currency': 'aura', 'price': 666, 'stock': 1, 'rarity': 'legendary', 'appear_chance': 0.15, 'desc': '🎯 Dùng 1 lần — sốt mù tạt xoài huyền thoại, không ai hiểu công thức nhưng ai cũng sợ.\n💥 Ăn vào +50 Aura NGAY LẬP TỨC vì can đảm thử món này xứng đáng được thưởng.\n🤢 Tác dụng phụ: ám ảnh vị giác vĩnh viễn.'},
+    'elo_100': {'emoji': '🥶', 'name': 'Mua Tài (100 Elo)', 'currency': 'deion', 'price': 0.5, 'stock': 8, 'rarity': 'common', 'appear_chance': 1.0, 'desc': '📈 +100 Elo ngay lập tức, không cần thắng, không cần chơi, không cần liêm sỉ.\n🐐 Messi mà thấy giá này chắc cũng phải khóc vì rẻ.'},
+    'elo10': {'emoji': '💠', 'name': '10 Elo', 'currency': 'deion', 'price': 0.1, 'stock': 20, 'rarity': 'common', 'appear_chance': 1.0, 'desc': '📈 +10 Elo bé xíu, dành cho người mua tài mà vẫn muốn giữ chút liêm sỉ.\n🐜 Chưa đủ để flex nhưng đủ để tự lừa bản thân là đang tiến bộ.'},
+    'hint_free': {'emoji': '💡', 'name': 'Gợi Ý Miễn Phí', 'currency': 'deion', 'price': 1.5, 'stock': 5, 'rarity': 'common', 'appear_chance': 1.0, 'desc': '🎯 Dùng 1 lần — hỏi bài mà không bị trừ điểm, sung sướng như quay cóp trót lọt.\n🧠 Não bạn nghỉ hưu sớm, bot lo hết.'},
+    'chess_slot': {'emoji': '🎟️', 'name': 'Slot Vé Cờ Vua', 'currency': 'deion', 'price': 1, 'stock': 6, 'rarity': 'common', 'appear_chance': 1.0, 'desc': '📈 +1 lượt đấu Bot hôm nay (vượt giới hạn 5 vé/ngày).\n♟️ Nghiện cờ thì Delta Mick Bot không cản, chỉ cần trả tiền vé.'},
+    'deion_5': {'emoji': '💰', 'name': 'Túi Deion (5)', 'currency': 'elo', 'price': 200, 'stock': 5, 'rarity': 'uncommon', 'appear_chance': 0.75, 'desc': '💸 Bán 200 Elo lấy 5 Deion — vay nóng lãi cắt cổ nhưng tự nguyện.\n🏦 Tín dụng đen phiên bản cờ vua, không ai ép bạn cả.'},
+    'shield_timeout': {'emoji': '🛡️', 'name': 'Khiên Hết Giờ', 'currency': 'deion', 'price': 4, 'stock': 3, 'rarity': 'uncommon', 'appear_chance': 0.75, 'desc': '🎯 Dùng 1 lần — cộng free 60 giây để nghĩ nước đi cho thiên tài chậm tiêu.\n🐢 Rùa cũng có ngày về đích, miễn là mua đủ khiên.'},
+    'trong_tai': {'emoji': '⚖️', 'name': 'Trọng Tài Chess (PvP)', 'currency': 'deion', 'price': 5, 'stock': 3, 'rarity': 'uncommon', 'appear_chance': 0.6, 'desc': '🎯 Dùng 1 lần — mua đứt ông trọng tài trận PvP tiếp theo.\n🛡️ Thổi còi thiên vị bạn công khai giữa thanh thiên bạch nhật.\n🤫 "Đây là quyết định cuối cùng, không khiếu nại" — trọng tài, vừa nhận phong bì.'},
+    'double_deion': {'emoji': '✨', 'name': 'Nhân Đôi Deion (24 giờ)', 'currency': 'elo', 'price': 150, 'stock': 4, 'rarity': 'rare', 'appear_chance': 0.4, 'desc': '⏳ x2 Deion trong 24 giờ — bán Elo lấy Deion như bán nhà lấy vàng mã.\n🤑 Tư bản đích thực, không màng liêm sỉ chỉ màng lợi nhuận.'},
+    'cu_cai': {'emoji': '🥕', 'name': 'Củ Cải', 'currency': 'deion', 'price': 6, 'stock': 2, 'rarity': 'rare', 'appear_chance': 0.35, 'desc': '🎯 Dùng 1 lần — nhét củ cải vào não Chess Bot:\n🤯 IQ bot rớt về âm, đi cờ như đang say rượu ngoài quán nhậu.\n♟️ Thua ván này thì thôi khỏi chơi cờ luôn đi bạn ơi. 💀🥶'},
+    'mango_mustard': {'emoji': '🥭', 'name': 'Mango Mustard', 'currency': 'deion', 'price': 8, 'stock': 1, 'rarity': 'legendary', 'appear_chance': 0.15, 'desc': '🎯 Dùng 1 lần — sốt mù tạt xoài huyền thoại, không ai hiểu công thức nhưng ai cũng sợ.\n💥 Ăn vào +0.5 Deion NGAY LẬP TỨC vì can đảm thử món này xứng đáng được thưởng.\n🤢 Tác dụng phụ: ám ảnh vị giác vĩnh viễn.'},
     'ronaldo_pasta': {'emoji': '🍝', 'name': 'Ronaldo Pasta', 'currency': 'elo', 'price': 500, 'stock': 1, 'rarity': 'legendary', 'appear_chance': 0.15, 'desc': '🎯 Dùng 1 lần — đĩa mì Ý SIUUUU chính hiệu, ăn vào tự tin thái quá.\n📈 +150 Elo NGAY LẬP TỨC vì tự tin cũng là một loại sức mạnh.\n⚠️ Cảnh báo: có thể khiến bạn ăn mừng quá lố sau mỗi nước đi.'},
-    'role_gubby': {'emoji': '🐹', 'name': 'Role Gubby', 'currency': 'aura', 'price': 3100, 'stock': 1, 'rarity': 'legendary', 'appear_chance': 0.2, 'desc': '🎖️ Vĩnh viễn thành Gubby chính hiệu, không hoàn không đổi trả.\n🐹 Một khi đã Gubby thì Gubby cả đời, hối hận cũng muộn rồi.'},
+    'role_gubby': {'emoji': '🐹', 'name': 'Role Gubby', 'currency': 'deion', 'price': 40, 'stock': 1, 'rarity': 'legendary', 'appear_chance': 0.2, 'desc': '🎖️ Vĩnh viễn thành Gubby chính hiệu, không hoàn không đổi trả.\n🐹 Một khi đã Gubby thì Gubby cả đời, hối hận cũng muộn rồi.'},
 }
 RARITY_LABEL = {'common': '⚪ Thường', 'uncommon': '🟢 Ít gặp', 'rare': '🔵 Hiếm', 'legendary': '🟣 Huyền thoại'}
 _user_buffs = {}
@@ -645,11 +266,11 @@ def shop_item_available(item_key):
     return _shop_available.get(item_key, False)
 
 def _get_buffs(user_id):
-    return _user_buffs.setdefault(user_id, {'cu_cai': 0, 'trong_tai': 0, 'double_aura_until': 0, 'gubby_role': False, 'hint_free': 0, 'shield_timeout': 0})
+    return _user_buffs.setdefault(user_id, {'cu_cai': 0, 'trong_tai': 0, 'double_deion_until': 0, 'gubby_role': False, 'hint_free': 0, 'shield_timeout': 0})
 
-def _has_double_aura_buff(user_id):
+def _has_double_deion_buff(user_id):
     buffs = _user_buffs.get(user_id)
-    return bool(buffs) and time.time() < buffs.get('double_aura_until', 0)
+    return bool(buffs) and time.time() < buffs.get('double_deion_until', 0)
 
 def shop_current_cycle():
     return int(time.time() // SHOP_RESTOCK_SECONDS)
@@ -688,12 +309,12 @@ def shop_buy(user_id, item_key):
         return {'ok': False, 'reason': f"❌ **{item['name']}** đã hết hàng đợt này! Chờ restock sau **{shop_seconds_until_restock() // 60} phút** nhé.", 'item': item, 'balance_after': None}
     currency = item['currency']
     price = item['price']
-    current = get_aura(user_id) if currency == 'aura' else get_elo(user_id)
-    currency_label = 'Aura' if currency == 'aura' else 'Elo'
+    current = get_deion(user_id) if currency == 'deion' else get_elo(user_id)
+    currency_label = 'Deion' if currency == 'deion' else 'Elo'
     if current < price:
         return {'ok': False, 'reason': f'❌ Không đủ {currency_label}! Cần **{price}**, bạn chỉ có **{current}**.', 'item': item, 'balance_after': current}
-    if currency == 'aura':
-        balance_after = add_aura(user_id, -price)
+    if currency == 'deion':
+        balance_after = add_deion(user_id, -price)
         _apply_purchase_tax(price)
     else:
         balance_after = _set_elo(user_id, get_elo(user_id) - price)
@@ -704,25 +325,23 @@ def shop_buy(user_id, item_key):
         _set_elo(user_id, get_elo(user_id) + 10)
     elif item_key == 'cu_cai':
         buffs['cu_cai'] += 1
-    elif item_key == 'double_aura':
-        base = max(time.time(), buffs['double_aura_until'])
-        buffs['double_aura_until'] = base + 24 * 3600
+    elif item_key == 'double_deion':
+        base = max(time.time(), buffs['double_deion_until'])
+        buffs['double_deion_until'] = base + 24 * 3600
     elif item_key == 'role_gubby':
         buffs['gubby_role'] = True
     elif item_key == 'trong_tai':
         buffs['trong_tai'] += 1
     elif item_key == 'hint_free':
         buffs['hint_free'] += 1
-    elif item_key == 'aura_500':
-        add_aura(user_id, 500)
+    elif item_key == 'deion_5':
+        add_deion(user_id, 5)
     elif item_key == 'shield_timeout':
         buffs['shield_timeout'] += 1
-    elif item_key == 'flag_slot':
-        daily_add_slot('flag', user_id)
+    elif item_key == 'chess_slot':
         daily_add_slot('chess_bot', user_id)
-        daily_add_slot('wordle', user_id)
     elif item_key == 'mango_mustard':
-        add_aura(user_id, 50)
+        add_deion(user_id, 0.5)
     elif item_key == 'ronaldo_pasta':
         _set_elo(user_id, get_elo(user_id) + 150)
     _shop_stock[item_key] -= 1
@@ -768,11 +387,11 @@ def shop_inventory_text(user_id):
         lines.append(f"💡 Gợi Ý Miễn Phí: còn **{buffs['hint_free']}**")
     if buffs['shield_timeout'] > 0:
         lines.append(f"🛡️ Khiên Hết Giờ: còn **{buffs['shield_timeout']}**")
-    if _has_double_aura_buff(user_id):
-        remain = buffs['double_aura_until'] - time.time()
+    if _has_double_deion_buff(user_id):
+        remain = buffs['double_deion_until'] - time.time()
         h, rem = divmod(int(remain), 3600)
         m = rem // 60
-        lines.append(f'✨ Nhân Đôi Aura: còn **{h}h{m:02d}m**')
+        lines.append(f'✨ Nhân Đôi Deion: còn **{h}h{m:02d}m**')
     if buffs['gubby_role']:
         lines.append('🐹 Role Gubby: đã sở hữu vĩnh viễn')
     return '\n'.join(lines) if lines else '_Chưa có vật phẩm/buff nào đang hoạt động._'
@@ -1132,15 +751,13 @@ def chess_outcome_text(cid, outcome, display_names=None):
         sign_b = f'+{d_black}' if d_black >= 0 else str(d_black)
         if outcome.winner is None:
             result_line = '🤝 Hòa!'
-            add_aura(white_id, -150)
-            add_aura(black_id, -150)
-            aura_line = f'\n\n{AURA_ICON} Hòa cờ: cả hai bị trừ **150 Aura**.'
+            aura_line = ''
         else:
             winner_id = white_id if outcome.winner == chess.WHITE else black_id
             winner_name = white_name if outcome.winner == chess.WHITE else black_name
             result_line = f'🎉 {winner_name} thắng! Chiếu bí!'
-            new_winner_aura = add_aura(winner_id, 100)
-            aura_line = f'\n\n{AURA_ICON} {winner_name} nhận **+100 Aura** (số dư: {new_winner_aura}).'
+            new_winner_aura = add_deion(winner_id, 0.5)
+            aura_line = f'\n\n{DEION_ICON} {winner_name} nhận **+0.5 Deion** (số dư: {new_winner_aura}).'
         return f'{result_line}\n\n⚪ {white_name}: {new_white} Elo ({sign_w})\n⚫ {black_name}: {new_black} Elo ({sign_b}){aura_line}'
     player_id = game['player_id']
     player_elo = get_elo(player_id)
@@ -1171,10 +788,10 @@ def chess_resign_text(cid, resigner_id, display_names=None):
         resigner_name = white_name if resigner_id == white_id else black_name
         winner_name = black_name if resigner_id == white_id else white_name
         winner_id = black_id if resigner_id == white_id else white_id
-        new_winner_aura = add_aura(winner_id, 100)
+        new_winner_aura = add_deion(winner_id, 0.5)
         sign_w = f'+{d_white}' if d_white >= 0 else str(d_white)
         sign_b = f'+{d_black}' if d_black >= 0 else str(d_black)
-        return f'🏳️ {resigner_name} đã đầu hàng! {winner_name} thắng!\n\n⚪ {white_name}: {new_white} Elo ({sign_w})\n⚫ {black_name}: {new_black} Elo ({sign_b})\n\n{AURA_ICON} {winner_name} nhận **+100 Aura** (số dư: {new_winner_aura}).'
+        return f'🏳️ {resigner_name} đã đầu hàng! {winner_name} thắng!\n\n⚪ {white_name}: {new_white} Elo ({sign_w})\n⚫ {black_name}: {new_black} Elo ({sign_b})\n\n{DEION_ICON} {winner_name} nhận **+0.5 Deion** (số dư: {new_winner_aura}).'
     player_id = game['player_id']
     player_elo = get_elo(player_id)
     new_player_elo, _, d_player, _ = update_elo(player_id, player_elo, None, game['bot_elo'], 0)
@@ -1192,10 +809,10 @@ def chess_timeout_text(cid, timed_out_color, display_names=None):
     loser_name = white_name if timed_out_color == chess.WHITE else black_name
     winner_name = black_name if timed_out_color == chess.WHITE else white_name
     winner_id = black_id if timed_out_color == chess.WHITE else white_id
-    new_winner_aura = add_aura(winner_id, 100)
+    new_winner_aura = add_deion(winner_id, 0.5)
     sign_w = f'+{d_white}' if d_white >= 0 else str(d_white)
     sign_b = f'+{d_black}' if d_black >= 0 else str(d_black)
-    return f'⏰ {loser_name} đã hết giờ! {winner_name} thắng!\n\n⚪ {white_name}: {new_white} Elo ({sign_w})\n⚫ {black_name}: {new_black} Elo ({sign_b})\n\n{AURA_ICON} {winner_name} nhận **+100 Aura** (số dư: {new_winner_aura}).'
+    return f'⏰ {loser_name} đã hết giờ! {winner_name} thắng!\n\n⚪ {white_name}: {new_white} Elo ({sign_w})\n⚫ {black_name}: {new_black} Elo ({sign_b})\n\n{DEION_ICON} {winner_name} nhận **+0.5 Deion** (số dư: {new_winner_aura}).'
 
 def chess_hint(cid, hinter_id):
     game = _chess_games[cid]
@@ -1252,24 +869,6 @@ def chess_accept_draw_text(cid, display_names=None):
     white_name = display_names[True] if display_names else f'<@{white_id}>'
     black_name = display_names[False] if display_names else f'<@{black_id}>'
     return f'🤝 {white_name} và {black_name} đã đồng ý hòa. Ván cờ kết thúc, Elo giữ nguyên.'
-_chess_draw_offers = {}
-
-def chess_offer_draw(cid, offerer_id):
-    _chess_draw_offers[cid] = offerer_id
-
-def chess_get_draw_offer(cid):
-    return _chess_draw_offers.get(cid)
-
-def chess_clear_draw_offer(cid):
-    _chess_draw_offers.pop(cid, None)
-
-def chess_accept_draw_text(cid, display_names=None):
-    game = _chess_games[cid]
-    white_id, black_id = (game['white_id'], game['black_id'])
-    white_name = display_names[True] if display_names else f'<@{white_id}>'
-    black_name = display_names[False] if display_names else f'<@{black_id}>'
-    return f'🤝 {white_name} và {black_name} đã đồng ý kết thúc ván. Elo giữ nguyên, không tính thắng thua.'
-
 def chess_captured_text(cid):
     board = _chess_games[cid]['board']
     remaining = {chess.WHITE: {}, chess.BLACK: {}}
@@ -1340,9 +939,10 @@ def wiki_lookup(keyword):
         return None
 
 REDEEM_FILE = 'redeem_data.json'
+# Deion là tiền tệ khó kiếm (0.5 Deion/trận thắng cờ PvP), nên code redeem chỉ cho một lượng nhỏ.
 REDEEM_CODES = {
-    'ChaoNgayMoiVuiVe': {'aura': 50, 'aura_plus': 0.9},
-    'DeltaMickLaConCho': {'aura': 190, 'aura_plus': 5},
+    'ChaoNgayMoiVuiVe': {'deion': 0.5},
+    'DeltaMickLaConCho': {'deion': 2},
 }
 _redeem_cache = {int(uid): d for uid, d in _firestore_load_collection('redeem_codes', REDEEM_FILE).items()}
 
@@ -1355,18 +955,15 @@ def redeem_code(user_id, code):
     if code in used['codes']:
         return {'ok': False, 'reason': '❌ Bạn đã nhập code này rồi!'}
     reward_lines = []
-    if 'aura' in entry:
-        add_aura(user_id, entry['aura'])
-        reward_lines.append(f"{AURA_ICON} +{entry['aura']} Aura")
-    if 'aura_plus' in entry:
-        add_aura_plus(user_id, entry['aura_plus'])
-        reward_lines.append(f"+{entry['aura_plus']} Aura+")
+    if 'deion' in entry:
+        add_deion(user_id, entry['deion'])
+        reward_lines.append(f"{DEION_ICON} +{entry['deion']} Deion")
     used['codes'].append(code)
     _firestore_save_doc('redeem_codes', user_id, used)
     return {'ok': True, 'reward_lines': reward_lines}
 
-def top_aura(n=10):
-    items = [(uid, bal) for uid, bal in _aura_cache.items() if uid != BOT_OWNER_ID and bal > 0]
+def top_deion(n=10):
+    items = [(uid, bal) for uid, bal in _deion_cache.items() if uid != BOT_OWNER_ID and bal > 0]
     items.sort(key=lambda x: x[1], reverse=True)
     return items[:n]
 
@@ -1374,370 +971,3 @@ def top_elo(n=10):
     items = [(uid, elo) for uid, elo in _elo_cache.items() if uid != BOT_OWNER_ID]
     items.sort(key=lambda x: x[1], reverse=True)
     return items[:n]
-
-# ==================== MINESWEEPER (DÒ MÌN) ====================
-MINESWEEPER_MIN_SIZE = 5
-MINESWEEPER_MAX_SIZE = 12
-MINESWEEPER_DEFAULT_SIZE = 8
-MINESWEEPER_MINE_RATIO = 0.15625
-MINESWEEPER_AURA_REWARD = 2000
-MINESWEEPER_AURA_PLUS_REWARD = 10
-MINESWEEPER_BASE_MINE_COUNT = max(3, round(MINESWEEPER_DEFAULT_SIZE * MINESWEEPER_DEFAULT_SIZE * MINESWEEPER_MINE_RATIO))
-MINESWEEPER_FAST_MULT = 1.3
-MINESWEEPER_QUICK_MULT = 1.1
-_minesweeper_games = {}
-_minesweeper_game_seq = 0
-MINESWEEPER_STATS_FILE = 'minesweeper_stats.json'
-_minesweeper_stats_cache = {int(uid): d for uid, d in _firestore_load_collection('minesweeper_stats', MINESWEEPER_STATS_FILE).items()}
-
-def minesweeper_mine_count(size):
-    return max(3, round(size * size * MINESWEEPER_MINE_RATIO))
-
-def minesweeper_active(cid):
-    return cid in _minesweeper_games
-
-def minesweeper_games_left_today(user_id):
-    return daily_games_left_today('minesweeper', user_id)
-
-def minesweeper_parse_size(text, default=MINESWEEPER_DEFAULT_SIZE):
-    if not text:
-        return (default, True)
-    text = text.strip().lower().replace(' ', '')
-    if 'x' in text:
-        parts = text.split('x')
-    elif '*' in text:
-        parts = text.split('*')
-    else:
-        parts = [text, text]
-    if len(parts) != 2:
-        return (None, False)
-    try:
-        w, h = (int(parts[0]), int(parts[1]))
-    except ValueError:
-        return (None, False)
-    if w != h:
-        return (None, False)
-    if not MINESWEEPER_MIN_SIZE <= w <= MINESWEEPER_MAX_SIZE:
-        return (None, False)
-    return (w, True)
-
-def minesweeper_start(cid, owner_id, size=MINESWEEPER_DEFAULT_SIZE, seed=None):
-    global _minesweeper_game_seq
-    if daily_games_left_today('minesweeper', owner_id) <= 0:
-        return (None, False, None)
-    _consume_daily_slot('minesweeper', owner_id)
-    if seed is None:
-        seed = random.randint(10 ** 11, 10 ** 12 - 1)
-    mine_count = minesweeper_mine_count(size)
-    board = [[0] * size for _ in range(size)]
-    _minesweeper_game_seq += 1
-    game_id = _minesweeper_game_seq
-    # Mìn chưa được đặt ngay — sẽ sinh ra khi mở ô đầu tiên, đảm bảo luôn an toàn (chuẩn Minesweeper cổ điển).
-    _minesweeper_games[cid] = {'game_id': game_id, 'owner_id': owner_id, 'board': board, 'mines': set(), 'mine_count': mine_count, 'revealed': set(), 'flags': set(), 'size': size, 'over': False, 'won': False, 'seed': seed, 'created_at': time.time(), 'start_time': None, 'elapsed': None, 'first_click_done': False}
-    return (game_id, True, seed)
-
-def minesweeper_parse_seed(text):
-    if not text:
-        return (None, True)
-    text = text.strip()
-    if not text.isdigit():
-        return (None, False)
-    val = int(text)
-    if not 0 <= val <= 10 ** 15:
-        return (None, False)
-    return (val, True)
-
-def minesweeper_end(cid, game_id=None):
-    if game_id is not None:
-        current = _minesweeper_games.get(cid)
-        if current is None or current.get('game_id') != game_id:
-            return
-    _minesweeper_games.pop(cid, None)
-
-def minesweeper_force_reset(cid):
-    return _minesweeper_games.pop(cid, None) is not None
-
-def minesweeper_game(cid):
-    return _minesweeper_games.get(cid)
-
-def _minesweeper_generate_board(game, safe_r, safe_c):
-    """Sinh bãi mìn ngay khi người chơi mở ô đầu tiên, loại trừ ô đó và 8 ô lân cận để không bao giờ thua ngay phát đầu."""
-    size = game['size']
-    rng = random.Random(game['seed'])
-    safe_zone = {(safe_r + dr, safe_c + dc) for dr in (-1, 0, 1) for dc in (-1, 0, 1)}
-    candidates = [(r, c) for r in range(size) for c in range(size) if (r, c) not in safe_zone]
-    mine_count = min(game['mine_count'], len(candidates))
-    mines = set(rng.sample(candidates, mine_count))
-    board = [[0] * size for _ in range(size)]
-    for r, c in mines:
-        board[r][c] = -1
-    for r in range(size):
-        for c in range(size):
-            if board[r][c] == -1:
-                continue
-            count = sum(((r + dr, c + dc) in mines for dr in (-1, 0, 1) for dc in (-1, 0, 1) if not (dr == 0 and dc == 0)))
-            board[r][c] = count
-    game['board'] = board
-    game['mines'] = mines
-    game['mine_count'] = mine_count
-    game['first_click_done'] = True
-    game['start_time'] = time.time()
-
-def _minesweeper_flood_reveal(game, r, c):
-    size = game['size']
-    stack = [(r, c)]
-    while stack:
-        cr, cc = stack.pop()
-        if (cr, cc) in game['revealed'] or not (0 <= cr < size and 0 <= cc < size):
-            continue
-        if (cr, cc) in game['flags']:
-            continue
-        game['revealed'].add((cr, cc))
-        if game['board'][cr][cc] == 0:
-            for dr in (-1, 0, 1):
-                for dc in (-1, 0, 1):
-                    if dr == 0 and dc == 0:
-                        continue
-                    nr, nc = (cr + dr, cc + dc)
-                    if (nr, nc) not in game['revealed'] and 0 <= nr < size and (0 <= nc < size):
-                        stack.append((nr, nc))
-
-def _minesweeper_finish_check(game):
-    size = game['size']
-    total_safe = size * size - len(game['mines'])
-    if len(game['revealed']) >= total_safe:
-        game['over'] = True
-        game['won'] = True
-        game['elapsed'] = round(time.time() - game['start_time'], 1) if game['start_time'] else None
-        return True
-    return False
-
-def minesweeper_reveal(cid, game_id, r, c):
-    game = _minesweeper_games.get(cid)
-    if game is None or game.get('game_id') != game_id:
-        return 'gone'
-    size = game['size']
-    if not (0 <= r < size and 0 <= c < size):
-        return 'invalid'
-    if (r, c) in game['flags']:
-        return 'noop'
-    if (r, c) in game['revealed']:
-        # Ô đã mở rồi → thử "chord": nếu số cờ quanh ô khớp với số ghi trên ô, tự mở hết các ô lân cận còn lại.
-        val = game['board'][r][c]
-        if val <= 0:
-            return 'noop'
-        neighbors = [(r + dr, c + dc) for dr in (-1, 0, 1) for dc in (-1, 0, 1) if not (dr == 0 and dc == 0)]
-        neighbors = [(nr, nc) for nr, nc in neighbors if 0 <= nr < size and 0 <= nc < size]
-        flagged = sum((1 for n in neighbors if n in game['flags']))
-        if flagged != val:
-            return 'noop'
-        hit_mine = False
-        for nr, nc in neighbors:
-            if (nr, nc) in game['flags'] or (nr, nc) in game['revealed']:
-                continue
-            if (nr, nc) in game['mines']:
-                game['revealed'].add((nr, nc))
-                hit_mine = True
-            else:
-                _minesweeper_flood_reveal(game, nr, nc)
-        if hit_mine:
-            game['over'] = True
-            return 'boom'
-        return 'win' if _minesweeper_finish_check(game) else 'ok'
-    if not game['first_click_done']:
-        _minesweeper_generate_board(game, r, c)
-    if game['board'][r][c] == -1:
-        game['revealed'].add((r, c))
-        game['over'] = True
-        return 'boom'
-    _minesweeper_flood_reveal(game, r, c)
-    return 'win' if _minesweeper_finish_check(game) else 'ok'
-
-def minesweeper_toggle_flag(cid, game_id, r, c):
-    game = _minesweeper_games.get(cid)
-    if game is None or game.get('game_id') != game_id:
-        return 'gone'
-    size = game['size']
-    if not (0 <= r < size and 0 <= c < size):
-        return 'invalid'
-    if (r, c) in game['revealed']:
-        return 'noop'
-    if (r, c) in game['flags']:
-        game['flags'].discard((r, c))
-    else:
-        game['flags'].add((r, c))
-    return 'ok'
-
-def minesweeper_reward(game):
-    """Thưởng tăng theo độ khó (số mìn) so với bàn mặc định 8x8, cộng thêm bonus tốc độ nếu thắng nhanh."""
-    scale = game['mine_count'] / MINESWEEPER_BASE_MINE_COUNT
-    elapsed = game.get('elapsed')
-    mult = 1.0
-    if elapsed is not None:
-        allowance = game['size'] * game['size'] * 1.5
-        if elapsed <= allowance * 0.5:
-            mult = MINESWEEPER_FAST_MULT
-        elif elapsed <= allowance:
-            mult = MINESWEEPER_QUICK_MULT
-    aura = max(1, round(MINESWEEPER_AURA_REWARD * scale * mult))
-    aura_plus = round(MINESWEEPER_AURA_PLUS_REWARD * scale * mult, 2)
-    return (aura, aura_plus, elapsed, mult)
-
-def _minesweeper_stats_get(user_id):
-    return _minesweeper_stats_cache.setdefault(user_id, {'wins': 0, 'total_aura': 0, 'best_time': None, 'best_time_size': None})
-
-def _minesweeper_record_win(user_id, game, aura, elapsed):
-    stats = _minesweeper_stats_get(user_id)
-    stats['wins'] = stats.get('wins', 0) + 1
-    stats['total_aura'] = stats.get('total_aura', 0) + aura
-    if elapsed is not None and (stats.get('best_time') is None or elapsed < stats['best_time']):
-        stats['best_time'] = elapsed
-        stats['best_time_size'] = game['size']
-    _firestore_save_doc('minesweeper_stats', user_id, stats)
-
-def award_minesweeper_win(user_id, game):
-    aura, aura_plus, elapsed, mult = minesweeper_reward(game)
-    new_aura = add_aura(user_id, aura)
-    new_aura_plus = add_aura_plus(user_id, aura_plus)
-    _minesweeper_record_win(user_id, game, aura, elapsed)
-    return (new_aura, new_aura_plus, aura, aura_plus, elapsed, mult)
-
-def top_minesweeper(n=10):
-    items = [(uid, d.get('wins', 0), d.get('total_aura', 0)) for uid, d in _minesweeper_stats_cache.items() if d.get('wins', 0) > 0]
-    items.sort(key=lambda x: (x[1], x[2]), reverse=True)
-    return items[:n]
-
-_MS_CELL_PX = 48
-_MS_BORDER_PX = 22
-_MS_HEADER_PX = 100
-_MS_BG = (108, 117, 125)
-_MS_BG_DARK = (74, 81, 87)
-_MS_BG_LIGHT = (138, 146, 153)
-_MS_PANEL = (68, 74, 80)
-_MS_NUM_COLORS = {1: (34, 90, 214), 2: (43, 140, 66), 3: (214, 45, 32), 4: (28, 42, 130), 5: (135, 30, 20), 6: (26, 130, 140), 7: (20, 20, 20), 8: (110, 110, 110)}
-
-def _ms_bevel_rect(draw, x0, y0, x1, y1, raised=True):
-    light = _MS_BG_LIGHT if raised else _MS_BG_DARK
-    dark = _MS_BG_DARK if raised else _MS_BG_LIGHT
-    draw.rectangle([x0, y0, x1, y1], fill=_MS_BG)
-    t = 3
-    draw.polygon([(x0, y0), (x1, y0), (x1 - t, y0 + t), (x0 + t, y0 + t), (x0 + t, y1 - t), (x0, y1)], fill=light)
-    draw.polygon([(x1, y0), (x1, y1), (x0, y1), (x0 + t, y1 - t), (x1 - t, y1 - t), (x1 - t, y0 + t)], fill=dark)
-
-def _ms_digit_segments(digit):
-    segs = {'0': 'abcdef', '1': 'bc', '2': 'abged', '3': 'abgcd', '4': 'fgbc', '5': 'afgcd', '6': 'afgedc', '7': 'abc', '8': 'abcdefg', '9': 'abcfgd', '-': 'g', ' ': ''}
-    return segs.get(digit, '')
-
-def _ms_draw_7seg(draw, x, y, digit, w=22, h=38):
-    on_color = (255, 40, 40)
-    off_color = (35, 8, 8)
-    seg_on = set(_ms_digit_segments(digit))
-    t = 4
-    coords = {'a': (x + t, y, x + w - t, y + t), 'g': (x + t, y + h // 2 - t // 2, x + w - t, y + h // 2 + t // 2), 'd': (x + t, y + h - t, x + w - t, y + h), 'f': (x, y + t, x + t, y + h // 2), 'b': (x + w - t, y + t, x + w, y + h // 2), 'e': (x, y + h // 2, x + t, y + h - t), 'c': (x + w - t, y + h // 2, x + w, y + h - t)}
-    for seg, box in coords.items():
-        draw.rectangle(box, fill=on_color if seg in seg_on else off_color)
-
-def _ms_draw_counter(draw, x, y, value):
-    value = max(-99, min(999, value))
-    text = f'{value:03d}' if value >= 0 else f'-{abs(value):02d}'
-    text = text[-3:].rjust(3, '0') if value >= 0 else text
-    draw.rectangle([x - 3, y - 3, x + 77, y + 49], fill=(20, 20, 22))
-    draw.rectangle([x, y, x + 74, y + 46], fill=(12, 12, 14))
-    for i, ch in enumerate(text):
-        _ms_draw_7seg(draw, x + 6 + i * 24, y + 4, ch)
-
-def _ms_draw_face(draw, cx, cy, r, state):
-    draw.ellipse([cx - r, cy - r, cx + r, cy + r], fill=(247, 213, 90), outline=(40, 30, 10), width=2)
-    if state == 'dead':
-        eye_color = (30, 30, 30)
-        for ex in (cx - r * 0.35, cx + r * 0.35):
-            draw.line([(ex - 5, cy - 6), (ex + 5, cy + 4)], fill=eye_color, width=3)
-            draw.line([(ex - 5, cy + 4), (ex + 5, cy - 6)], fill=eye_color, width=3)
-        draw.arc([cx - r * 0.5, cy + r * 0.05, cx + r * 0.5, cy + r * 0.55], 200, 340, fill=eye_color, width=3)
-    elif state == 'win':
-        draw.ellipse([cx - r * 0.4, cy - r * 0.15, cx - r * 0.15, cy + r * 0.1], fill=(30, 30, 30))
-        draw.ellipse([cx + r * 0.15, cy - r * 0.15, cx + r * 0.4, cy + r * 0.1], fill=(30, 30, 30))
-        draw.arc([cx - r * 0.45, cy - r * 0.1, cx + r * 0.45, cy + r * 0.5], 20, 160, fill=(30, 30, 30), width=3)
-    else:
-        draw.ellipse([cx - r * 0.4, cy - r * 0.15, cx - r * 0.15, cy + r * 0.1], fill=(30, 30, 30))
-        draw.ellipse([cx + r * 0.15, cy - r * 0.15, cx + r * 0.4, cy + r * 0.1], fill=(30, 30, 30))
-        draw.arc([cx - r * 0.35, cy + r * 0.05, cx + r * 0.35, cy + r * 0.4], 0, 180, fill=(30, 30, 30), width=3)
-
-def minesweeper_col_label(c):
-    label = ''
-    c += 1
-    while c > 0:
-        c, rem = divmod(c - 1, 26)
-        label = chr(65 + rem) + label
-    return label
-
-def minesweeper_render_image(cid):
-    game = _minesweeper_games[cid]
-    size = game['size']
-    cell = _MS_CELL_PX
-    board_px = cell * size
-    coord_margin = 26
-    width = board_px + _MS_BORDER_PX * 2 + coord_margin
-    height = board_px + _MS_BORDER_PX * 2 + _MS_HEADER_PX + coord_margin
-    img = Image.new('RGB', (width, height), _MS_PANEL)
-    draw = ImageDraw.Draw(img)
-    font = _chess_font(15)
-    font_small = _chess_font(13)
-    flags_used = len(game['flags'])
-    remaining = game['mine_count'] - flags_used
-    _ms_draw_counter(draw, _MS_BORDER_PX, 18, remaining)
-    if game['over'] and (not game['won']):
-        face_state = 'dead'
-    elif game['won']:
-        face_state = 'win'
-    else:
-        face_state = 'normal'
-    _ms_draw_face(draw, width // 2, 18 + 23, 22, face_state)
-    _ms_draw_counter(draw, width - _MS_BORDER_PX - 74, 18, len(game['revealed']))
-    board_x0 = coord_margin + _MS_BORDER_PX
-    board_y0 = _MS_HEADER_PX + coord_margin
-    for c in range(size):
-        label = minesweeper_col_label(c)
-        draw.text((board_x0 + c * cell + cell / 2, board_y0 - coord_margin / 2), label, font=font_small, fill=(210, 210, 210), anchor='mm')
-    for r in range(size):
-        draw.text((coord_margin / 2 + 4, board_y0 + r * cell + cell / 2), str(r + 1), font=font_small, fill=(210, 210, 210), anchor='mm')
-    reveal_all = game['over'] and (not game['won'])
-    for r in range(size):
-        for c in range(size):
-            x0 = board_x0 + c * cell
-            y0 = board_y0 + r * cell
-            x1, y1 = (x0 + cell, y0 + cell)
-            is_revealed = (r, c) in game['revealed']
-            is_flag = (r, c) in game['flags']
-            is_mine = (r, c) in game['mines']
-            if is_revealed:
-                draw.rectangle([x0, y0, x1, y1], fill=(198, 198, 198), outline=(150, 150, 150))
-                if is_mine:
-                    fill = (255, 60, 60) if game['won'] is False and game['over'] else (198, 198, 198)
-                    draw.rectangle([x0, y0, x1, y1], fill=fill)
-                    mcx, mcy = (x0 + cell / 2, y0 + cell / 2)
-                    mr = cell * 0.28
-                    draw.ellipse([mcx - mr, mcy - mr, mcx + mr, mcy + mr], fill=(20, 20, 20))
-                    for ang in range(0, 360, 45):
-                        import math
-                        rad = math.radians(ang)
-                        draw.line([(mcx, mcy), (mcx + mr * 1.6 * math.cos(rad), mcy + mr * 1.6 * math.sin(rad))], fill=(20, 20, 20), width=2)
-                else:
-                    val = game['board'][r][c]
-                    if val > 0:
-                        draw.text((x0 + cell / 2, y0 + cell / 2), str(val), font=font, fill=_MS_NUM_COLORS.get(val, (0, 0, 0)), anchor='mm')
-            else:
-                _ms_bevel_rect(draw, x0, y0, x1, y1, raised=True)
-                if is_flag:
-                    fx, fy = (x0 + cell / 2, y0 + cell / 2)
-                    draw.line([(fx - 2, fy - cell * 0.28), (fx - 2, fy + cell * 0.28)], fill=(40, 30, 10), width=3)
-                    draw.polygon([(fx - 2, fy - cell * 0.28), (fx - 2, fy - cell * 0.02), (fx + cell * 0.22, fy - cell * 0.15)], fill=(214, 45, 32))
-                elif reveal_all and is_mine:
-                    mcx, mcy = (x0 + cell / 2, y0 + cell / 2)
-                    mr = cell * 0.24
-                    draw.ellipse([mcx - mr, mcy - mr, mcx + mr, mcy + mr], fill=(20, 20, 20))
-    buf = io.BytesIO()
-    img.save(buf, format='PNG')
-    buf.seek(0)
-    return buf
-# ==================== HẾT MINESWEEPER ====================
