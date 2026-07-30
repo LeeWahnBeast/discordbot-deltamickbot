@@ -80,6 +80,19 @@ async def _deny_unless(interaction: discord.Interaction, allowed: bool, msg='❌
 
 MOVE_ANNOTATION_TEXT = {'!!': '✨ **!!** Nước đi thiên tài!', '??': '🤦 **??** Nước đi ngớ ngẩn!'}
 GAME_CONFIG = {'chess': {'active': games.chess_active, 'end': games.chess_end, 'label': 'Cờ vua', 'reveal': lambda cid: 'Ván đấu đã dừng.'}}
+
+# --- Thanh đếm ngược dùng chung cho các minigame có giới hạn thời gian ---
+_COUNTDOWN_SLOTS = 10
+
+def _countdown_bar(remaining, total=15):
+    filled = max(0, min(_COUNTDOWN_SLOTS, round(remaining / total * _COUNTDOWN_SLOTS)))
+    if remaining > total * 0.5:
+        fill_emoji = '🟩'
+    elif remaining > total * 0.2:
+        fill_emoji = '🟨'
+    else:
+        fill_emoji = '🟥'
+    return fill_emoji * filled + '⬜' * (_COUNTDOWN_SLOTS - filled)
 def make_end_button(cid, kind, row=None):
     cfg = GAME_CONFIG[kind]
     button = discord.ui.Button(label='🛑 Kết thúc', style=discord.ButtonStyle.danger, row=row)
@@ -993,8 +1006,20 @@ async def minesweeper_slash(
 
 
 # ============================================================
-# 🌍 GUESS-COUNTRY
+# 🌍 GUESS-COUNTRY (v2 — đếm ngược 15s/gợi ý, embed đẹp hơn)
 # ============================================================
+def _country_embed(hints, remaining=None, ve_note='', result_line=None, color=3447003):
+    if result_line:
+        desc = result_line
+    else:
+        hint_lines = '\n'.join(f'💡 **Gợi ý {i + 1}:** {h}' for i, h in enumerate(hints))
+        bar = _countdown_bar(remaining, gx.COUNTRY_TIME_LIMIT)
+        desc = f'{hint_lines}\n\n⏱️ {bar}  `{max(0, remaining)}s` — hết giờ sẽ lộ thêm gợi ý!{ve_note}'
+    embed = discord.Embed(title='🌍 ĐOÁN QUỐC GIA', description=desc, color=color)
+    if not result_line:
+        embed.set_footer(text='Bấm ✏️ Đoán quốc gia để trả lời bất cứ lúc nào — hết gợi ý mà chưa đoán ra là thua!')
+    return embed
+
 class CountryGuessModal(discord.ui.Modal, title='Đoán tên quốc gia'):
     guess_input = discord.ui.TextInput(label='Tên quốc gia', placeholder='VÍ DỤ: Việt Nam', max_length=50)
 
@@ -1012,25 +1037,20 @@ class CountryGuessModal(discord.ui.Modal, title='Đoán tên quốc gia'):
             gx.guess_country_end(self.cid, self.user_id)
             reward = gx.GAME_WIN_REWARD['guess_country']
             new_balance = games.add_deion(self.user_id, reward)
-            text = f'🎉 **CHÍNH XÁC!** Đáp án là **{answer}**!\n\n{games.DEION_ICON} +{reward} Deion (số dư: {new_balance})'
-            await interaction.response.edit_message(content=text, view=None)
+            flag = gx.guess_country_flag(answer)
+            result_line = f'🎉 **CHÍNH XÁC!** Đáp án là {flag} **{answer}**!\n\n{games.DEION_ICON} +{reward} Deion (số dư: {new_balance})'
+            embed = _country_embed([], result_line=result_line, color=3066993)
+            await interaction.response.edit_message(embed=embed, content=None, view=None)
             return
-        if done:
-            gx.guess_country_end(self.cid, self.user_id)
-            text = f'💀 Hết lượt đoán rồi! Đáp án đúng là **{answer}**.'
-            await interaction.response.edit_message(content=text, view=None)
-            return
-        hints = gx.guess_country_current_hints(self.cid, self.user_id)
-        hint_text = '\n'.join(f'💡 {h}' for h in hints)
-        text = f'🌍 **ĐOÁN QUỐC GIA**\n\n{hint_text}\n\n❌ Sai rồi, thử lại nhé!'
-        view = CountryView(self.cid, self.user_id)
-        await interaction.response.edit_message(content=text, view=view)
+        # Sai -> chỉ báo riêng tư, KHÔNG đụng vào embed chính (đồng hồ đếm ngược vẫn đang chạy nền)
+        await interaction.response.send_message(f'❌ **{self.guess_input.value.strip()}** không đúng, thử lại nhé! (đồng hồ vẫn đang chạy ⏱️)', ephemeral=True)
 
 class CountryView(discord.ui.View):
     def __init__(self, cid, user_id):
-        super().__init__(timeout=300)
+        super().__init__(timeout=None)
         self.cid = cid
         self.user_id = user_id
+        self.message = None
 
     @discord.ui.button(label='✏️ Đoán quốc gia', style=discord.ButtonStyle.primary)
     async def guess_button(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -1041,10 +1061,44 @@ class CountryView(discord.ui.View):
             return
         await interaction.response.send_modal(CountryGuessModal(self.cid, self.user_id))
 
-    async def on_timeout(self):
-        gx.guess_country_end(self.cid, self.user_id)
+    async def _safe_edit(self, embed, disable=False):
+        if not self.message:
+            return
+        try:
+            if disable:
+                await self.message.edit(embed=embed, content=None, view=None)
+            else:
+                await self.message.edit(embed=embed, content=None)
+        except discord.HTTPException:
+            pass
 
-@bot.tree.command(name='guess-country', description=f'🌍 Đoán quốc gia qua gợi ý ({gx.GAME_VE_COST["guess_country"]} Vé nếu hết lượt free)')
+    async def run_countdown(self, ve_note=''):
+        cid, uid = self.cid, self.user_id
+        max_ticks = 20  # an toàn, phòng lỗi khiến vòng lặp chạy mãi
+        ticks = 0
+        try:
+            while gx.guess_country_active(cid, uid) and ticks < max_ticks:
+                for remaining in range(gx.COUNTRY_TIME_LIMIT - 3, -1, -3):
+                    await asyncio.sleep(3)
+                    if not gx.guess_country_active(cid, uid):
+                        return
+                    hints = gx.guess_country_current_hints(cid, uid)
+                    await self._safe_edit(_country_embed(hints, remaining=remaining, ve_note=ve_note))
+                if not gx.guess_country_active(cid, uid):
+                    return
+                done, revealed_new, answer = gx.guess_country_tick(cid, uid)
+                ticks += 1
+                if done:
+                    flag = gx.guess_country_flag(answer) if answer else '🌍'
+                    result_line = f'⏰ **Hết gợi ý mà chưa đoán ra!** Đáp án đúng là {flag} **{answer}**.'
+                    await self._safe_edit(_country_embed([], result_line=result_line, color=15158332), disable=True)
+                    return
+                hints = gx.guess_country_current_hints(cid, uid)
+                await self._safe_edit(_country_embed(hints, remaining=gx.COUNTRY_TIME_LIMIT, ve_note=ve_note))
+        except Exception as e:
+            print(f'[guess_country] Lỗi countdown: {e!r}')
+
+@bot.tree.command(name='guess-country', description=f'🌍 Đoán quốc gia qua gợi ý, mỗi 15s lộ thêm 1 gợi ý ({gx.GAME_VE_COST["guess_country"]} Vé nếu hết lượt free)')
 async def guess_country_slash(interaction: discord.Interaction):
     cid, uid = interaction.channel.id, interaction.user.id
     if gx.guess_country_active(cid, uid):
@@ -1056,15 +1110,30 @@ async def guess_country_slash(interaction: discord.Interaction):
         return
     gx.guess_country_start(cid, uid)
     hints = gx.guess_country_current_hints(cid, uid)
-    hint_text = '\n'.join(f'💡 {h}' for h in hints)
-    ve_note = '\n_(Đã dùng 10 🎟️ Vé vì hết lượt free hôm nay)_' if note == 've' else ''
+    ve_note = f'\n_(Đã dùng {gx.GAME_VE_COST["guess_country"]} 🎟️ Vé vì hết lượt free hôm nay)_' if note == 've' else ''
     view = CountryView(cid, uid)
-    await interaction.response.send_message(f'🌍 **ĐOÁN QUỐC GIA**\n\n{hint_text}{ve_note}', view=view)
+    embed = _country_embed(hints, remaining=gx.COUNTRY_TIME_LIMIT, ve_note=ve_note)
+    await interaction.response.send_message(embed=embed, view=view)
+    view.message = await interaction.original_response()
+    asyncio.create_task(view.run_countdown(ve_note=ve_note))
 
 
 # ============================================================
-# 🖼️ GUESS-MEME
+# 🖼️ GUESS-MEME (v2 — đếm ngược 15s/lần lộ chữ, embed đẹp hơn)
 # ============================================================
+def _meme_embed(masked, remaining=None, ve_note='', result_line=None, color=3447003, image_url=None):
+    if result_line:
+        desc = f'Tên: `{masked}`\n\n{result_line}' if masked else result_line
+    else:
+        bar = _countdown_bar(remaining, gx.MEME_TIME_LIMIT)
+        desc = f'Tên: `{masked}`\n\n⏱️ {bar}  `{max(0, remaining)}s` — hết giờ sẽ lộ thêm chữ cái!{ve_note}'
+    embed = discord.Embed(title='🖼️ ĐOÁN MEME', description=desc, color=color)
+    if image_url:
+        embed.set_image(url=image_url)
+    if not result_line:
+        embed.set_footer(text='Bấm ✏️ Đoán tên meme để trả lời bất cứ lúc nào — lộ hết chữ mà chưa đoán ra là thua!')
+    return embed
+
 class MemeGuessModal(discord.ui.Modal, title='Đoán tên meme'):
     guess_input = discord.ui.TextInput(label='Tên meme (tiếng Anh)', placeholder='VÍ DỤ: Distracted Boyfriend', max_length=80)
 
@@ -1079,28 +1148,23 @@ class MemeGuessModal(discord.ui.Modal, title='Đoán tên meme'):
             await interaction.response.send_message(reason, ephemeral=True)
             return
         if won:
+            url = gx.guess_meme_url(self.cid, self.user_id)
             gx.guess_meme_end(self.cid, self.user_id)
             reward = gx.GAME_WIN_REWARD['guess_meme']
             new_balance = games.add_deion(self.user_id, reward)
-            embed = discord.Embed(description=f'🎉 **CHÍNH XÁC!** Đây là meme **{answer}**!\n\n{games.DEION_ICON} +{reward} Deion (số dư: {new_balance})', color=3066993)
+            result_line = f'🎉 **CHÍNH XÁC!** Đây là meme **{answer}**!\n\n{games.DEION_ICON} +{reward} Deion (số dư: {new_balance})'
+            embed = _meme_embed('', result_line=result_line, color=3066993, image_url=url)
             await interaction.response.edit_message(embed=embed, view=None)
             return
-        if done:
-            gx.guess_meme_end(self.cid, self.user_id)
-            embed = discord.Embed(description=f'💀 Hết lượt đoán rồi! Đáp án đúng là **{answer}**.', color=15158332)
-            await interaction.response.edit_message(embed=embed, view=None)
-            return
-        masked = gx.guess_meme_masked(self.cid, self.user_id)
-        embed = discord.Embed(description=f'🖼️ **ĐOÁN MEME**\n\nTên: `{masked}`\n\n❌ Sai rồi, thử lại nhé!', color=3447003)
-        embed.set_image(url=gx.guess_meme_url(self.cid, self.user_id))
-        view = MemeView(self.cid, self.user_id)
-        await interaction.response.edit_message(embed=embed, view=view)
+        # Sai -> chỉ báo riêng tư, KHÔNG đụng vào embed chính (đồng hồ đếm ngược vẫn đang chạy nền)
+        await interaction.response.send_message(f'❌ **{self.guess_input.value.strip()}** không đúng, thử lại nhé! (đồng hồ vẫn đang chạy ⏱️)', ephemeral=True)
 
 class MemeView(discord.ui.View):
     def __init__(self, cid, user_id):
-        super().__init__(timeout=300)
+        super().__init__(timeout=None)
         self.cid = cid
         self.user_id = user_id
+        self.message = None
 
     @discord.ui.button(label='✏️ Đoán tên meme', style=discord.ButtonStyle.primary)
     async def guess_button(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -1111,10 +1175,46 @@ class MemeView(discord.ui.View):
             return
         await interaction.response.send_modal(MemeGuessModal(self.cid, self.user_id))
 
-    async def on_timeout(self):
-        gx.guess_meme_end(self.cid, self.user_id)
+    async def _safe_edit(self, embed, disable=False):
+        if not self.message:
+            return
+        try:
+            if disable:
+                await self.message.edit(embed=embed, view=None)
+            else:
+                await self.message.edit(embed=embed)
+        except discord.HTTPException:
+            pass
 
-@bot.tree.command(name='guess-meme', description=f'🖼️ Đoán tên meme qua hình ({gx.GAME_VE_COST["guess_meme"]} Vé nếu hết lượt free)')
+    async def run_countdown(self, ve_note=''):
+        cid, uid = self.cid, self.user_id
+        max_ticks = 20
+        ticks = 0
+        try:
+            while gx.guess_meme_active(cid, uid) and ticks < max_ticks:
+                for remaining in range(gx.MEME_TIME_LIMIT - 3, -1, -3):
+                    await asyncio.sleep(3)
+                    if not gx.guess_meme_active(cid, uid):
+                        return
+                    masked = gx.guess_meme_masked(cid, uid)
+                    url = gx.guess_meme_url(cid, uid)
+                    await self._safe_edit(_meme_embed(masked, remaining=remaining, ve_note=ve_note, image_url=url))
+                if not gx.guess_meme_active(cid, uid):
+                    return
+                done, revealed_new, answer = gx.guess_meme_tick(cid, uid)
+                ticks += 1
+                if done:
+                    url = gx.guess_meme_url(cid, uid)
+                    result_line = f'⏰ **Hết giờ, lộ hết chữ mà vẫn chưa đoán ra!** Đáp án đúng là **{answer}**.'
+                    await self._safe_edit(_meme_embed('', result_line=result_line, color=15158332, image_url=url), disable=True)
+                    return
+                masked = gx.guess_meme_masked(cid, uid)
+                url = gx.guess_meme_url(cid, uid)
+                await self._safe_edit(_meme_embed(masked, remaining=gx.MEME_TIME_LIMIT, ve_note=ve_note, image_url=url))
+        except Exception as e:
+            print(f'[guess_meme] Lỗi countdown: {e!r}')
+
+@bot.tree.command(name='guess-meme', description=f'🖼️ Đoán tên meme qua hình, mỗi 15s lộ thêm chữ ({gx.GAME_VE_COST["guess_meme"]} Vé nếu hết lượt free)')
 async def guess_meme_slash(interaction: discord.Interaction):
     cid, uid = interaction.channel.id, interaction.user.id
     if gx.guess_meme_active(cid, uid):
@@ -1131,32 +1231,21 @@ async def guess_meme_slash(interaction: discord.Interaction):
         return
     masked = gx.guess_meme_masked(cid, uid)
     ve_note = f'\n_(Đã dùng {gx.GAME_VE_COST["guess_meme"]} 🎟️ Vé vì hết lượt free hôm nay)_' if note == 've' else ''
-    embed = discord.Embed(description=f'🖼️ **ĐOÁN MEME**\n\nTên: `{masked}`{ve_note}', color=3447003)
-    embed.set_image(url=entry['url'])
+    embed = _meme_embed(masked, remaining=gx.MEME_TIME_LIMIT, ve_note=ve_note, image_url=entry['url'])
     view = MemeView(cid, uid)
     await interaction.followup.send(embed=embed, view=view)
+    view.message = await interaction.original_response()
+    asyncio.create_task(view.run_countdown(ve_note=ve_note))
 
 
 # ============================================================
 # 🈴 GUESS-LANGUAGE — đoán loại chữ viết/ngôn ngữ trong 15 giây
 # ============================================================
-_LANG_BAR_SLOTS = 10
-
-def _lang_bar(remaining, total=gx.LANGUAGE_TIME_LIMIT):
-    filled = max(0, min(_LANG_BAR_SLOTS, round(remaining / total * _LANG_BAR_SLOTS)))
-    if remaining > total * 0.5:
-        fill_emoji = '🟩'
-    elif remaining > total * 0.2:
-        fill_emoji = '🟨'
-    else:
-        fill_emoji = '🟥'
-    return fill_emoji * filled + '⬜' * (_LANG_BAR_SLOTS - filled)
-
 def _lang_embed(sample, remaining, ve_note='', result_line=None, color=3447003):
     if result_line:
         desc = f'> **{sample}**\n\n{result_line}'
     else:
-        bar = _lang_bar(remaining)
+        bar = _countdown_bar(remaining, gx.LANGUAGE_TIME_LIMIT)
         desc = (
             f'Đoạn chữ dưới đây thuộc **loại chữ viết / ngôn ngữ** nào?\n\n'
             f'> **{sample}**\n\n'
