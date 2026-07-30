@@ -228,6 +228,9 @@ SHOP_ITEMS = {
     'elo10': {'emoji': '💠', 'name': '10 Elo', 'currency': 'deion', 'price': 0.1, 'stock': 20, 'rarity': 'common', 'appear_chance': 1.0, 'desc': '📈 +10 Elo bé xíu, dành cho người mua tài mà vẫn muốn giữ chút liêm sỉ.\n🐜 Chưa đủ để flex nhưng đủ để tự lừa bản thân là đang tiến bộ.'},
     'hint_free': {'emoji': '💡', 'name': 'Gợi Ý Miễn Phí', 'currency': 'deion', 'price': 1.5, 'stock': 5, 'rarity': 'common', 'appear_chance': 1.0, 'desc': '🎯 Dùng 1 lần — hỏi bài mà không bị trừ điểm, sung sướng như quay cóp trót lọt.\n🧠 Não bạn nghỉ hưu sớm, bot lo hết.'},
     'chess_slot': {'emoji': '🎟️', 'name': 'Slot Vé Cờ Vua', 'currency': 'deion', 'price': 1, 'stock': 6, 'rarity': 'common', 'appear_chance': 1.0, 'desc': '📈 +1 lượt đấu Bot hôm nay (vượt giới hạn 5 vé/ngày).\n♟️ Nghiện cờ thì Delta Mick Bot không cản, chỉ cần trả tiền vé.'},
+    've_1': {'emoji': '🎫', 'name': 'Túi Vé Nhỏ (+1)', 'currency': 'deion', 'price': 0.3, 'stock': 15, 'rarity': 'common', 'appear_chance': 1.0, 'desc': '🎟️ +1 Vé — dùng để mua thêm lượt chơi Wordle/Minesweeper/Đoán Quốc Gia khi hết free.\n🎮 Ghiền game thì mua vé, đơn giản vậy thôi.'},
+    've_5': {'emoji': '🎫', 'name': 'Túi Vé Vừa (+5)', 'currency': 'deion', 'price': 1.2, 'stock': 10, 'rarity': 'common', 'appear_chance': 1.0, 'desc': '🎟️ +5 Vé cùng lúc — mua sỉ rẻ hơn mua lẻ.\n📦 Dân chơi hệ tích trữ vé chính hiệu.'},
+    've_10': {'emoji': '🎫', 'name': 'Túi Vé Lớn (+10)', 'currency': 'deion', 'price': 2.0, 'stock': 6, 'rarity': 'uncommon', 'appear_chance': 0.8, 'desc': '🎟️ +10 Vé nguyên bịch — thỏa sức cày Đoán Quốc Gia.\n💪 Full combo cả 3 minigame không lo hết vé.'},
     'deion_5': {'emoji': '💰', 'name': 'Túi Deion (5)', 'currency': 'elo', 'price': 200, 'stock': 5, 'rarity': 'uncommon', 'appear_chance': 0.75, 'desc': '💸 Bán 200 Elo lấy 5 Deion — vay nóng lãi cắt cổ nhưng tự nguyện.\n🏦 Tín dụng đen phiên bản cờ vua, không ai ép bạn cả.'},
     'shield_timeout': {'emoji': '🛡️', 'name': 'Khiên Hết Giờ', 'currency': 'deion', 'price': 4, 'stock': 3, 'rarity': 'uncommon', 'appear_chance': 0.75, 'desc': '🎯 Dùng 1 lần — cộng free 60 giây để nghĩ nước đi cho thiên tài chậm tiêu.\n🐢 Rùa cũng có ngày về đích, miễn là mua đủ khiên.'},
     'trong_tai': {'emoji': '⚖️', 'name': 'Trọng Tài Chess (PvP)', 'currency': 'deion', 'price': 5, 'stock': 3, 'rarity': 'uncommon', 'appear_chance': 0.6, 'desc': '🎯 Dùng 1 lần — mua đứt ông trọng tài trận PvP tiếp theo.\n🛡️ Thổi còi thiên vị bạn công khai giữa thanh thiên bạch nhật.\n🤫 "Đây là quyết định cuối cùng, không khiếu nại" — trọng tài, vừa nhận phong bì.'},
@@ -340,6 +343,12 @@ def shop_buy(user_id, item_key):
         buffs['shield_timeout'] += 1
     elif item_key == 'chess_slot':
         daily_add_slot('chess_bot', user_id)
+    elif item_key == 've_1':
+        _ext.add_ve(user_id, 1)
+    elif item_key == 've_5':
+        _ext.add_ve(user_id, 5)
+    elif item_key == 've_10':
+        _ext.add_ve(user_id, 10)
     elif item_key == 'mango_mustard':
         add_deion(user_id, 0.5)
     elif item_key == 'ronaldo_pasta':
@@ -379,6 +388,9 @@ def shop_consume_shield_timeout(user_id):
 def shop_inventory_text(user_id):
     buffs = _get_buffs(user_id)
     lines = []
+    ve_count = _ext.get_ve(user_id)
+    if ve_count > 0:
+        lines.append(f'🎟️ Vé: còn **{ve_count}**')
     if buffs['cu_cai'] > 0:
         lines.append(f"🥕 Củ Cải: còn **{buffs['cu_cai']}**")
     if buffs['trong_tai'] > 0:
@@ -971,3 +983,7 @@ def top_elo(n=10):
     items = [(uid, elo) for uid, elo in _elo_cache.items() if uid != BOT_OWNER_ID]
     items.sort(key=lambda x: x[1], reverse=True)
     return items[:n]
+
+# Wordle / Minesweeper / Guess-country + hệ thống Vé riêng — xem games_ext.py
+from games_ext import *  # noqa: F401,F403
+import games_ext as _ext
