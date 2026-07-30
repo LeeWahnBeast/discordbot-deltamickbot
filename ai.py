@@ -381,8 +381,15 @@ async def maybe_send_auto_message(channel):
     history_msgs = await fetch_recent_history(channel, limit=HISTORY_LIMIT)
     if not history_msgs:
         return
-    # Chỉ chủ động nhắn nếu gần đây có người (không phải bot) đã nói chuyện
-    if not any(not m.author.bot for m in history_msgs):
+    # Chỉ chủ động nhắn nếu người dùng THẬT (không phải bot) có nhắn trong
+    # vòng AUTO_CHAT_INTERVAL_SECONDS (mặc định 15 phút) gần nhất — kiểm tra
+    # đúng mốc thời gian của tin nhắn gần nhất, không chỉ "có tồn tại" trong lịch sử.
+    real_user_msgs = [m for m in history_msgs if not m.author.bot]
+    if not real_user_msgs:
+        return
+    last_real_msg = real_user_msgs[-1]
+    last_real_ts = last_real_msg.created_at.timestamp()
+    if now - last_real_ts > AUTO_CHAT_INTERVAL_SECONDS:
         return
 
     text = await generate_reply(channel)
