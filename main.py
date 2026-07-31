@@ -397,6 +397,12 @@ class ChessToView(ChessTimeoutView):
 async def ping_slash(interaction: discord.Interaction):
     await interaction.response.send_message(f'🏓 Pong! ({round(bot.latency * 1000)}ms)')
 
+@bot.tree.command(name='random_elliot_sigma', description='🗿 Random 1 câu nói huyền thoại')
+async def random_elliot_sigma_slash(interaction: discord.Interaction):
+    phrase = gx.random_elliot_sigma()
+    embed = discord.Embed(description=f'🗿 **{phrase}**', color=15844367)
+    await interaction.response.send_message(embed=embed)
+
 class ChessDifficultyView(discord.ui.View):
 
     def __init__(self, cid, player_id):
