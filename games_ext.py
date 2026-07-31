@@ -872,6 +872,7 @@ ELLIOT_SIGMA_PHRASES = [
     'Tao bú sữa mẹ',
     '7 học',
     'Son',
+    'Ăn cứt chó',
 ]
 
 def random_elliot_sigma():
