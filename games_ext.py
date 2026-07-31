@@ -872,9 +872,50 @@ ELLIOT_SIGMA_PHRASES = [
     'Tao bú sữa mẹ',
     '7 học',
     'Son',
+    'Im đi',
     'Ăn cứt chó',
 ]
 
 def random_elliot_sigma():
     return random.choice(ELLIOT_SIGMA_PHRASES)
+
+
+# ============================================================
+# 🎰 JACKPOT — cược Deion, cược càng cao càng dễ thua
+# ============================================================
+JACKPOT_MIN_BET = 0.1
+# (ngưỡng cược, tỉ lệ thắng) — cược càng cao thì rơi vào ngưỡng tỉ lệ thắng càng thấp
+JACKPOT_TIERS = [
+    (1, 0.50),
+    (3, 0.42),
+    (7, 0.34),
+    (15, 0.24),
+    (30, 0.16),
+]
+JACKPOT_FLOOR_CHANCE = 0.08  # cược siêu to vẫn còn tí máu, không về mo
+JACKPOT_PAYOUT_MULT = 0.8  # thắng thì lời thêm 80% tiền cược
+
+def jackpot_win_chance(bet):
+    for threshold, chance in JACKPOT_TIERS:
+        if bet <= threshold:
+            return chance
+    return JACKPOT_FLOOR_CHANCE
+
+def jackpot_play(user_id, bet):
+    """Trả (ok, reason, won, win_chance, new_balance, payout)."""
+    balance = _g.get_deion(user_id)
+    if bet is None or bet < JACKPOT_MIN_BET:
+        return (False, f'❌ Cược tối thiểu là **{JACKPOT_MIN_BET} Deion** thôi bạn êi, làm gì có ai cược 0 đồng 🤨', False, 0, balance, 0)
+    if bet > balance:
+        return (False, f'❌ Cược **{bet} Deion** mà ví có **{balance}**? Xạo lồn vừa thôi 🤡 lấy đâu ra mà cược dữ vậy', False, 0, balance, 0)
+    win_chance = jackpot_win_chance(bet)
+    won = random.random() < win_chance
+    if won:
+        payout = round(bet * JACKPOT_PAYOUT_MULT, 2)
+        new_balance = _g.add_deion(user_id, payout)
+    else:
+        payout = round(bet, 2)
+        new_balance = _g.add_deion(user_id, -bet)
+        _g.add_deion(_g.TAX_RECIPIENT_ID, bet)  # nhà cái (chủ bot) ẵm trọn, không ai thoát
+    return (True, None, won, win_chance, new_balance, payout)
 
