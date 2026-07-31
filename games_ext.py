@@ -443,6 +443,38 @@ def _mine_font(size, bold=True):
             continue
     return ImageFont.load_default()
 
+def _draw_mini_bomb(draw, cx, cy, radius=7, color=(20, 20, 20)):
+    """Vẽ icon quả bom nhỏ bằng hình khối (không dùng emoji vì font không hỗ trợ)."""
+    draw.ellipse([cx - radius, cy - radius, cx + radius, cy + radius], fill=color)
+    fx0, fy0 = cx + radius * 0.55, cy - radius * 0.55
+    fx1, fy1 = cx + radius * 1.4, cy - radius * 1.4
+    draw.line([fx0, fy0, fx1, fy1], fill=(120, 80, 40), width=2)
+    draw.ellipse([fx1 - 3, fy1 - 3, fx1 + 3, fy1 + 3], fill=(255, 180, 60))
+    draw.ellipse([cx - radius * 0.45, cy - radius * 0.45, cx - radius * 0.1, cy - radius * 0.1], fill=(255, 255, 255))
+
+def _draw_face(draw, cx, cy, radius, state):
+    """Vẽ mặt trạng thái (happy/win/dead) bằng hình khối thay vì emoji."""
+    bg = (250, 210, 90) if state != 'dead' else (230, 90, 90)
+    draw.ellipse([cx - radius, cy - radius, cx + radius, cy + radius], fill=bg, outline=(60, 60, 60), width=2)
+    eye_dx, eye_dy, eye_r = radius * 0.35, radius * 0.15, radius * 0.14
+    if state == 'dead':
+        for sign in (-1, 1):
+            ex, ey = cx + sign * eye_dx, cy - eye_dy
+            draw.line([ex - eye_r, ey - eye_r, ex + eye_r, ey + eye_r], fill=(30, 30, 30), width=2)
+            draw.line([ex - eye_r, ey + eye_r, ex + eye_r, ey - eye_r], fill=(30, 30, 30), width=2)
+        draw.arc([cx - radius * 0.5, cy + radius * 0.05, cx + radius * 0.5, cy + radius * 0.75], start=200, end=340, fill=(30, 30, 30), width=2)
+    elif state == 'win':
+        for sign in (-1, 1):
+            ex = cx + sign * eye_dx
+            draw.rectangle([ex - eye_r * 1.5, cy - eye_dy - eye_r, ex + eye_r * 1.5, cy - eye_dy + eye_r], fill=(20, 20, 20))
+        draw.line([cx - eye_dx * 0.5, cy - eye_dy, cx + eye_dx * 0.5, cy - eye_dy], fill=(20, 20, 20), width=2)
+        draw.arc([cx - radius * 0.5, cy - radius * 0.15, cx + radius * 0.5, cy + radius * 0.45], start=20, end=160, fill=(30, 30, 30), width=2)
+    else:
+        for sign in (-1, 1):
+            ex, ey = cx + sign * eye_dx, cy - eye_dy
+            draw.ellipse([ex - eye_r, ey - eye_r, ex + eye_r, ey + eye_r], fill=(30, 30, 30))
+        draw.arc([cx - radius * 0.5, cy - radius * 0.15, cx + radius * 0.5, cy + radius * 0.45], start=20, end=160, fill=(30, 30, 30), width=2)
+
 def minesweeper_board_image(cid, user_id):
     game = _mine_games[_mine_key(cid, user_id)]
     rows, cols = game['rows'], game['cols']
@@ -459,18 +491,19 @@ def minesweeper_board_image(cid, user_id):
     bombs_placed = game['bombs'] if game['bombs'] is not None else set()
     remaining_bombs = game['bombs_count'] - len(game['flagged'])
     if game.get('won'):
-        face, header_color = '😎', (30, 150, 60)
+        face_state, header_color = 'win', (30, 150, 60)
     elif game.get('done'):
-        face, header_color = '💥', (200, 40, 40)
+        face_state, header_color = 'dead', (200, 40, 40)
     else:
-        face, header_color = '🙂', (30, 30, 30)
+        face_state, header_color = 'happy', (30, 30, 30)
 
-    # --- Header LCD-style: số bom còn lại + kích thước + mặt cười ---
-    draw.rounded_rectangle([_MINE_PAD, 8, _MINE_PAD + 78, 8 + 28], radius=6, fill=(15, 15, 15))
-    draw.text((_MINE_PAD + 10, 12), f'💣{max(0, remaining_bombs):03d}', font=header_font, fill=(255, 60, 60))
+    # --- Header LCD-style: số bom còn lại (icon vẽ tay) + kích thước + mặt trạng thái (icon vẽ tay) ---
+    draw.rounded_rectangle([_MINE_PAD, 8, _MINE_PAD + 80, 8 + 28], radius=6, fill=(15, 15, 15))
+    _draw_mini_bomb(draw, _MINE_PAD + 18, 22, radius=8, color=(230, 230, 230))
+    draw.text((_MINE_PAD + 30, 12), f'{max(0, remaining_bombs):03d}', font=header_font, fill=(255, 60, 60))
     size_label = f'{rows}x{cols}'
     draw.text((w - _MINE_PAD - len(size_label) * 10 - 6, 12), size_label, font=coord_font, fill=(90, 90, 90))
-    draw.text((w // 2 - 12, 8), face, font=header_font, fill=header_color)
+    _draw_face(draw, w // 2, 22, radius=14, state=face_state)
 
     # --- Toạ độ cột (A, B, C, ...) ---
     for c in range(cols):
@@ -825,4 +858,22 @@ def guess_language_answer(cid, user_id, choice_index):
     game['done'] = True
     correct = choice_index == game['correct_index']
     return (True, correct, game['entry']['answer'], game['entry']['note'])
+
+
+# ============================================================
+# 🗿 RANDOM ELLIOT SIGMA — random câu nói vui
+# ============================================================
+ELLIOT_SIGMA_PHRASES = [
+    'Tao mét mẹ bây giờ',
+    'Tao mồ côi',
+    'Rasio',
+    'Tuất',
+    'Tao là vị thần của mày',
+    'Tao bú sữa mẹ',
+    '7 học',
+    'Son',
+]
+
+def random_elliot_sigma():
+    return random.choice(ELLIOT_SIGMA_PHRASES)
 
