@@ -435,6 +435,32 @@ async def jackpot_slash(interaction: discord.Interaction, cuoc: float):
     embed.set_footer(text='📉 Cược càng cao thì % thắng càng thấp — tham thì thâm nha bạn ơi')
     await interaction.response.send_message(embed=embed)
 
+@bot.tree.command(name='create-code', description='🎫 Tự tạo code tặng Deion cho người khác — Deion trừ thẳng từ ví của mày mỗi khi có người nhập')
+@app_commands.describe(
+    ten='Tên code (không trùng code có sẵn)',
+    deion='Số Deion tặng MỖI lượt nhập (trừ thẳng từ ví của mày)',
+    thoihan='Thời hạn code, tính theo GIỜ (VD: 24 = 1 ngày)',
+    luot='Số lượt nhập tối đa (bỏ trống = không giới hạn, chỉ dừng khi hết hạn hoặc hết Deion)',
+)
+async def create_code_slash(interaction: discord.Interaction, ten: str, deion: float, thoihan: float, luot: int = None):
+    ok, reason = gx.create_custom_code(interaction.user.id, ten, deion, thoihan, luot)
+    if not ok:
+        await interaction.response.send_message(reason, ephemeral=True)
+        return
+    luot_text = f'{luot} lượt' if luot else 'không giới hạn lượt'
+    embed = discord.Embed(
+        title='🎫 TẠO CODE THÀNH CÔNG — RẢI ĐI THÔI 📢',
+        description=(
+            f'Tên code: **{ten.strip()}**\n'
+            f'{games.DEION_ICON} Mỗi lượt nhập: **{deion} Deion** (trừ thẳng từ ví của mày mỗi khi có người nhập)\n'
+            f'⏳ Hạn dùng: **{int(thoihan)} giờ** · 🔁 {luot_text}\n\n'
+            f'⚠️ Ví cạn Deion giữa chừng là code tự bay màu, người nhập sau sẽ thấy dòng "Hết Deion của người tạo code" đó nha 😤\n'
+            f'🙅 Mày tự tạo thì tự mày không nhập được code này đâu, đừng có lách luật.'
+        ),
+        color=15844367,
+    )
+    await interaction.response.send_message(embed=embed)
+
 class ChessDifficultyView(discord.ui.View):
 
     def __init__(self, cid, player_id):
@@ -1386,11 +1412,58 @@ class NhapCodeModal(discord.ui.Modal, title='Nhập Code Nhận Thưởng'):
     code_input = discord.ui.TextInput(label='Mã code (phân biệt hoa thường)', placeholder='VÍ DỤ: ChaoNgayMoiVuiVe')
 
     async def on_submit(self, interaction: discord.Interaction):
-        result = games.redeem_code(interaction.user.id, self.code_input.value)
+        code = self.code_input.value
+        found, ok, reason, amount = gx.redeem_custom_code(interaction.user.id, code)
+        if found:
+            if not ok:
+                await interaction.response.send_message(reason, ephemeral=True)
+                return
+            await interaction.response.send_message(f'🎁 Nhập code thành công! Nhận được: {games.DEION_ICON} +{amount} Deion (quà từ 1 người dùng khác tạo đó nha) 🎉', ephemeral=True)
+            return
+        # không phải custom code -> thử code hệ thống (REDEEM_CODES admin tạo)
+        result = games.redeem_code(interaction.user.id, code)
         if not result['ok']:
             await interaction.response.send_message(result['reason'], ephemeral=True)
             return
         await interaction.response.send_message(f"🎁 Nhập code thành công! Nhận được: {' , '.join(result['reward_lines'])}", ephemeral=True)
+
+class CreateCodeModal(discord.ui.Modal, title='Tạo Code Tặng Deion'):
+    ten_input = discord.ui.TextInput(label='Tên code', placeholder='VÍ DỤ: ChuaHoiThamGiDo', max_length=32)
+    deion_input = discord.ui.TextInput(label='Deion tặng mỗi lượt nhập', placeholder='VÍ DỤ: 1', max_length=10)
+    thoihan_input = discord.ui.TextInput(label='Thời hạn (giờ)', placeholder='VÍ DỤ: 24 (= 1 ngày)', max_length=6)
+    luot_input = discord.ui.TextInput(label='Số lượt nhập tối đa (bỏ trống = vô hạn)', placeholder='VÍ DỤ: 10 (không bắt buộc)', required=False, max_length=6)
+
+    async def on_submit(self, interaction: discord.Interaction):
+        try:
+            deion_amount = float(self.deion_input.value.strip().replace(',', '.'))
+        except ValueError:
+            await interaction.response.send_message('❌ Số Deion nhập sai định dạng rồi, ghi số thôi (VD: 1 hoặc 0.5).', ephemeral=True)
+            return
+        try:
+            hours = float(self.thoihan_input.value.strip().replace(',', '.'))
+        except ValueError:
+            await interaction.response.send_message('❌ Thời hạn nhập sai định dạng, ghi số giờ thôi (VD: 24).', ephemeral=True)
+            return
+        max_uses = None
+        raw_luot = self.luot_input.value.strip()
+        if raw_luot:
+            try:
+                max_uses = int(raw_luot)
+            except ValueError:
+                await interaction.response.send_message('❌ Số lượt nhập sai định dạng, ghi số nguyên thôi (VD: 10).', ephemeral=True)
+                return
+        ok, reason = gx.create_custom_code(interaction.user.id, self.ten_input.value, deion_amount, hours, max_uses)
+        if not ok:
+            await interaction.response.send_message(reason, ephemeral=True)
+            return
+        luot_text = f'{max_uses} lượt' if max_uses else 'không giới hạn lượt'
+        await interaction.response.send_message(
+            f'🎫 Tạo code **{self.ten_input.value.strip()}** thành công!\n'
+            f'{games.DEION_ICON} Mỗi lượt nhập: **{deion_amount} Deion** (trừ thẳng từ ví của mày mỗi khi có người nhập)\n'
+            f'⏳ Hạn dùng: **{int(hours)} giờ** · 🔁 {luot_text}\n\n'
+            f'📢 Đi rải code này cho thiên hạ nhập ở nút 🎁 Nhập Code trong `/tạp-hoá` nha, ví cạn thì code tự bay màu luôn đó 😤',
+            ephemeral=True,
+        )
 
 class TapHoaView(discord.ui.View):
     def __init__(self, user_id):
@@ -1402,6 +1475,12 @@ class TapHoaView(discord.ui.View):
         if await _deny_unless(interaction, interaction.user.id == self.user_id, '❌ Tạp hoá của người ta, bén mảng vào làm gì 🙅 tự `/tạp-hoá` cái riêng đi!'):
             return
         await interaction.response.send_modal(NhapCodeModal())
+
+    @discord.ui.button(label='🎫 Tạo Code', style=discord.ButtonStyle.success)
+    async def taocode_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if await _deny_unless(interaction, interaction.user.id == self.user_id, '❌ Tạp hoá của người ta, bén mảng vào làm gì 🙅 tự `/tạp-hoá` cái riêng đi!'):
+            return
+        await interaction.response.send_modal(CreateCodeModal())
 
     @discord.ui.button(label='🧾 Hóa Đơn', style=discord.ButtonStyle.secondary)
     async def hoadon_button(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -1452,6 +1531,7 @@ async def taphoa_slash(interaction: discord.Interaction):
         description=(
             'Chọn 1 trong các chức năng bên dưới, đừng đứng đó lù đù:\n\n'
             '🎁 **Nhập Code** — có mã thì đổi Deion lẹ đi\n'
+            '🎫 **Tạo Code** — tự chế code tặng Deion cho người khác\n'
             '🧾 **Hóa Đơn** — coi lại đã nướng bao nhiêu tiền\n'
             '🛒 **Shop** — vô đây mà quẹt thẻ (à nhầm, quẹt Deion)\n'
             '🎒 **Kho** — đồ/buff đang giữ trong người\n'
