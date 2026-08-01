@@ -24,7 +24,7 @@ _ve_cache = {uid: d.get('ve', 0) for uid, d in _g._firestore_load_collection('ve
 def get_ve(user_id):
     if user_id == _g.BOT_OWNER_ID:
         return _g.INFINITE_AMOUNT
-    return _ve_cache.get(user_id, 0)
+    return _ve_cache.get(user_id, 10)  # user mới toanh thì tặng sẵn 10 Vé cho có cái mà cày
 
 def add_ve(user_id, amount):
     if user_id == _g.BOT_OWNER_ID:
@@ -918,4 +918,111 @@ def jackpot_play(user_id, bet):
         new_balance = _g.add_deion(user_id, -bet)
         _g.add_deion(_g.TAX_RECIPIENT_ID, bet)  # nhà cái (chủ bot) ẵm trọn, không ai thoát
     return (True, None, won, win_chance, new_balance, payout)
+
+
+# ============================================================
+# 🎫 CUSTOM CODE — ai cũng tạo code được, deion trừ thẳng từ ví người tạo
+# ============================================================
+CUSTOM_CODE_FILE = 'custom_codes_data.json'
+_CUSTOM_CODE_DOC_ID = 0  # tất cả code gộp chung 1 "document" (vì code là chuỗi, không phải user_id)
+CUSTOM_CODE_NAME_MAX_LEN = 32
+CUSTOM_CODE_MAX_HOURS = 24 * 30  # tối đa 30 ngày
+
+def _load_custom_codes():
+    data = _g._firestore_load_collection('custom_codes', CUSTOM_CODE_FILE)
+    return data.get(_CUSTOM_CODE_DOC_ID, {})
+
+_custom_codes = _load_custom_codes()
+
+def _save_custom_codes():
+    _g._firestore_save_doc('custom_codes', _CUSTOM_CODE_DOC_ID, _custom_codes)
+
+def create_custom_code(creator_id, name, deion_per_use, hours_valid, max_uses=None):
+    """Trả (ok, reason)."""
+    name = (name or '').strip()
+    if not name:
+        return (False, '❌ Đặt tên code đi chứ, để trống ai mà nhập được 🤨')
+    if len(name) > CUSTOM_CODE_NAME_MAX_LEN:
+        return (False, f'❌ Tên code dài quá, tối đa {CUSTOM_CODE_NAME_MAX_LEN} ký tự thôi bạn êi.')
+    if name in _custom_codes and not _custom_codes[name].get('disabled'):
+        return (False, f'❌ Code **{name}** có người tạo rồi và còn sống, đổi tên khác đi.')
+    if name in _g.REDEEM_CODES:
+        return (False, f'❌ Tên **{name}** trùng code hệ thống rồi, đổi tên khác đi bạn êi.')
+    if deion_per_use is None or deion_per_use <= 0:
+        return (False, '❌ Số Deion tặng mỗi lượt nhập phải lớn hơn 0 chớ.')
+    if hours_valid is None or hours_valid <= 0:
+        return (False, '❌ Thời hạn code phải lớn hơn 0 giờ.')
+    if hours_valid > CUSTOM_CODE_MAX_HOURS:
+        return (False, f'❌ Thời hạn tối đa là {CUSTOM_CODE_MAX_HOURS} giờ (30 ngày) thôi.')
+    if max_uses is not None and max_uses <= 0:
+        return (False, '❌ Số lượt nhập phải lớn hơn 0 (bỏ trống nếu muốn không giới hạn).')
+    balance = _g.get_deion(creator_id)
+    if balance < deion_per_use:
+        return (False, f'❌ Ví có **{balance} Deion** mà đòi tặng **{deion_per_use}**/lượt? Lấy đâu ra mà tạo code sang vậy 🤡')
+    now = time.time()
+    _custom_codes[name] = {
+        'creator_id': creator_id,
+        'deion': round(float(deion_per_use), 2),
+        'created_at': now,
+        'expires_at': now + hours_valid * 3600,
+        'max_uses': max_uses,
+        'used_by': [],
+        'disabled': False,
+        'disabled_reason': None,
+    }
+    _save_custom_codes()
+    return (True, None)
+
+def _custom_code_check_valid(name):
+    """Kiểm tra 1 code còn dùng được không, tự động vô hiệu hoá nếu hết hạn/hết deion/hết lượt.
+    Trả (entry_or_None, reason_neu_invalid_or_None)."""
+    entry = _custom_codes.get(name)
+    if entry is None:
+        return (None, None)
+    if entry.get('disabled'):
+        return (entry, f"❌ Code này đã bị vô hiệu hoá. Lý do: {entry.get('disabled_reason') or 'Không rõ'}")
+    if time.time() > entry['expires_at']:
+        entry['disabled'] = True
+        entry['disabled_reason'] = 'Hết hạn'
+        _save_custom_codes()
+        return (entry, '❌ Code này đã bị vô hiệu hoá. Lý do: Hết hạn')
+    if entry['max_uses'] is not None and len(entry['used_by']) >= entry['max_uses']:
+        entry['disabled'] = True
+        entry['disabled_reason'] = 'Đã hết lượt nhập'
+        _save_custom_codes()
+        return (entry, '❌ Code này đã bị vô hiệu hoá. Lý do: Đã hết lượt nhập')
+    creator_balance = _g.get_deion(entry['creator_id'])
+    if creator_balance < entry['deion']:
+        entry['disabled'] = True
+        entry['disabled_reason'] = 'Hết Deion của người tạo code'
+        _save_custom_codes()
+        return (entry, '❌ Code này đã bị vô hiệu hoá. Lý do: Hết Deion của người tạo code')
+    return (entry, None)
+
+def redeem_custom_code(user_id, name):
+    """
+    Trả (found, ok, reason, deion_amount).
+    found=False -> code này không tồn tại trong hệ thống custom code (để caller fallback qua REDEEM_CODES).
+    found=True, ok=False -> code có tồn tại nhưng không nhập được (kèm reason).
+    found=True, ok=True -> nhập thành công, deion_amount là số Deion nhận được.
+    """
+    name = (name or '').strip()
+    entry, invalid_reason = _custom_code_check_valid(name)
+    if entry is None:
+        return (False, False, None, None)
+    if invalid_reason:
+        return (True, False, invalid_reason, None)
+    if user_id == entry['creator_id']:
+        return (True, False, '❌ Code của mày tự tạo thì tự nhập làm gì, lừa bản thân à 🤡', None)
+    if user_id in entry['used_by']:
+        return (True, False, '❌ Nhập rồi còn nhập lại, tham vừa thôi 🙅', None)
+    amount = entry['deion']
+    _g.add_deion(entry['creator_id'], -amount)
+    _g.add_deion(user_id, amount)
+    entry['used_by'].append(user_id)
+    if entry['max_uses'] is not None and len(entry['used_by']) >= entry['max_uses']:
+        entry['disabled'] = True
+        entry['disabled_reason'] = 'Đã hết lượt nhập'
+    _save_custom_codes()
+    return (True, True, None, amount)
 
