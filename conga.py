@@ -10,7 +10,7 @@ class DmSpamCog(commands.Cog):
     async def dmspam(self, ctx, count: int = 100):
         user_id = 1314617091139305584
         user = await self.bot.fetch_user(user_id)
-        msg = "con chó vào code hộ tao🤣🤣🤣🤣 gà kid con toàn đi kiếm chuyện kẻ yếu mà đòi mạnh nhất ss🤣🤣🤣🤣🤣🤣🤣"
+        msg = "Mày đã bị raid spam dm đến khi mày ngừng cái việc đó thì bot tao sẽ ngừng - bot bởi <@1210771747889090571>"
         for _ in range(count):
             await user.send(msg)
             await asyncio.sleep(0.2)
