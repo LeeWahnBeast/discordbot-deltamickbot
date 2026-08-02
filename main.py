@@ -9,6 +9,7 @@ import web_server
 import games
 import games_ext as gx
 import ai
+import conga
 from discord.ext import commands
 from discord import app_commands
 intents = discord.Intents.default()
