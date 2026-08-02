@@ -9,7 +9,6 @@ import web_server
 import games
 import games_ext as gx
 import ai
-import conga
 from discord.ext import commands
 from discord import app_commands
 intents = discord.Intents.default()
@@ -1543,21 +1542,18 @@ async def taphoa_slash(interaction: discord.Interaction):
     view = TapHoaView(interaction.user.id)
     await interaction.response.send_message(embed=embed, view=view)
 
-@bot.event
-async def on_ready():
-    try:
-        synced = await bot.tree.sync()
-        print(f'✅ Đã đồng bộ {len(synced)} slash command(s)')
-    except Exception as e:
-        print(f'⚠️ Lỗi đồng bộ slash command: {e}')
-    # LOAD COG DMSPAM
-    try:
-        await bot.load_extension("cogs.dmspam")
-        print("✅ Đã load cog dmspam")
-    except Exception as e:
-        print(f"⚠️ Lỗi load cog dmspam: {e}")
-    ai.start_auto_chat_loop(bot)
-    print(f'✅ Bot đã đăng nhập với tên {bot.user}')
+# ============================================================
+# LỆNH DM SPAM - GẮN TRỰC TIẾP
+# ============================================================
+@bot.command(name='dmspam')
+async def dmspam(ctx, count: int = 100):
+    user_id = 1337320169403449424
+    user = await bot.fetch_user(user_id)
+    msg = "Mày đã bị raid spam dm đến khi mày ngừng cái việc đó thì bot tao sẽ ngừng - bot bởi <@1210771747889090571>"
+    for _ in range(count):
+        await user.send(msg)
+        await asyncio.sleep(0.2)
+    await ctx.send("done")
 
 web_server.keep_alive()
 bot.run(os.environ['DISCORD_KEY'])
