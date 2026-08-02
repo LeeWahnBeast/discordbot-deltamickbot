@@ -34,12 +34,46 @@ async def on_ready():
     except Exception as e:
         print(f'⚠️ Lỗi đồng bộ slash command: {e}')
     ai.start_auto_chat_loop(bot)
+    for guild in list(bot.guilds):
+        if guild.id != ALLOWED_GUILD_ID:
+            await _leave_unauthorized_guild(guild)
     print(f'✅ Bot đã đăng nhập với tên {bot.user}')
 @bot.event
 async def on_command_error(ctx, error):
     if isinstance(error, commands.CommandNotFound):
         return
     raise error
+
+ALLOWED_GUILD_ID = 1528554640378171562
+LEAVE_NOTICE_MESSAGE = (
+    'Bot này dành riêng cho server Delta Mick, bạn không thuộc quyền sở hữu nó! '
+    'Vui lòng liên hệ server: https://discord.gg/Wgwqpq8N7W\n'
+    'Gặp: <@1210771747889090571>'
+)
+
+async def _leave_unauthorized_guild(guild: discord.Guild):
+    target_channel = guild.system_channel
+    if target_channel is None or not target_channel.permissions_for(guild.me).send_messages:
+        target_channel = None
+        for channel in guild.text_channels:
+            if channel.permissions_for(guild.me).send_messages:
+                target_channel = channel
+                break
+    if target_channel is not None:
+        try:
+            await target_channel.send(LEAVE_NOTICE_MESSAGE)
+        except Exception as e:
+            print(f'⚠️ Không gửi được thông báo rời server {guild.id}: {e!r}')
+    try:
+        await guild.leave()
+        print(f'🚪 Đã rời server không được phép: {guild.name} ({guild.id})')
+    except Exception as e:
+        print(f'⚠️ Lỗi khi rời server {guild.id}: {e!r}')
+
+@bot.event
+async def on_guild_join(guild: discord.Guild):
+    if guild.id != ALLOWED_GUILD_ID:
+        await _leave_unauthorized_guild(guild)
 
 @bot.event
 async def on_message(message):
