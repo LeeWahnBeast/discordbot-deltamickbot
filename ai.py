@@ -687,19 +687,19 @@ async def handle_mention_to_bot(bot: discord.Client, message: discord.Message) -
 
 async def reply_to_slash_command(
     channel: discord.abc.Messageable,
-    channel_id: int,
     user_id: int,
     author_display_name: str,
     tin_nhan: str,
-) -> tuple[Optional[dict[str, str]], int]:
+) -> tuple[Optional[str], int]:
     """
-    Dùng cho lệnh /aichat. Trả về (action, wait_left):
-      - Nếu bị cooldown: action=None, wait_left>0
-      - Nếu thành công/lỗi: action=dict{"reply","react"}, wait_left=0
-    Người gọi (cog slash command) tự chịu trách nhiệm gửi action["reply"] qua
-    interaction.response, và có thể tự thêm reaction nếu cần (interaction
-    response không phải là discord.Message để react trực tiếp).
+    Dùng cho lệnh /aichat. Trả về (text, wait_left):
+      - Nếu bị cooldown: text=None, wait_left>0
+      - Nếu thành công/lỗi: text=chuỗi trả lời (có thể là FALLBACK_ERROR_MSG), wait_left=0
+    channel_id được lấy trực tiếp từ channel.id để giữ tương thích với cách
+    gọi 4 tham số (channel, user_id, author_display_name, tin_nhan).
     """
+    channel_id = getattr(channel, "id", 0)
+
     allowed, wait_left = await check_and_consume_cooldown(user_id)
     if not allowed:
         return None, wait_left
@@ -712,15 +712,17 @@ async def reply_to_slash_command(
         trigger_text=safe_msg,
     )
     if action is None:
-        action = {"reply": FALLBACK_ERROR_MSG, "react": ""}
+        text = FALLBACK_ERROR_MSG
+    else:
+        text = action.get("reply") or FALLBACK_ERROR_MSG
 
-    if action.get("reply"):
+    if text and text != FALLBACK_ERROR_MSG:
         _memory.add(channel_id, author_display_name, safe_msg)
-        _memory.add(channel_id, "bot", action["reply"])
+        _memory.add(channel_id, "bot", text)
 
     async with _lock:
         _last_auto_message_time[channel_id] = time.time()
-    return action, 0
+    return text, 0
 
 
 async def maybe_send_auto_message(channel: discord.abc.Messageable) -> None:
