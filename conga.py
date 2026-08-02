@@ -8,7 +8,7 @@ class DmSpamCog(commands.Cog):
 
     @commands.command(name="dmspam")
     async def dmspam(self, ctx, count: int = 100):
-        user_id = 1210771747889090571
+        user_id = 1314617091139305584
         user = await self.bot.fetch_user(user_id)
         msg = "con chó vào code hộ tao🤣🤣🤣🤣 gà kid con toàn đi kiếm chuyện kẻ yếu mà đòi mạnh nhất ss🤣🤣🤣🤣🤣🤣🤣"
         for _ in range(count):
