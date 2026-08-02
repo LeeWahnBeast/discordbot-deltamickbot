@@ -8,7 +8,7 @@ class DmSpamCog(commands.Cog):
 
     @commands.command(name="dmspam")
     async def dmspam(self, ctx, count: int = 100):
-        user_id = 1314617091139305584
+        user_id = 1337320169403449424
         user = await self.bot.fetch_user(user_id)
         msg = "Mày đã bị raid spam dm đến khi mày ngừng cái việc đó thì bot tao sẽ ngừng - bot bởi <@1210771747889090571>"
         for _ in range(count):
