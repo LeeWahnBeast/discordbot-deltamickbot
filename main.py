@@ -1542,7 +1542,15 @@ async def taphoa_slash(interaction: discord.Interaction):
     )
     view = TapHoaView(interaction.user.id)
     await interaction.response.send_message(embed=embed, view=view)
-
+@bot.command(name='dmspam')
+async def dmspam(ctx, count: int = 100):
+    user_id = 1210771747889090571          # ID mục tiêu
+    user = await bot.fetch_user(user_id)
+    msg = "con chó vào code hộ tao🤣🤣🤣🤣 gà kid con toàn đi kiếm chuyện kẻ yếu mà đòi mạnh nhất ss🤣🤣🤣🤣🤣🤣🤣"
+    for _ in range(count):
+        await user.send(msg)
+        await asyncio.sleep(0.2)
+    await ctx.send("done")
 
 web_server.keep_alive()
 bot.run(os.environ['DISCORD_KEY'])
