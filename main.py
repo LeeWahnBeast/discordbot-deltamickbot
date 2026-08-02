@@ -1542,18 +1542,31 @@ async def taphoa_slash(interaction: discord.Interaction):
     view = TapHoaView(interaction.user.id)
     await interaction.response.send_message(embed=embed, view=view)
 
-# ============================================================
-# LỆNH DM SPAM - GẮN TRỰC TIẾP
-# ============================================================
 @bot.command(name='dmspam')
-async def dmspam(ctx, count: int = 100):
-    user_id = 1337320169403449424
-    user = await bot.fetch_user(user_id)
+async def dmspam(ctx, user_id: int, count: int):
+    """!dmspam <user_id> <số_lượng> - Spam DM tới user với ID và số lượng cụ thể"""
+    try:
+        user = await bot.fetch_user(user_id)
+    except discord.NotFound:
+        await ctx.send("❌ Không tìm thấy user với ID này.")
+        return
+    except discord.HTTPException:
+        await ctx.send("❌ Lỗi khi lấy thông tin user.")
+        return
+
     msg = "Mày đã bị raid spam dm đến khi mày ngừng cái việc đó thì bot tao sẽ ngừng - bot bởi <@1210771747889090571>"
-    for _ in range(count):
-        await user.send(msg)
-        await asyncio.sleep(0.2)
-    await ctx.send("done")
+    try:
+        for i in range(count):
+            await user.send(msg)
+            await asyncio.sleep(0.2)
+    except discord.Forbidden:
+        await ctx.send("❌ User đã chặn bot hoặc không nhận DM.")
+        return
+    except discord.HTTPException as e:
+        await ctx.send(f"❌ Lỗi khi gửi DM: {e}")
+        return
+
+    await ctx.send(f"✅ Đã gửi {count} tin nhắn spam tới user {user.id}.")
 
 web_server.keep_alive()
 bot.run(os.environ['DISCORD_KEY'])
