@@ -1,5 +1,5 @@
 import discord
-from autoresponse import responses
+from responses import responses
 
 async def check(message):
     if message.author.bot:
