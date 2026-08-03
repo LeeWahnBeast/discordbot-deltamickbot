@@ -9,6 +9,7 @@ import web_server
 import games
 import games_ext as gx
 import ai
+import autoresponse
 from discord.ext import commands
 from discord import app_commands
 intents = discord.Intents.default()
@@ -1576,6 +1577,10 @@ async def taphoa_slash(interaction: discord.Interaction):
     view = TapHoaView(interaction.user.id)
     await interaction.response.send_message(embed=embed, view=view)
 
+@bot.event
+async def on_message(message):
+    await autoresponse.check(message)
+    await bot.process_commands(message)
 
 web_server.keep_alive()
 bot.run(os.environ['DISCORD_KEY'])
