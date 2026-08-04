@@ -780,13 +780,17 @@ def chess_outcome_text(cid, outcome, display_names=None):
         score_player = 1 if outcome.winner == player_color else 0
     new_player_elo, _, d_player, _ = update_elo(player_id, player_elo, None, game['bot_elo'], score_player)
     sign = f'+{d_player}' if d_player >= 0 else str(d_player)
+    ve_line = ''
     if outcome.winner is None:
         result_line = '🤝 Hòa!'
     elif score_player == 1:
         result_line = '🎉 Bạn thắng! Bot chịu thua.'
+        _, ve = _ext.award_win('chess_bot', player_id, deion_mult=0)
+        new_bal = add_deion(player_id, 0.5)
+        ve_line = f'\n{DEION_ICON} +0.5 Deion, {_ext.VE_ICON} +{ve} Vé (số dư: {new_bal}).'
     else:
         result_line = '🤖 Bot chiếu bí! Bạn thua rồi.'
-    return f'{result_line}\n\nElo của bạn: {new_player_elo} ({sign})'
+    return f'{result_line}\n\nElo của bạn: {new_player_elo} ({sign}){ve_line}'
 
 def chess_resign_text(cid, resigner_id, display_names=None):
     game = _chess_games[cid]
