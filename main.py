@@ -96,7 +96,45 @@ async def on_message(message):
                 return
         except Exception as e:
             print(f'⚠️ Lỗi xử lý AI chat mention (channel {cid}): {e!r}')
+    try:
+        result, q = gx.quest_check_message(message.author.id, content, bool(message.mentions))
+        if result == 'completed':
+            await message.channel.send(f'🎉 <@{message.author.id}> đã hoàn thành nhiệm vụ! +{gx.QUEST_REWARD_DEION} {games.DEION_ICON} Deion. Gõ `/quest` để nhận nv mới!')
+        elif result == 'progress':
+            await message.add_reaction('✅')
+    except Exception as e:
+        print(f'⚠️ Lỗi quest on_message: {e!r}')
+    try:
+        await autoresponse.check(message)
+    except Exception as e:
+        print(f'⚠️ Lỗi autoresponse: {e!r}')
     await bot.process_commands(message)
+
+@bot.event
+async def on_app_command_completion(interaction: discord.Interaction, command):
+    try:
+        result, q = gx.quest_check_command(interaction.user.id)
+        if result == 'completed':
+            try:
+                await interaction.followup.send(f'🎉 Bạn vừa hoàn thành nhiệm vụ "sài lệnh ngẫu nhiên"! +{gx.QUEST_REWARD_DEION} {games.DEION_ICON} Deion. Gõ `/quest` để nhận nv mới!', ephemeral=True)
+            except discord.HTTPException:
+                pass
+    except Exception as e:
+        print(f'⚠️ Lỗi quest on_app_command_completion: {e!r}')
+
+@bot.tree.command(name='quest', description='📜 Xem nhiệm vụ hiện tại & tiến độ — hoàn thành nhận 10 Deion')
+async def quest_slash(interaction: discord.Interaction):
+    q = gx.quest_get(interaction.user.id)
+    embed = discord.Embed(
+        title='📜 NHIỆM VỤ HIỆN TẠI',
+        description=(
+            f'{gx.quest_desc(q["type"])}\n\n'
+            f'Tiến độ: {gx.quest_bar(q["progress"])}\n\n'
+            f'🎁 Hoàn thành nhận: **+{gx.QUEST_REWARD_DEION}** {games.DEION_ICON} Deion'
+        ),
+        color=3447003,
+    )
+    await interaction.response.send_message(embed=embed)
 
 async def _get_display_name_no_ping(user_id):
     user = bot.get_user(user_id)
@@ -448,11 +486,12 @@ async def jackpot_slash(interaction: discord.Interaction, cuoc: float):
         return
     chance_pct = round(win_chance * 100)
     if won:
+        _, ve = gx.award_win('jackpot', uid, deion_mult=0)
         embed = discord.Embed(
             title='🎰 JACKPOT NỔ HŨ RỒI ĐÓ THÁNH 🤑🔥',
             description=(
                 f'Cược **{cuoc} Deion**, tỉ lệ thắng có **{chance_pct}%** thôi mà mày trúng thiệt 😳\n\n'
-                f'{games.DEION_ICON} **+{payout} Deion** (số dư: **{new_balance}**)\n\n'
+                f'{games.DEION_ICON} **+{payout} Deion**, {gx.VE_ICON} +{ve} Vé (số dư: **{new_balance}**)\n\n'
                 f'🍀 Số hưởng dữ vậy đi mua vé số đi, đừng chơi bot nữa 💅'
             ),
             color=3066993,
@@ -747,25 +786,27 @@ def _shop_page_count():
     total = len(games.shop_list())
     return max(1, -(-total // SHOP_ITEMS_PER_PAGE))
 
+_RARITY_TAG = {'common': '⚪ Thường', 'rare': '🔵 Hiếm', 'epic': '🟣 Cực hiếm', 'legendary': '🟠 Huyền thoại', 'mythic': '🔴 Thần thoại'}
+
 def _shop_embed(page=0):
     remain = games.shop_seconds_until_restock()
     m, s = divmod(remain, 60)
     total_pages = _shop_page_count()
-    lines = ['> 🕒 Restock mỗi 5 phút, học hỏi tinh hoa từ Grow a Garden — nhanh tay kẻo hết, chậm tay ăn cám.', '', '╭────────────────────────────╮', '🛍️ Gian Hàng Bán Danh Dự', '╰────────────────────────────╯', '']
+    embed = discord.Embed(
+        title='🛍️ DELTA SHOP',
+        description=f'🕒 Restock mỗi 5 phút · Tiếp theo sau **{m}:{s:02d}**\n*"Tiền không mua được hạnh phúc... nhưng mua được Elo."* 🥕',
+        color=3066993,
+    )
     for key in _shop_page_keys(page):
         item = games.shop_list()[key]
         currency_label = 'Deion' if item['currency'] == 'deion' else 'Elo'
         stock = games.shop_stock_left(key)
-        stock_line = f'📦 Còn lại: **{stock}**' if stock > 0 else '📦 **CHÁY HÀNG** (dân tình gom sạch rồi)'
-        lines.append(f"{item['emoji']} **{item['name']}**")
-        lines.append(f"> 💰 Giá: {item['price']} {currency_label}  |  {stock_line}")
-        for l in item['desc'].split('\n'):
-            lines.append(f'> {l}')
-        lines.append('')
-    lines.append(f'⏰ Restock tiếp theo sau: **{m}:{s:02d}** — ráng chờ hoặc ráng nghèo.')
-    lines.append('')
-    lines.append('*"Tiền không mua được hạnh phúc... nhưng mua được Elo, mà Elo còn đáng giá hơn hạnh phúc."* 🥕🥶')
-    embed = discord.Embed(title=f'🛒 Delta Shop (trang {page + 1}/{total_pages})', description='\n'.join(lines), color=3066993)
+        stock_line = f'📦 Còn **{stock}**' if stock > 0 else '📦 **CHÁY HÀNG**'
+        rarity = _RARITY_TAG.get(item.get('rarity'), '')
+        desc_short = item['desc'].split(chr(10))[0]
+        value = f"💰 **{item['price']}** {currency_label}  ·  {stock_line}  ·  {rarity}\n{desc_short}"
+        embed.add_field(name=f"{item['emoji']} {item['name']}", value=value, inline=False)
+    embed.set_footer(text=f'Trang {page + 1}/{total_pages} · Chọn vật phẩm ở menu dưới để mua')
     return embed
 
 class ShopView(discord.ui.View):
@@ -922,9 +963,9 @@ class WordleGuessModal(discord.ui.Modal, title='Đoán từ Wordle (5 chữ)'):
             board = gx.wordle_render(self.cid, self.user_id)
             gx.wordle_end(self.cid, self.user_id)
             if won:
-                reward = gx.GAME_WIN_REWARD['wordle']
-                new_balance = games.add_deion(self.user_id, reward)
-                text = f'🎉 **CHÍNH XÁC!** Bạn đoán đúng từ **{answer}**!\n\n{board}\n\n{games.DEION_ICON} +{reward} Deion (số dư: {new_balance})'
+                reward, ve = gx.award_win('wordle', self.user_id)
+                new_balance = games.get_deion(self.user_id)
+                text = f'🎉 **CHÍNH XÁC!** Bạn đoán đúng từ **{answer}**!\n\n{board}\n\n{games.DEION_ICON} +{reward} Deion, {gx.VE_ICON} +{ve} Vé (số dư: {new_balance})'
             else:
                 text = f'💀 Hết lượt rồi! Từ đúng là **{answer}**.\n\n{board}'
             await interaction.response.edit_message(content=text, view=None)
@@ -1035,9 +1076,9 @@ class MinesweeperMoveModal(discord.ui.Modal, title='Nhập nước đi Minesweep
             await interaction.response.edit_message(embed=embed, attachments=[file], view=None)
         elif won:
             gx.minesweeper_end(cid, uid)
-            reward = gx.GAME_WIN_REWARD['minesweeper']
-            new_balance = games.add_deion(uid, reward)
-            embed = discord.Embed(description=f'🎉 **QUÁ ĐỈNH, GỠ SẠCH MÌN LUÔN!** 🧠✨\n\n{games.DEION_ICON} +{reward} Deion (số dư: {new_balance})', color=3066993)
+            reward, ve = gx.award_win('minesweeper', uid)
+            new_balance = games.get_deion(uid)
+            embed = discord.Embed(description=f'🎉 **QUÁ ĐỈNH, GỠ SẠCH MÌN LUÔN!** 🧠✨\n\n{games.DEION_ICON} +{reward} Deion, {gx.VE_ICON} +{ve} Vé (số dư: {new_balance})', color=3066993)
             embed.set_image(url='attachment://mine.png')
             await interaction.response.edit_message(embed=embed, attachments=[file], view=None)
         else:
@@ -1134,10 +1175,10 @@ class CountryGuessModal(discord.ui.Modal, title='Đoán tên quốc gia'):
             return
         if won:
             gx.guess_country_end(self.cid, self.user_id)
-            reward = gx.GAME_WIN_REWARD['guess_country']
-            new_balance = games.add_deion(self.user_id, reward)
+            reward, ve = gx.award_win('guess_country', self.user_id)
+            new_balance = games.get_deion(self.user_id)
             flag = gx.guess_country_flag(answer)
-            result_line = f'🎉 **CHUẨN LUÔN ĐÓ THÁNH!** Đáp án là {flag} **{answer}**! 🔥\n\n{games.DEION_ICON} +{reward} Deion (số dư: {new_balance})'
+            result_line = f'🎉 **CHUẨN LUÔN ĐÓ THÁNH!** Đáp án là {flag} **{answer}**! 🔥\n\n{games.DEION_ICON} +{reward} Deion, {gx.VE_ICON} +{ve} Vé (số dư: {new_balance})'
             embed = _country_embed([], result_line=result_line, color=3066993)
             await interaction.response.edit_message(embed=embed, content=None, view=None)
             return
@@ -1249,9 +1290,9 @@ class MemeGuessModal(discord.ui.Modal, title='Đoán tên meme'):
         if won:
             url = gx.guess_meme_url(self.cid, self.user_id)
             gx.guess_meme_end(self.cid, self.user_id)
-            reward = gx.GAME_WIN_REWARD['guess_meme']
-            new_balance = games.add_deion(self.user_id, reward)
-            result_line = f'🎉 **XỊN QUÁ TRỜI, ĐÚNG PHÓC!** Đây là meme **{answer}** đó 🔥\n\n{games.DEION_ICON} +{reward} Deion (số dư: {new_balance})'
+            reward, ve = gx.award_win('guess_meme', self.user_id)
+            new_balance = games.get_deion(self.user_id)
+            result_line = f'🎉 **XỊN QUÁ TRỜI, ĐÚNG PHÓC!** Đây là meme **{answer}** đó 🔥\n\n{games.DEION_ICON} +{reward} Deion, {gx.VE_ICON} +{ve} Vé (số dư: {new_balance})'
             embed = _meme_embed('', result_line=result_line, color=3066993, image_url=url)
             await interaction.response.edit_message(embed=embed, view=None)
             return
@@ -1346,11 +1387,11 @@ def _lang_embed(sample, remaining, ve_note='', result_line=None, color=3447003):
     else:
         bar = _countdown_bar(remaining, gx.LANGUAGE_TIME_LIMIT)
         desc = (
-            f'Đoạn chữ dưới đây thuộc **loại chữ viết / ngôn ngữ** nào?\n\n'
+            f'Quốc gia này nói **ngôn ngữ chính thức** nào?\n\n'
             f'> **{sample}**\n\n'
             f'⏱️ {bar}  `{max(0, remaining)}s`{ve_note}'
         )
-    embed = discord.Embed(title='🈴 ĐOÁN CHỮ GÌ ĐÂY (lẹ tay lẹ mắt lên) 👀', description=desc, color=color)
+    embed = discord.Embed(title='🈴 GUESS-LANGUAGE: NƯỚC NÀY NÓI TIẾNG GÌ? 🌐', description=desc, color=color)
     embed.set_footer(text='Chọn 1 trong 4 đáp án bên dưới trước khi hết giờ, chậm là toang!')
     return embed
 
@@ -1381,9 +1422,9 @@ class LanguageView(discord.ui.View):
             gx.guess_language_end(self.cid, self.user_id)
             sample = self.sample
             if correct:
-                reward = gx.GAME_WIN_REWARD['guess_language']
-                new_balance = games.add_deion(interaction.user.id, reward)
-                result_line = f'🎉 **BÁ ĐẠO, ĐOÁN ĐÚNG PHÓC!** Đây là **{answer}**! 🧠🔥\n\n{note}\n\n{games.DEION_ICON} +{reward} Deion (số dư: {new_balance})'
+                reward, ve = gx.award_win('guess_language', interaction.user.id)
+                new_balance = games.get_deion(interaction.user.id)
+                result_line = f'🎉 **BÁ ĐẠO, ĐOÁN ĐÚNG PHÓC!** Đây là **{answer}**! 🧠🔥\n\n{note}\n\n{games.DEION_ICON} +{reward} Deion, {gx.VE_ICON} +{ve} Vé (số dư: {new_balance})'
                 embed = _lang_embed(sample, 0, result_line=result_line, color=3066993)
             else:
                 result_line = f'❌ **SAI TOÉT RỒI 🤡** Đáp án đúng là **{answer}** đó.\n\n{note}'
@@ -1432,12 +1473,13 @@ async def guess_language_slash(interaction: discord.Interaction):
         return
     entry, choices = gx.guess_language_start(cid, uid)
     ve_note = f'\n_(Đã dùng {gx.GAME_VE_COST["guess_language"]} 🎟️ Vé vì hết lượt free hôm nay)_' if note == 've' else ''
-    view = LanguageView(cid, uid, choices, entry['sample'])
-    embed = _lang_embed(entry['sample'], gx.LANGUAGE_TIME_LIMIT, ve_note=ve_note)
+    sample = f"{entry['flag']} {entry['country']}"
+    view = LanguageView(cid, uid, choices, sample)
+    embed = _lang_embed(sample, gx.LANGUAGE_TIME_LIMIT, ve_note=ve_note)
     await interaction.response.send_message(embed=embed, view=view)
     msg = await interaction.original_response()
     view.message = msg
-    asyncio.create_task(_language_countdown(msg, view, cid, uid, entry['sample'], ve_note))
+    asyncio.create_task(_language_countdown(msg, view, cid, uid, sample, ve_note))
 
 
 # ============================================================
@@ -1576,11 +1618,6 @@ async def taphoa_slash(interaction: discord.Interaction):
     )
     view = TapHoaView(interaction.user.id)
     await interaction.response.send_message(embed=embed, view=view)
-
-@bot.event
-async def on_message(message):
-    await autoresponse.check(message)
-    await bot.process_commands(message)
 
 web_server.keep_alive()
 bot.run(os.environ['DISCORD_KEY'])
