@@ -97,11 +97,9 @@ async def on_message(message):
         except Exception as e:
             print(f'⚠️ Lỗi xử lý AI chat mention (channel {cid}): {e!r}')
     try:
-        result, q = gx.quest_check_message(message.author.id, content, bool(message.mentions))
-        if result == 'completed':
-            await message.channel.send(f'🎉 <@{message.author.id}> đã hoàn thành nhiệm vụ! +{gx.QUEST_REWARD_DEION} {games.DEION_ICON} Deion. Gõ `/quest` để nhận nv mới!')
-        elif result == 'progress':
-            await message.add_reaction('✅')
+        completed = gx.quest_check_message(message.author.id, content, bool(message.mentions))
+        for slot in completed:
+            await message.channel.send(f'🎉 <@{message.author.id}> đã hoàn thành nhiệm vụ **{slot["id"]}**! +{gx.QUEST_REWARD_DEION} {games.DEION_ICON} Deion. Gõ `/quest` xem tiến độ!')
     except Exception as e:
         print(f'⚠️ Lỗi quest on_message: {e!r}')
     try:
@@ -113,28 +111,47 @@ async def on_message(message):
 @bot.event
 async def on_app_command_completion(interaction: discord.Interaction, command):
     try:
-        result, q = gx.quest_check_command(interaction.user.id)
-        if result == 'completed':
+        completed = gx.quest_check_command(interaction.user.id)
+        for slot in completed:
             try:
-                await interaction.followup.send(f'🎉 Bạn vừa hoàn thành nhiệm vụ "sài lệnh ngẫu nhiên"! +{gx.QUEST_REWARD_DEION} {games.DEION_ICON} Deion. Gõ `/quest` để nhận nv mới!', ephemeral=True)
+                await interaction.followup.send(f'🎉 Bạn vừa hoàn thành nhiệm vụ "sài lệnh ngẫu nhiên"! +{gx.QUEST_REWARD_DEION} {games.DEION_ICON} Deion. Gõ `/quest` xem tiến độ!', ephemeral=True)
             except discord.HTTPException:
                 pass
     except Exception as e:
         print(f'⚠️ Lỗi quest on_app_command_completion: {e!r}')
 
-@bot.tree.command(name='quest', description='📜 Xem nhiệm vụ hiện tại & tiến độ — hoàn thành nhận 10 Deion')
-async def quest_slash(interaction: discord.Interaction):
-    q = gx.quest_get(interaction.user.id)
-    embed = discord.Embed(
-        title='📜 NHIỆM VỤ HIỆN TẠI',
-        description=(
-            f'{gx.quest_desc(q["type"])}\n\n'
-            f'Tiến độ: {gx.quest_bar(q["progress"])}\n\n'
-            f'🎁 Hoàn thành nhận: **+{gx.QUEST_REWARD_DEION}** {games.DEION_ICON} Deion'
-        ),
-        color=3447003,
+def _quest_embed(user_id):
+    st = gx.quest_state(user_id)
+    lines = [f'{i + 1}. {gx.quest_desc_line(slot)}  {"✅" if slot["done"] else ""}' for i, slot in enumerate(st['slots'])]
+    reset_ts = gx.quest_reset_timestamp()
+    desc = (
+        'Quest hàng ngày:\n' + '\n'.join(lines) +
+        f'\n\nTiến độ:\n{gx.quest_bar(user_id)} ( kết thúc <t:{reset_ts}:R> )\n\n'
+        f'🎁 Mỗi nhiệm vụ hoàn thành: **+{gx.QUEST_REWARD_DEION}** {games.DEION_ICON} Deion'
     )
-    await interaction.response.send_message(embed=embed)
+    embed = discord.Embed(title='📜 NHIỆM VỤ HÔM NAY', description=desc, color=3447003)
+    if st['swapped']:
+        embed.set_footer(text='Đã dùng lượt đổi nhiệm vụ hôm nay')
+    return embed
+
+class QuestView(discord.ui.View):
+    def __init__(self, user_id):
+        super().__init__(timeout=120)
+        self.user_id = user_id
+
+    @discord.ui.button(label='🔄 Đổi nhiệm vụ (1 lần/ngày)', style=discord.ButtonStyle.secondary)
+    async def swap_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if await _deny_unless(interaction, interaction.user.id == self.user_id, '❌ Đây không phải quest của bạn!'):
+            return
+        ok = gx.quest_swap(self.user_id)
+        if not ok:
+            await interaction.response.send_message('❌ Bạn đã dùng lượt đổi nhiệm vụ hôm nay rồi!', ephemeral=True)
+            return
+        await interaction.response.edit_message(embed=_quest_embed(self.user_id))
+
+@bot.tree.command(name='quest', description='📜 Xem nhiệm vụ hàng ngày & tiến độ — hoàn thành nhận 10 Deion/nv')
+async def quest_slash(interaction: discord.Interaction):
+    await interaction.response.send_message(embed=_quest_embed(interaction.user.id), view=QuestView(interaction.user.id))
 
 async def _get_display_name_no_ping(user_id):
     user = bot.get_user(user_id)
@@ -1381,14 +1398,15 @@ async def guess_meme_slash(interaction: discord.Interaction):
 # ============================================================
 # 🈴 GUESS-LANGUAGE — đoán loại chữ viết/ngôn ngữ trong 15 giây
 # ============================================================
-def _lang_embed(sample, remaining, ve_note='', result_line=None, color=3447003):
+def _lang_embed(cid, uid, remaining, ve_note='', result_line=None, color=3447003, final_sample=None):
     if result_line:
-        desc = f'> **{sample}**\n\n{result_line}'
+        desc = f'> **{final_sample}**\n\n{result_line}'
     else:
         bar = _countdown_bar(remaining, gx.LANGUAGE_TIME_LIMIT)
+        hint_lines = '\n'.join(gx.guess_language_hints(cid, uid))
         desc = (
             f'Quốc gia này nói **ngôn ngữ chính thức** nào?\n\n'
-            f'> **{sample}**\n\n'
+            f'{hint_lines}\n\n'
             f'⏱️ {bar}  `{max(0, remaining)}s`{ve_note}'
         )
     embed = discord.Embed(title='🈴 GUESS-LANGUAGE: NƯỚC NÀY NÓI TIẾNG GÌ? 🌐', description=desc, color=color)
@@ -1396,11 +1414,10 @@ def _lang_embed(sample, remaining, ve_note='', result_line=None, color=3447003):
     return embed
 
 class LanguageView(discord.ui.View):
-    def __init__(self, cid, user_id, choices, sample):
+    def __init__(self, cid, user_id, choices):
         super().__init__(timeout=gx.LANGUAGE_TIME_LIMIT)
         self.cid = cid
         self.user_id = user_id
-        self.sample = sample
         self.message = None
         self.answered = False
         letters = ['🇦', '🇧', '🇨', '🇩']
@@ -1418,42 +1435,43 @@ class LanguageView(discord.ui.View):
                 return
             self.answered = True
             self.stop()
+            final_sample = gx.guess_language_final_label(self.cid, self.user_id)
             ok, correct, answer, note = gx.guess_language_answer(self.cid, self.user_id, index)
             gx.guess_language_end(self.cid, self.user_id)
-            sample = self.sample
             if correct:
                 reward, ve = gx.award_win('guess_language', interaction.user.id)
                 new_balance = games.get_deion(interaction.user.id)
                 result_line = f'🎉 **BÁ ĐẠO, ĐOÁN ĐÚNG PHÓC!** Đây là **{answer}**! 🧠🔥\n\n{note}\n\n{games.DEION_ICON} +{reward} Deion, {gx.VE_ICON} +{ve} Vé (số dư: {new_balance})'
-                embed = _lang_embed(sample, 0, result_line=result_line, color=3066993)
+                embed = _lang_embed(self.cid, self.user_id, 0, result_line=result_line, color=3066993, final_sample=final_sample)
             else:
                 result_line = f'❌ **SAI TOÉT RỒI 🤡** Đáp án đúng là **{answer}** đó.\n\n{note}'
-                embed = _lang_embed(sample, 0, result_line=result_line, color=15158332)
+                embed = _lang_embed(self.cid, self.user_id, 0, result_line=result_line, color=15158332, final_sample=final_sample)
             await interaction.response.edit_message(embed=embed, view=None)
         return callback
 
     async def on_timeout(self):
         if self.answered or not gx.guess_language_active(self.cid, self.user_id):
             return
+        final_sample = gx.guess_language_final_label(self.cid, self.user_id)
         ok, correct, answer, note = gx.guess_language_answer(self.cid, self.user_id, -1)
         gx.guess_language_end(self.cid, self.user_id)
         if not self.message:
             return
-        sample = self.sample
         result_line = f'⏰ **HẾT GIỜ LUÔN RỒI, CHẬM QUÁ TRỜI!** Đáp án đúng là **{answer}**.\n\n{note}'
-        embed = _lang_embed(sample, 0, result_line=result_line, color=15158332)
+        embed = _lang_embed(self.cid, self.user_id, 0, result_line=result_line, color=15158332, final_sample=final_sample)
         try:
             await self.message.edit(embed=embed, view=None)
         except discord.HTTPException:
             pass
 
-async def _language_countdown(message, view, cid, uid, sample, ve_note):
+async def _language_countdown(message, view, cid, uid, ve_note):
     try:
         for remaining in range(gx.LANGUAGE_TIME_LIMIT - 3, -1, -3):
             await asyncio.sleep(3)
             if view.answered or not gx.guess_language_active(cid, uid):
                 return
-            embed = _lang_embed(sample, remaining, ve_note=ve_note)
+            gx.guess_language_tick(cid, uid)
+            embed = _lang_embed(cid, uid, remaining, ve_note=ve_note)
             try:
                 await message.edit(embed=embed)
             except discord.HTTPException:
@@ -1473,13 +1491,12 @@ async def guess_language_slash(interaction: discord.Interaction):
         return
     entry, choices = gx.guess_language_start(cid, uid)
     ve_note = f'\n_(Đã dùng {gx.GAME_VE_COST["guess_language"]} 🎟️ Vé vì hết lượt free hôm nay)_' if note == 've' else ''
-    sample = f"{entry['flag']} {entry['country']}"
-    view = LanguageView(cid, uid, choices, sample)
-    embed = _lang_embed(sample, gx.LANGUAGE_TIME_LIMIT, ve_note=ve_note)
+    view = LanguageView(cid, uid, choices)
+    embed = _lang_embed(cid, uid, gx.LANGUAGE_TIME_LIMIT, ve_note=ve_note)
     await interaction.response.send_message(embed=embed, view=view)
     msg = await interaction.original_response()
     view.message = msg
-    asyncio.create_task(_language_countdown(msg, view, cid, uid, sample, ve_note))
+    asyncio.create_task(_language_countdown(msg, view, cid, uid, ve_note))
 
 
 # ============================================================
