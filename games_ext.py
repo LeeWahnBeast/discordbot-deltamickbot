@@ -15,6 +15,22 @@ from PIL import Image, ImageDraw, ImageFont
 import games as _g  # tái dùng get_deion/add_deion/_firestore_*/DEION_ICON
 
 # ============================================================
+# ⏱️ GIỚI HẠN 40 PHÚT/VÁN — áp dụng chung cho MỌI minigame
+# ============================================================
+SESSION_TIMEOUT_SECONDS = 40 * 60
+
+def _session_mark(state):
+    """Gọi khi start 1 ván — gắn mốc thời gian bắt đầu vào state (dict)."""
+    state['started_at'] = time.time()
+    return state
+
+def _session_alive(state):
+    """True nếu ván (state dict có 'started_at') chưa quá 40 phút."""
+    if state is None:
+        return False
+    return time.time() - state.get('started_at', time.time()) < SESSION_TIMEOUT_SECONDS
+
+# ============================================================
 # 🎟️ HỆ THỐNG VÉ (currency riêng, KHÔNG phải Deion/Elo)
 # ============================================================
 VE_ICON = '🎟️'
@@ -52,14 +68,23 @@ GAME_VE_COST = {
     'guess_language': 5,
 }
 
-# Thưởng Deion khi thắng minigame (rất thấp vì 1 Aura cũ = 0.0001 Deion, không phải game chính như Chess)
-GAME_WIN_REWARD = {
-    'wordle': 0.15,
-    'minesweeper': 0.1,
-    'guess_country': 0.0010,
-    'guess_meme': 0.0010,
-    'guess_language': 0.0015,
-}
+# Thưởng Deion khi thắng = 30% giá Vé của game đó (bỏ số lẻ vô nghĩa 0.1/0.0001 cũ)
+REWARD_RATE = 0.30
+GAME_WIN_REWARD = {g: round(cost * REWARD_RATE, 2) for g, cost in GAME_VE_COST.items()}
+
+# 🎟️ Vé thưởng khi thắng — áp cho MỌI game, kể cả chess_bot & jackpot (trước đây không có)
+VE_WIN_REWARD = {'wordle': 1, 'minesweeper': 2, 'guess_country': 3, 'guess_meme': 2,
+                 'guess_language': 2, 'chess_bot': 5, 'jackpot': 1}
+
+def award_win(game_type, user_id, deion_mult=1.0):
+    """Cộng Deion + Vé thưởng khi thắng, đồng thời tick tiến độ quest. Trả (deion, ve) đã cộng."""
+    deion = round(GAME_WIN_REWARD.get(game_type, 0) * deion_mult, 2)
+    ve = VE_WIN_REWARD.get(game_type, 0)
+    if deion:
+        _g.add_deion(user_id, deion)
+    if ve:
+        add_ve(user_id, ve)
+    return deion, ve
 
 # Số lượt chơi FREE mỗi ngày cho mỗi game (tái dùng hệ _daily_usage của games.py)
 _g.DAILY_FREE_GAMES.setdefault('wordle', 3)
@@ -106,16 +131,18 @@ def _wordle_key(cid, user_id):
 
 def wordle_start(cid, user_id):
     word = random.choice(WORDLE_WORDS)
-    _wordle_games[_wordle_key(cid, user_id)] = {
+    _wordle_games[_wordle_key(cid, user_id)] = _session_mark({
         'word': word,
         'guesses': [],  # list of (guess_str, feedback_str) feedback: G/Y/B per letter
         'done': False,
         'won': False,
-    }
+    })
     return word
 
 def wordle_active(cid, user_id):
     game = _wordle_games.get(_wordle_key(cid, user_id))
+    if game is not None and not _session_alive(game):
+        game['done'] = True
     return game is not None and not game['done']
 
 def wordle_end(cid, user_id):
@@ -248,6 +275,8 @@ def minesweeper_start(cid, user_id, rows=None, cols=None, bombs=None, seed=None)
 
 def minesweeper_active(cid, user_id):
     game = _mine_games.get(_mine_key(cid, user_id))
+    if game is not None and not _session_alive(game):
+        game['done'] = True
     return game is not None and not game['done']
 
 def minesweeper_end(cid, user_id):
@@ -582,6 +611,35 @@ COUNTRY_DATA = [
     {'name': 'Mexico', 'flag': '🇲🇽', 'hints': ['Món taco và burrito nổi tiếng', 'Có kim tự tháp Maya cổ', 'Thủ đô là Mexico City']},
     {'name': 'Indonesia', 'flag': '🇮🇩', 'hints': ['Quốc gia vạn đảo', 'Có đền Borobudur', 'Thủ đô là Jakarta']},
     {'name': 'Singapore', 'flag': '🇸🇬', 'hints': ['Tượng Sư Tử Biển Merlion', 'Đảo quốc nhỏ nhưng cực giàu', 'Còn gọi là Đảo Quốc Sư Tử']},
+    {'name': 'Malaysia', 'flag': '🇲🇾', 'hints': ['Có tháp đôi Petronas', 'Món nasi lemak nổi tiếng', 'Thủ đô là Kuala Lumpur']},
+    {'name': 'Philippines', 'flag': '🇵🇭', 'hints': ['Quốc gia có hơn 7000 đảo', 'Từng là thuộc địa Tây Ban Nha và Mỹ', 'Thủ đô là Manila']},
+    {'name': 'Campuchia', 'flag': '🇰🇭', 'hints': ['Có đền Angkor Wat', 'Láng giềng của Việt Nam', 'Thủ đô là Phnom Penh']},
+    {'name': 'Lào', 'flag': '🇱🇦', 'hints': ['Đất nước không giáp biển', 'Sông Mekong chảy qua', 'Thủ đô là Vientiane']},
+    {'name': 'Myanmar', 'flag': '🇲🇲', 'hints': ['Có chùa vàng Shwedagon', 'Trước đây gọi là Miến Điện', 'Thủ đô là Naypyidaw']},
+    {'name': 'Thổ Nhĩ Kỳ', 'flag': '🇹🇷', 'hints': ['Nằm giữa hai lục địa Á-Âu', 'Có thánh đường Hagia Sophia', 'Thủ đô là Ankara']},
+    {'name': 'Hà Lan', 'flag': '🇳🇱', 'hints': ['Nổi tiếng hoa tulip và cối xay gió', 'Có nhiều kênh đào', 'Thủ đô là Amsterdam']},
+    {'name': 'Bỉ', 'flag': '🇧🇪', 'hints': ['Nổi tiếng socola và bia', 'Có khoai tây chiên trứ danh', 'Thủ đô là Brussels']},
+    {'name': 'Thụy Sĩ', 'flag': '🇨🇭', 'hints': ['Nổi tiếng đồng hồ và socola', 'Có núi Alps hùng vĩ', 'Thủ đô là Bern']},
+    {'name': 'Thụy Điển', 'flag': '🇸🇪', 'hints': ['Quê hương ban nhạc ABBA', 'Có đồ nội thất IKEA', 'Thủ đô là Stockholm']},
+    {'name': 'Na Uy', 'flag': '🇳🇴', 'hints': ['Nổi tiếng vịnh hẹp Fjord', 'Xứ sở của cực quang', 'Thủ đô là Oslo']},
+    {'name': 'Đan Mạch', 'flag': '🇩🇰', 'hints': ['Quê hương của Lego', 'Có nàng tiên cá bằng đồng', 'Thủ đô là Copenhagen']},
+    {'name': 'Ba Lan', 'flag': '🇵🇱', 'hints': ['Quê hương Copernicus', 'Có thành phố cổ Krakow', 'Thủ đô là Warsaw']},
+    {'name': 'Bồ Đào Nha', 'flag': '🇵🇹', 'hints': ['Nổi tiếng bóng đá và cá mòi', 'Quê hương Cristiano Ronaldo', 'Thủ đô là Lisbon']},
+    {'name': 'Hy Lạp', 'flag': '🇬🇷', 'hints': ['Cái nôi của Olympic', 'Có đảo Santorini xanh trắng', 'Thủ đô là Athens']},
+    {'name': 'Áo', 'flag': '🇦🇹', 'hints': ['Quê hương của Mozart', 'Có cung điện Schönbrunn', 'Thủ đô là Vienna']},
+    {'name': 'Ireland', 'flag': '🇮🇪', 'hints': ['Biểu tượng cỏ ba lá xanh', 'Có lễ hội St. Patrick', 'Thủ đô là Dublin']},
+    {'name': 'Phần Lan', 'flag': '🇫🇮', 'hints': ['Được coi là quê hương Ông già Noel', 'Đất nước hạnh phúc nhất thế giới', 'Thủ đô là Helsinki']},
+    {'name': 'Ukraine', 'flag': '🇺🇦', 'hints': ['Từng thuộc Liên Xô', 'Có món súp Borsch truyền thống', 'Thủ đô là Kyiv']},
+    {'name': 'Israel', 'flag': '🇮🇱', 'hints': ['Có Bức tường Than khóc', 'Vùng Đất Thánh của 3 tôn giáo', 'Thủ đô là Jerusalem']},
+    {'name': 'Ả Rập Xê Út', 'flag': '🇸🇦', 'hints': ['Có thánh địa Mecca', 'Xuất khẩu dầu mỏ lớn nhất', 'Thủ đô là Riyadh']},
+    {'name': 'UAE', 'flag': '🇦🇪', 'hints': ['Có tòa tháp Burj Khalifa', 'Thành phố Dubai xa hoa', 'Thủ đô là Abu Dhabi']},
+    {'name': 'Iran', 'flag': '🇮🇷', 'hints': ['Từng gọi là Ba Tư (Persia)', 'Nổi tiếng thảm dệt tay', 'Thủ đô là Tehran']},
+    {'name': 'Pakistan', 'flag': '🇵🇰', 'hints': ['Có núi K2 cao thứ 2 thế giới', 'Tách ra từ Ấn Độ năm 1947', 'Thủ đô là Islamabad']},
+    {'name': 'Bangladesh', 'flag': '🇧🇩', 'hints': ['Đất nước sông ngòi dày đặc', 'Xuất khẩu dệt may lớn', 'Thủ đô là Dhaka']},
+    {'name': 'Nepal', 'flag': '🇳🇵', 'hints': ['Có đỉnh Everest cao nhất thế giới', 'Nơi sinh của Đức Phật', 'Thủ đô là Kathmandu']},
+    {'name': 'New Zealand', 'flag': '🇳🇿', 'hints': ['Quê hương phim Chúa Nhẫn', 'Có chim Kiwi không biết bay', 'Thủ đô là Wellington']},
+    {'name': 'Nam Phi', 'flag': '🇿🇦', 'hints': ['Quê hương Nelson Mandela', 'Có Mũi Hảo Vọng', 'Thủ đô là Pretoria']},
+    {'name': 'Argentina', 'flag': '🇦🇷', 'hints': ['Quê hương Messi và Maradona', 'Điệu nhảy Tango nổi tiếng', 'Thủ đô là Buenos Aires']},
 ]
 
 def _country_key(cid, user_id):
@@ -598,17 +656,19 @@ def _strip_accents(s):
 
 def guess_country_start(cid, user_id):
     entry = random.choice(COUNTRY_DATA)
-    _country_games[_country_key(cid, user_id)] = {
+    _country_games[_country_key(cid, user_id)] = _session_mark({
         'entry': entry,
         'guesses': [],
         'hints_revealed': 1,
         'done': False,
         'won': False,
-    }
+    })
     return entry
 
 def guess_country_active(cid, user_id):
     game = _country_games.get(_country_key(cid, user_id))
+    if game is not None and not _session_alive(game):
+        game['done'] = True
     return game is not None and not game['done']
 
 def guess_country_end(cid, user_id):
@@ -722,18 +782,20 @@ def guess_meme_start(cid, user_id):
         return None
     pool = memes[:MEME_POOL_SIZE]
     entry = random.choice(pool)
-    _meme_games[_meme_key(cid, user_id)] = {
+    _meme_games[_meme_key(cid, user_id)] = _session_mark({
         'name': entry['name'],
         'url': entry['url'],
         'guesses': [],
         'revealed_letters': 0,
         'done': False,
         'won': False,
-    }
+    })
     return entry
 
 def guess_meme_active(cid, user_id):
     game = _meme_games.get(_meme_key(cid, user_id))
+    if game is not None and not _session_alive(game):
+        game['done'] = True
     return game is not None and not game['done']
 
 def guess_meme_end(cid, user_id):
@@ -793,31 +855,141 @@ def guess_meme_tick(cid, user_id):
 _lang_games = {}  # key: (channel_id, user_id) -> state
 LANGUAGE_TIME_LIMIT = 15  # giây
 
-SCRIPT_DATA = [
-    {'sample': 'Xin chào, thế giới!', 'answer': 'Chữ Latinh (Latin)',
-     'note': 'Bảng chữ cái Latin (ABC...) — hệ chữ phổ biến nhất thế giới, dùng cho tiếng Việt, Anh, Pháp...'},
-    {'sample': '你好，世界！', 'answer': 'Chữ Hán (Trung Quốc)',
-     'note': 'Chữ tượng hình, mỗi ký tự thường mang một nghĩa riêng, dùng ở Trung Quốc, Đài Loan.'},
-    {'sample': 'こんにちは世界', 'answer': 'Chữ Nhật (Kana/Kanji)',
-     'note': 'Tiếng Nhật kết hợp Hiragana, Katakana (chữ mềm/cứng) và Kanji (chữ Hán mượn).'},
-    {'sample': '안녕하세요 세계', 'answer': 'Chữ Hàn (Hangul)',
-     'note': 'Hangul do vua Sejong sáng tạo thế kỷ 15, các nét ghép thành khối vuông.'},
-    {'sample': 'Привет, мир!', 'answer': 'Chữ Kirin (Cyrillic)',
-     'note': 'Bảng chữ Kirin (Cyrillic) dùng ở Nga và nhiều nước Đông Âu, Trung Á.'},
-    {'sample': 'مرحبا بالعالم', 'answer': 'Chữ Ả Rập (Arabic)',
-     'note': 'Viết nối liền từ phải sang trái, dùng ở khối Ả Rập, một phần Trung Đông.'},
-    {'sample': 'שלום עולם', 'answer': 'Chữ Do Thái (Hebrew)',
-     'note': 'Cũng viết từ phải sang trái, dùng cho tiếng Hebrew ở Israel.'},
-    {'sample': 'สวัสดีชาวโลก', 'answer': 'Chữ Thái (Thai)',
-     'note': 'Chữ Thái không có khoảng cách giữa các từ trong câu, có dấu thanh phía trên/dưới.'},
-    {'sample': 'नमस्ते दुनिया', 'answer': 'Chữ Devanagari (Hindi)',
-     'note': 'Devanagari có nét ngang nối phía trên chữ, dùng cho tiếng Hindi, Phạn ở Ấn Độ.'},
-    {'sample': 'Γειά σου Κόσμε', 'answer': 'Chữ Hy Lạp (Greek)',
-     'note': 'Chữ Hy Lạp là nguồn gốc của cả bảng chữ Latin lẫn Kirin.'},
-    {'sample': 'Γεια σας κόσμε', 'answer': 'Chữ Hy Lạp (Greek)',
-     'note': 'Chữ Hy Lạp là nguồn gốc của cả bảng chữ Latin lẫn Kirin.'},
-    {'sample': 'สวัสดีครับ', 'answer': 'Chữ Thái (Thai)',
-     'note': 'Chữ Thái không có khoảng cách giữa các từ trong câu, có dấu thanh phía trên/dưới.'},
+LANGUAGE_DATA = [
+    {'country': 'Việt Nam', 'flag': '🇻🇳', 'answer': 'Tiếng Việt', 'note': 'Ngôn ngữ chính thức của Việt Nam là Tiếng Việt.'},
+    {'country': 'Nhật Bản', 'flag': '🇯🇵', 'answer': 'Tiếng Nhật', 'note': 'Ngôn ngữ chính thức của Nhật Bản là Tiếng Nhật.'},
+    {'country': 'Hàn Quốc', 'flag': '🇰🇷', 'answer': 'Tiếng Hàn', 'note': 'Ngôn ngữ chính thức của Hàn Quốc là Tiếng Hàn.'},
+    {'country': 'Trung Quốc', 'flag': '🇨🇳', 'answer': 'Tiếng Trung', 'note': 'Ngôn ngữ chính thức của Trung Quốc là Tiếng Trung.'},
+    {'country': 'Thái Lan', 'flag': '🇹🇭', 'answer': 'Tiếng Thái', 'note': 'Ngôn ngữ chính thức của Thái Lan là Tiếng Thái.'},
+    {'country': 'Pháp', 'flag': '🇫🇷', 'answer': 'Tiếng Pháp', 'note': 'Ngôn ngữ chính thức của Pháp là Tiếng Pháp.'},
+    {'country': 'Ý', 'flag': '🇮🇹', 'answer': 'Tiếng Ý', 'note': 'Ngôn ngữ chính thức của Ý là Tiếng Ý.'},
+    {'country': 'Đức', 'flag': '🇩🇪', 'answer': 'Tiếng Đức', 'note': 'Ngôn ngữ chính thức của Đức là Tiếng Đức.'},
+    {'country': 'Tây Ban Nha', 'flag': '🇪🇸', 'answer': 'Tiếng Tây Ban Nha', 'note': 'Ngôn ngữ chính thức của Tây Ban Nha là Tiếng Tây Ban Nha.'},
+    {'country': 'Anh', 'flag': '🇬🇧', 'answer': 'Tiếng Anh', 'note': 'Ngôn ngữ chính thức của Anh là Tiếng Anh.'},
+    {'country': 'Mỹ', 'flag': '🇺🇸', 'answer': 'Tiếng Anh', 'note': 'Ngôn ngữ chính thức của Mỹ là Tiếng Anh.'},
+    {'country': 'Brazil', 'flag': '🇧🇷', 'answer': 'Tiếng Bồ Đào Nha', 'note': 'Ngôn ngữ chính thức của Brazil là Tiếng Bồ Đào Nha.'},
+    {'country': 'Ai Cập', 'flag': '🇪🇬', 'answer': 'Tiếng Ả Rập', 'note': 'Ngôn ngữ chính thức của Ai Cập là Tiếng Ả Rập.'},
+    {'country': 'Ấn Độ', 'flag': '🇮🇳', 'answer': 'Tiếng Hindi', 'note': 'Ngôn ngữ chính thức của Ấn Độ là Tiếng Hindi.'},
+    {'country': 'Nga', 'flag': '🇷🇺', 'answer': 'Tiếng Nga', 'note': 'Ngôn ngữ chính thức của Nga là Tiếng Nga.'},
+    {'country': 'Úc', 'flag': '🇦🇺', 'answer': 'Tiếng Anh', 'note': 'Ngôn ngữ chính thức của Úc là Tiếng Anh.'},
+    {'country': 'Canada', 'flag': '🇨🇦', 'answer': 'Tiếng Anh', 'note': 'Ngôn ngữ chính thức của Canada là Tiếng Anh.'},
+    {'country': 'Mexico', 'flag': '🇲🇽', 'answer': 'Tiếng Tây Ban Nha', 'note': 'Ngôn ngữ chính thức của Mexico là Tiếng Tây Ban Nha.'},
+    {'country': 'Indonesia', 'flag': '🇮🇩', 'answer': 'Tiếng Indonesia', 'note': 'Ngôn ngữ chính thức của Indonesia là Tiếng Indonesia.'},
+    {'country': 'Singapore', 'flag': '🇸🇬', 'answer': 'Tiếng Anh', 'note': 'Ngôn ngữ chính thức của Singapore là Tiếng Anh.'},
+    {'country': 'Malaysia', 'flag': '🇲🇾', 'answer': 'Tiếng Malay', 'note': 'Ngôn ngữ chính thức của Malaysia là Tiếng Malay.'},
+    {'country': 'Philippines', 'flag': '🇵🇭', 'answer': 'Tiếng Filipino', 'note': 'Ngôn ngữ chính thức của Philippines là Tiếng Filipino.'},
+    {'country': 'Campuchia', 'flag': '🇰🇭', 'answer': 'Tiếng Khmer', 'note': 'Ngôn ngữ chính thức của Campuchia là Tiếng Khmer.'},
+    {'country': 'Lào', 'flag': '🇱🇦', 'answer': 'Tiếng Lào', 'note': 'Ngôn ngữ chính thức của Lào là Tiếng Lào.'},
+    {'country': 'Myanmar', 'flag': '🇲🇲', 'answer': 'Tiếng Miến Điện', 'note': 'Ngôn ngữ chính thức của Myanmar là Tiếng Miến Điện.'},
+    {'country': 'Thổ Nhĩ Kỳ', 'flag': '🇹🇷', 'answer': 'Tiếng Thổ Nhĩ Kỳ', 'note': 'Ngôn ngữ chính thức của Thổ Nhĩ Kỳ là Tiếng Thổ Nhĩ Kỳ.'},
+    {'country': 'Hà Lan', 'flag': '🇳🇱', 'answer': 'Tiếng Hà Lan', 'note': 'Ngôn ngữ chính thức của Hà Lan là Tiếng Hà Lan.'},
+    {'country': 'Bỉ', 'flag': '🇧🇪', 'answer': 'Tiếng Hà Lan', 'note': 'Ngôn ngữ chính thức của Bỉ là Tiếng Hà Lan.'},
+    {'country': 'Thụy Sĩ', 'flag': '🇨🇭', 'answer': 'Tiếng Đức', 'note': 'Ngôn ngữ chính thức của Thụy Sĩ là Tiếng Đức.'},
+    {'country': 'Thụy Điển', 'flag': '🇸🇪', 'answer': 'Tiếng Thụy Điển', 'note': 'Ngôn ngữ chính thức của Thụy Điển là Tiếng Thụy Điển.'},
+    {'country': 'Na Uy', 'flag': '🇳🇴', 'answer': 'Tiếng Na Uy', 'note': 'Ngôn ngữ chính thức của Na Uy là Tiếng Na Uy.'},
+    {'country': 'Đan Mạch', 'flag': '🇩🇰', 'answer': 'Tiếng Đan Mạch', 'note': 'Ngôn ngữ chính thức của Đan Mạch là Tiếng Đan Mạch.'},
+    {'country': 'Ba Lan', 'flag': '🇵🇱', 'answer': 'Tiếng Ba Lan', 'note': 'Ngôn ngữ chính thức của Ba Lan là Tiếng Ba Lan.'},
+    {'country': 'Bồ Đào Nha', 'flag': '🇵🇹', 'answer': 'Tiếng Bồ Đào Nha', 'note': 'Ngôn ngữ chính thức của Bồ Đào Nha là Tiếng Bồ Đào Nha.'},
+    {'country': 'Hy Lạp', 'flag': '🇬🇷', 'answer': 'Tiếng Hy Lạp', 'note': 'Ngôn ngữ chính thức của Hy Lạp là Tiếng Hy Lạp.'},
+    {'country': 'Áo', 'flag': '🇦🇹', 'answer': 'Tiếng Đức', 'note': 'Ngôn ngữ chính thức của Áo là Tiếng Đức.'},
+    {'country': 'Ireland', 'flag': '🇮🇪', 'answer': 'Tiếng Anh', 'note': 'Ngôn ngữ chính thức của Ireland là Tiếng Anh.'},
+    {'country': 'Phần Lan', 'flag': '🇫🇮', 'answer': 'Tiếng Phần Lan', 'note': 'Ngôn ngữ chính thức của Phần Lan là Tiếng Phần Lan.'},
+    {'country': 'Ukraine', 'flag': '🇺🇦', 'answer': 'Tiếng Ukraine', 'note': 'Ngôn ngữ chính thức của Ukraine là Tiếng Ukraine.'},
+    {'country': 'Israel', 'flag': '🇮🇱', 'answer': 'Tiếng Hebrew', 'note': 'Ngôn ngữ chính thức của Israel là Tiếng Hebrew.'},
+    {'country': 'Ả Rập Xê Út', 'flag': '🇸🇦', 'answer': 'Tiếng Ả Rập', 'note': 'Ngôn ngữ chính thức của Ả Rập Xê Út là Tiếng Ả Rập.'},
+    {'country': 'UAE', 'flag': '🇦🇪', 'answer': 'Tiếng Ả Rập', 'note': 'Ngôn ngữ chính thức của UAE là Tiếng Ả Rập.'},
+    {'country': 'Iran', 'flag': '🇮🇷', 'answer': 'Tiếng Ba Tư', 'note': 'Ngôn ngữ chính thức của Iran là Tiếng Ba Tư.'},
+    {'country': 'Pakistan', 'flag': '🇵🇰', 'answer': 'Tiếng Urdu', 'note': 'Ngôn ngữ chính thức của Pakistan là Tiếng Urdu.'},
+    {'country': 'Bangladesh', 'flag': '🇧🇩', 'answer': 'Tiếng Bengal', 'note': 'Ngôn ngữ chính thức của Bangladesh là Tiếng Bengal.'},
+    {'country': 'Nepal', 'flag': '🇳🇵', 'answer': 'Tiếng Nepal', 'note': 'Ngôn ngữ chính thức của Nepal là Tiếng Nepal.'},
+    {'country': 'New Zealand', 'flag': '🇳🇿', 'answer': 'Tiếng Anh', 'note': 'Ngôn ngữ chính thức của New Zealand là Tiếng Anh.'},
+    {'country': 'Nam Phi', 'flag': '🇿🇦', 'answer': 'Tiếng Anh', 'note': 'Ngôn ngữ chính thức của Nam Phi là Tiếng Anh.'},
+    {'country': 'Argentina', 'flag': '🇦🇷', 'answer': 'Tiếng Tây Ban Nha', 'note': 'Ngôn ngữ chính thức của Argentina là Tiếng Tây Ban Nha.'},
+    {'country': 'Chile', 'flag': '🇨🇱', 'answer': 'Tiếng Tây Ban Nha', 'note': 'Ngôn ngữ chính thức của Chile là Tiếng Tây Ban Nha.'},
+    {'country': 'Colombia', 'flag': '🇨🇴', 'answer': 'Tiếng Tây Ban Nha', 'note': 'Ngôn ngữ chính thức của Colombia là Tiếng Tây Ban Nha.'},
+    {'country': 'Peru', 'flag': '🇵🇪', 'answer': 'Tiếng Tây Ban Nha', 'note': 'Ngôn ngữ chính thức của Peru là Tiếng Tây Ban Nha.'},
+    {'country': 'Venezuela', 'flag': '🇻🇪', 'answer': 'Tiếng Tây Ban Nha', 'note': 'Ngôn ngữ chính thức của Venezuela là Tiếng Tây Ban Nha.'},
+    {'country': 'Cuba', 'flag': '🇨🇺', 'answer': 'Tiếng Tây Ban Nha', 'note': 'Ngôn ngữ chính thức của Cuba là Tiếng Tây Ban Nha.'},
+    {'country': 'Ecuador', 'flag': '🇪🇨', 'answer': 'Tiếng Tây Ban Nha', 'note': 'Ngôn ngữ chính thức của Ecuador là Tiếng Tây Ban Nha.'},
+    {'country': 'Bolivia', 'flag': '🇧🇴', 'answer': 'Tiếng Tây Ban Nha', 'note': 'Ngôn ngữ chính thức của Bolivia là Tiếng Tây Ban Nha.'},
+    {'country': 'Paraguay', 'flag': '🇵🇾', 'answer': 'Tiếng Tây Ban Nha', 'note': 'Ngôn ngữ chính thức của Paraguay là Tiếng Tây Ban Nha.'},
+    {'country': 'Uruguay', 'flag': '🇺🇾', 'answer': 'Tiếng Tây Ban Nha', 'note': 'Ngôn ngữ chính thức của Uruguay là Tiếng Tây Ban Nha.'},
+    {'country': 'Panama', 'flag': '🇵🇦', 'answer': 'Tiếng Tây Ban Nha', 'note': 'Ngôn ngữ chính thức của Panama là Tiếng Tây Ban Nha.'},
+    {'country': 'Costa Rica', 'flag': '🇨🇷', 'answer': 'Tiếng Tây Ban Nha', 'note': 'Ngôn ngữ chính thức của Costa Rica là Tiếng Tây Ban Nha.'},
+    {'country': 'Guatemala', 'flag': '🇬🇹', 'answer': 'Tiếng Tây Ban Nha', 'note': 'Ngôn ngữ chính thức của Guatemala là Tiếng Tây Ban Nha.'},
+    {'country': 'Honduras', 'flag': '🇭🇳', 'answer': 'Tiếng Tây Ban Nha', 'note': 'Ngôn ngữ chính thức của Honduras là Tiếng Tây Ban Nha.'},
+    {'country': 'El Salvador', 'flag': '🇸🇻', 'answer': 'Tiếng Tây Ban Nha', 'note': 'Ngôn ngữ chính thức của El Salvador là Tiếng Tây Ban Nha.'},
+    {'country': 'Nicaragua', 'flag': '🇳🇮', 'answer': 'Tiếng Tây Ban Nha', 'note': 'Ngôn ngữ chính thức của Nicaragua là Tiếng Tây Ban Nha.'},
+    {'country': 'Dominican Republic', 'flag': '🇩🇴', 'answer': 'Tiếng Tây Ban Nha', 'note': 'Ngôn ngữ chính thức của Dominican Republic là Tiếng Tây Ban Nha.'},
+    {'country': 'Jamaica', 'flag': '🇯🇲', 'answer': 'Tiếng Anh', 'note': 'Ngôn ngữ chính thức của Jamaica là Tiếng Anh.'},
+    {'country': 'Haiti', 'flag': '🇭🇹', 'answer': 'Tiếng Pháp', 'note': 'Ngôn ngữ chính thức của Haiti là Tiếng Pháp.'},
+    {'country': 'Maroc', 'flag': '🇲🇦', 'answer': 'Tiếng Ả Rập', 'note': 'Ngôn ngữ chính thức của Maroc là Tiếng Ả Rập.'},
+    {'country': 'Algeria', 'flag': '🇩🇿', 'answer': 'Tiếng Ả Rập', 'note': 'Ngôn ngữ chính thức của Algeria là Tiếng Ả Rập.'},
+    {'country': 'Tunisia', 'flag': '🇹🇳', 'answer': 'Tiếng Ả Rập', 'note': 'Ngôn ngữ chính thức của Tunisia là Tiếng Ả Rập.'},
+    {'country': 'Libya', 'flag': '🇱🇾', 'answer': 'Tiếng Ả Rập', 'note': 'Ngôn ngữ chính thức của Libya là Tiếng Ả Rập.'},
+    {'country': 'Sudan', 'flag': '🇸🇩', 'answer': 'Tiếng Ả Rập', 'note': 'Ngôn ngữ chính thức của Sudan là Tiếng Ả Rập.'},
+    {'country': 'Iraq', 'flag': '🇮🇶', 'answer': 'Tiếng Ả Rập', 'note': 'Ngôn ngữ chính thức của Iraq là Tiếng Ả Rập.'},
+    {'country': 'Jordan', 'flag': '🇯🇴', 'answer': 'Tiếng Ả Rập', 'note': 'Ngôn ngữ chính thức của Jordan là Tiếng Ả Rập.'},
+    {'country': 'Lebanon', 'flag': '🇱🇧', 'answer': 'Tiếng Ả Rập', 'note': 'Ngôn ngữ chính thức của Lebanon là Tiếng Ả Rập.'},
+    {'country': 'Syria', 'flag': '🇸🇾', 'answer': 'Tiếng Ả Rập', 'note': 'Ngôn ngữ chính thức của Syria là Tiếng Ả Rập.'},
+    {'country': 'Kuwait', 'flag': '🇰🇼', 'answer': 'Tiếng Ả Rập', 'note': 'Ngôn ngữ chính thức của Kuwait là Tiếng Ả Rập.'},
+    {'country': 'Qatar', 'flag': '🇶🇦', 'answer': 'Tiếng Ả Rập', 'note': 'Ngôn ngữ chính thức của Qatar là Tiếng Ả Rập.'},
+    {'country': 'Oman', 'flag': '🇴🇲', 'answer': 'Tiếng Ả Rập', 'note': 'Ngôn ngữ chính thức của Oman là Tiếng Ả Rập.'},
+    {'country': 'Yemen', 'flag': '🇾🇪', 'answer': 'Tiếng Ả Rập', 'note': 'Ngôn ngữ chính thức của Yemen là Tiếng Ả Rập.'},
+    {'country': 'Nigeria', 'flag': '🇳🇬', 'answer': 'Tiếng Anh', 'note': 'Ngôn ngữ chính thức của Nigeria là Tiếng Anh.'},
+    {'country': 'Kenya', 'flag': '🇰🇪', 'answer': 'Tiếng Swahili', 'note': 'Ngôn ngữ chính thức của Kenya là Tiếng Swahili.'},
+    {'country': 'Tanzania', 'flag': '🇹🇿', 'answer': 'Tiếng Swahili', 'note': 'Ngôn ngữ chính thức của Tanzania là Tiếng Swahili.'},
+    {'country': 'Ethiopia', 'flag': '🇪🇹', 'answer': 'Tiếng Amharic', 'note': 'Ngôn ngữ chính thức của Ethiopia là Tiếng Amharic.'},
+    {'country': 'Ghana', 'flag': '🇬🇭', 'answer': 'Tiếng Anh', 'note': 'Ngôn ngữ chính thức của Ghana là Tiếng Anh.'},
+    {'country': 'Senegal', 'flag': '🇸🇳', 'answer': 'Tiếng Pháp', 'note': 'Ngôn ngữ chính thức của Senegal là Tiếng Pháp.'},
+    {'country': 'Bờ Biển Ngà', 'flag': '🇨🇮', 'answer': 'Tiếng Pháp', 'note': 'Ngôn ngữ chính thức của Bờ Biển Ngà là Tiếng Pháp.'},
+    {'country': 'Cameroon', 'flag': '🇨🇲', 'answer': 'Tiếng Pháp', 'note': 'Ngôn ngữ chính thức của Cameroon là Tiếng Pháp.'},
+    {'country': 'Congo', 'flag': '🇨🇩', 'answer': 'Tiếng Pháp', 'note': 'Ngôn ngữ chính thức của Congo là Tiếng Pháp.'},
+    {'country': 'Angola', 'flag': '🇦🇴', 'answer': 'Tiếng Bồ Đào Nha', 'note': 'Ngôn ngữ chính thức của Angola là Tiếng Bồ Đào Nha.'},
+    {'country': 'Mozambique', 'flag': '🇲🇿', 'answer': 'Tiếng Bồ Đào Nha', 'note': 'Ngôn ngữ chính thức của Mozambique là Tiếng Bồ Đào Nha.'},
+    {'country': 'Zimbabwe', 'flag': '🇿🇼', 'answer': 'Tiếng Anh', 'note': 'Ngôn ngữ chính thức của Zimbabwe là Tiếng Anh.'},
+    {'country': 'Zambia', 'flag': '🇿🇲', 'answer': 'Tiếng Anh', 'note': 'Ngôn ngữ chính thức của Zambia là Tiếng Anh.'},
+    {'country': 'Uganda', 'flag': '🇺🇬', 'answer': 'Tiếng Anh', 'note': 'Ngôn ngữ chính thức của Uganda là Tiếng Anh.'},
+    {'country': 'Rwanda', 'flag': '🇷🇼', 'answer': 'Tiếng Kinyarwanda', 'note': 'Ngôn ngữ chính thức của Rwanda là Tiếng Kinyarwanda.'},
+    {'country': 'Madagascar', 'flag': '🇲🇬', 'answer': 'Tiếng Malagasy', 'note': 'Ngôn ngữ chính thức của Madagascar là Tiếng Malagasy.'},
+    {'country': 'Mông Cổ', 'flag': '🇲🇳', 'answer': 'Tiếng Mông Cổ', 'note': 'Ngôn ngữ chính thức của Mông Cổ là Tiếng Mông Cổ.'},
+    {'country': 'Kazakhstan', 'flag': '🇰🇿', 'answer': 'Tiếng Kazakh', 'note': 'Ngôn ngữ chính thức của Kazakhstan là Tiếng Kazakh.'},
+    {'country': 'Uzbekistan', 'flag': '🇺🇿', 'answer': 'Tiếng Uzbek', 'note': 'Ngôn ngữ chính thức của Uzbekistan là Tiếng Uzbek.'},
+    {'country': 'Afghanistan', 'flag': '🇦🇫', 'answer': 'Tiếng Pashto', 'note': 'Ngôn ngữ chính thức của Afghanistan là Tiếng Pashto.'},
+    {'country': 'Sri Lanka', 'flag': '🇱🇰', 'answer': 'Tiếng Sinhala', 'note': 'Ngôn ngữ chính thức của Sri Lanka là Tiếng Sinhala.'},
+    {'country': 'Bhutan', 'flag': '🇧🇹', 'answer': 'Tiếng Dzongkha', 'note': 'Ngôn ngữ chính thức của Bhutan là Tiếng Dzongkha.'},
+    {'country': 'Maldives', 'flag': '🇲🇻', 'answer': 'Tiếng Dhivehi', 'note': 'Ngôn ngữ chính thức của Maldives là Tiếng Dhivehi.'},
+    {'country': 'Brunei', 'flag': '🇧🇳', 'answer': 'Tiếng Malay', 'note': 'Ngôn ngữ chính thức của Brunei là Tiếng Malay.'},
+    {'country': 'Đông Timor', 'flag': '🇹🇱', 'answer': 'Tiếng Bồ Đào Nha', 'note': 'Ngôn ngữ chính thức của Đông Timor là Tiếng Bồ Đào Nha.'},
+    {'country': 'Papua New Guinea', 'flag': '🇵🇬', 'answer': 'Tiếng Anh', 'note': 'Ngôn ngữ chính thức của Papua New Guinea là Tiếng Anh.'},
+    {'country': 'Fiji', 'flag': '🇫🇯', 'answer': 'Tiếng Anh', 'note': 'Ngôn ngữ chính thức của Fiji là Tiếng Anh.'},
+    {'country': 'Iceland', 'flag': '🇮🇸', 'answer': 'Tiếng Iceland', 'note': 'Ngôn ngữ chính thức của Iceland là Tiếng Iceland.'},
+    {'country': 'Estonia', 'flag': '🇪🇪', 'answer': 'Tiếng Estonia', 'note': 'Ngôn ngữ chính thức của Estonia là Tiếng Estonia.'},
+    {'country': 'Latvia', 'flag': '🇱🇻', 'answer': 'Tiếng Latvia', 'note': 'Ngôn ngữ chính thức của Latvia là Tiếng Latvia.'},
+    {'country': 'Lithuania', 'flag': '🇱🇹', 'answer': 'Tiếng Lithuania', 'note': 'Ngôn ngữ chính thức của Lithuania là Tiếng Lithuania.'},
+    {'country': 'Séc', 'flag': '🇨🇿', 'answer': 'Tiếng Séc', 'note': 'Ngôn ngữ chính thức của Séc là Tiếng Séc.'},
+    {'country': 'Slovakia', 'flag': '🇸🇰', 'answer': 'Tiếng Slovak', 'note': 'Ngôn ngữ chính thức của Slovakia là Tiếng Slovak.'},
+    {'country': 'Hungary', 'flag': '🇭🇺', 'answer': 'Tiếng Hungary', 'note': 'Ngôn ngữ chính thức của Hungary là Tiếng Hungary.'},
+    {'country': 'Romania', 'flag': '🇷🇴', 'answer': 'Tiếng Romania', 'note': 'Ngôn ngữ chính thức của Romania là Tiếng Romania.'},
+    {'country': 'Bulgaria', 'flag': '🇧🇬', 'answer': 'Tiếng Bulgaria', 'note': 'Ngôn ngữ chính thức của Bulgaria là Tiếng Bulgaria.'},
+    {'country': 'Serbia', 'flag': '🇷🇸', 'answer': 'Tiếng Serbia', 'note': 'Ngôn ngữ chính thức của Serbia là Tiếng Serbia.'},
+    {'country': 'Croatia', 'flag': '🇭🇷', 'answer': 'Tiếng Croatia', 'note': 'Ngôn ngữ chính thức của Croatia là Tiếng Croatia.'},
+    {'country': 'Slovenia', 'flag': '🇸🇮', 'answer': 'Tiếng Slovenia', 'note': 'Ngôn ngữ chính thức của Slovenia là Tiếng Slovenia.'},
+    {'country': 'Bosnia', 'flag': '🇧🇦', 'answer': 'Tiếng Bosnia', 'note': 'Ngôn ngữ chính thức của Bosnia là Tiếng Bosnia.'},
+    {'country': 'Albania', 'flag': '🇦🇱', 'answer': 'Tiếng Albania', 'note': 'Ngôn ngữ chính thức của Albania là Tiếng Albania.'},
+    {'country': 'Armenia', 'flag': '🇦🇲', 'answer': 'Tiếng Armenia', 'note': 'Ngôn ngữ chính thức của Armenia là Tiếng Armenia.'},
+    {'country': 'Georgia', 'flag': '🇬🇪', 'answer': 'Tiếng Georgia', 'note': 'Ngôn ngữ chính thức của Georgia là Tiếng Georgia.'},
+    {'country': 'Azerbaijan', 'flag': '🇦🇿', 'answer': 'Tiếng Azerbaijan', 'note': 'Ngôn ngữ chính thức của Azerbaijan là Tiếng Azerbaijan.'},
+    {'country': 'Belarus', 'flag': '🇧🇾', 'answer': 'Tiếng Belarus', 'note': 'Ngôn ngữ chính thức của Belarus là Tiếng Belarus.'},
+    {'country': 'Moldova', 'flag': '🇲🇩', 'answer': 'Tiếng Romania', 'note': 'Ngôn ngữ chính thức của Moldova là Tiếng Romania.'},
+    {'country': 'Malta', 'flag': '🇲🇹', 'answer': 'Tiếng Malta', 'note': 'Ngôn ngữ chính thức của Malta là Tiếng Malta.'},
+    {'country': 'Luxembourg', 'flag': '🇱🇺', 'answer': 'Tiếng Luxembourg', 'note': 'Ngôn ngữ chính thức của Luxembourg là Tiếng Luxembourg.'},
+    {'country': 'Monaco', 'flag': '🇲🇨', 'answer': 'Tiếng Pháp', 'note': 'Ngôn ngữ chính thức của Monaco là Tiếng Pháp.'},
+    {'country': 'Andorra', 'flag': '🇦🇩', 'answer': 'Tiếng Catalan', 'note': 'Ngôn ngữ chính thức của Andorra là Tiếng Catalan.'},
+    {'country': 'San Marino', 'flag': '🇸🇲', 'answer': 'Tiếng Ý', 'note': 'Ngôn ngữ chính thức của San Marino là Tiếng Ý.'},
+    {'country': 'Liechtenstein', 'flag': '🇱🇮', 'answer': 'Tiếng Đức', 'note': 'Ngôn ngữ chính thức của Liechtenstein là Tiếng Đức.'},
+    {'country': 'Đài Loan', 'flag': '🇹🇼', 'answer': 'Tiếng Trung', 'note': 'Ngôn ngữ chính thức của Đài Loan là Tiếng Trung.'},
+    {'country': 'Hồng Kông', 'flag': '🇭🇰', 'answer': 'Tiếng Quảng Đông', 'note': 'Ngôn ngữ chính thức của Hồng Kông là Tiếng Quảng Đông.'},
 ]
 
 def _lang_key(cid, user_id):
@@ -825,24 +997,26 @@ def _lang_key(cid, user_id):
 
 def guess_language_start(cid, user_id):
     """Trả (entry, choices) — choices là list 4 đáp án đã xáo trộn, có đúng 1 đáp án đúng."""
-    entry = random.choice(SCRIPT_DATA)
-    wrong_pool = list({e['answer'] for e in SCRIPT_DATA if e['answer'] != entry['answer']})
+    entry = random.choice(LANGUAGE_DATA)
+    wrong_pool = list({e['answer'] for e in LANGUAGE_DATA if e['answer'] != entry['answer']})
     sample_size = min(3, len(wrong_pool))
     wrongs = random.sample(wrong_pool, sample_size)
     choices = wrongs + [entry['answer']]
     random.shuffle(choices)
     correct_index = choices.index(entry['answer'])
-    _lang_games[_lang_key(cid, user_id)] = {
+    _lang_games[_lang_key(cid, user_id)] = _session_mark({
         'entry': entry,
         'choices': choices,
         'correct_index': correct_index,
         'done': False,
         'created_at': time.time(),
-    }
+    })
     return entry, choices
 
 def guess_language_active(cid, user_id):
     game = _lang_games.get(_lang_key(cid, user_id))
+    if game is not None and not _session_alive(game):
+        game['done'] = True
     return game is not None and not game['done']
 
 def guess_language_end(cid, user_id):
@@ -1026,3 +1200,65 @@ def redeem_custom_code(user_id, name):
     _save_custom_codes()
     return (True, True, None, amount)
 
+
+# ============================================================
+# 📜 QUEST / NHIỆM VỤ NGÀY — 3 loại, có thanh tiến độ, 10 Deion/nv
+# ============================================================
+QUEST_GOAL = 3            # số lần lặp lại để hoàn thành 1 nhiệm vụ
+QUEST_REWARD_DEION = 10   # Deion nhận khi hoàn thành xong 1 nhiệm vụ
+
+# Loại 1: nhắn 1 câu troll vui (KHÔNG mang tính khiêu khích/xúc phạm thật) + tag 1 người trong server
+QUEST_TAG_LINES = ['gà thế còn chơi', 'thua rồi kìa', 'yếu vậy sao lên rank', 'gánh team dữ ha']
+# Loại 2: random nói 1 câu trong list
+QUEST_RANDOM_PHRASES = ['meow', 'i am femboy', 'i am tsundere', 'tôi là con gái']
+
+_quests = {}  # user_id -> {'type': 1|2|3, 'progress': int, 'done': bool}
+
+def _quest_new(user_id):
+    q = {'type': random.choice([1, 2, 3]), 'progress': 0, 'done': False}
+    _quests[user_id] = q
+    return q
+
+def quest_get(user_id):
+    q = _quests.get(user_id)
+    return q if (q and not q['done']) else _quest_new(user_id)
+
+def quest_bar(progress, goal=QUEST_GOAL):
+    return '🟩' * progress + '⬜' * (goal - progress) + f'  ({progress}/{goal})'
+
+def quest_desc(qtype):
+    return {
+        1: f"📢 Nhắn 1 câu troll vui (VD: \"{QUEST_TAG_LINES[0]}\") **kèm tag 1 người** trong server",
+        2: f"🗣️ Random nói 1 trong các câu: {', '.join(QUEST_RANDOM_PHRASES)}",
+        3: '🎮 Sài 1 lệnh (slash command) bất kỳ của bot',
+    }[qtype]
+
+def _quest_bump(user_id, q):
+    q['progress'] += 1
+    if q['progress'] >= QUEST_GOAL:
+        q['done'] = True
+        _g.add_deion(user_id, QUEST_REWARD_DEION)
+        return 'completed'
+    return 'progress'
+
+def quest_check_message(user_id, content, has_mention):
+    """Gọi từ on_message. Trả None hoặc 'progress'/'completed' + quest hiện tại."""
+    q = quest_get(user_id)
+    if q['done']:
+        return None, q
+    c = content.strip().lower()
+    hit = False
+    if q['type'] == 1 and has_mention and any(line in c for line in QUEST_TAG_LINES):
+        hit = True
+    elif q['type'] == 2 and c in (p.lower() for p in QUEST_RANDOM_PHRASES):
+        hit = True
+    if not hit:
+        return None, q
+    return _quest_bump(user_id, q), q
+
+def quest_check_command(user_id):
+    """Gọi từ on_app_command_completion. Trả None hoặc 'progress'/'completed' + quest hiện tại."""
+    q = quest_get(user_id)
+    if q['done'] or q['type'] != 3:
+        return None, q
+    return _quest_bump(user_id, q), q
