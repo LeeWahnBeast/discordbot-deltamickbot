@@ -355,6 +355,9 @@ def shop_buy(user_id, item_key):
         _set_elo(user_id, get_elo(user_id) + 150)
     _shop_stock[item_key] -= 1
     receipt = _add_receipt(user_id, item_key, item, currency, price, balance_after)
+    if currency == 'deion':
+        _ext.quest_notify_spend(user_id, price)
+    _ext.quest_notify_shop(user_id)
     return {'ok': True, 'reason': None, 'item': item, 'balance_after': balance_after, 'receipt': receipt}
 
 def shop_consume_cu_cai(user_id):
@@ -976,6 +979,9 @@ def redeem_code(user_id, code):
         reward_lines.append(f"{DEION_ICON} +{entry['deion']} Deion")
     used['codes'].append(code)
     _firestore_save_doc('redeem_codes', user_id, used)
+    _ext.quest_notify_redeem_code(user_id)
+    if 'deion' in entry:
+        _ext.quest_notify_earn(user_id, entry['deion'])
     return {'ok': True, 'reward_lines': reward_lines}
 
 def top_deion(n=10):
