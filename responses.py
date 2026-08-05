@@ -10,5 +10,9 @@ responses = {
     "<@!1210771747889090571>": {
         "text": None,
         "image": "images/Screenshot_20260803-191353_Discord.png"
+    },
+    "larp": {
+        "text": "Hành tây hành tây 🤣🤣🤣",
+        "image": None
     }
 }
