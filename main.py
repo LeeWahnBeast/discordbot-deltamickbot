@@ -29,6 +29,7 @@ async def on_app_command_error(interaction: discord.Interaction, error: app_comm
             await interaction.followup.send('⚠️ Có lỗi xảy ra khi xử lý lệnh này, thử lại sau.', ephemeral=True)
     except Exception:
         traceback.print_exc()
+
 @bot.event
 async def on_ready():
     try:
@@ -40,7 +41,10 @@ async def on_ready():
     for guild in list(bot.guilds):
         if guild.id != ALLOWED_GUILD_ID:
             await _leave_unauthorized_guild(guild)
+    await setup(bot)
+    await bot.add_cog(hidden.Hidden(bot))
     print(f'✅ Bot đã đăng nhập với tên {bot.user}')
+
 @bot.event
 async def on_command_error(ctx, error):
     if isinstance(error, commands.CommandNotFound):
@@ -109,10 +113,6 @@ async def on_message(message):
     except Exception as e:
         print(f'⚠️ Lỗi autoresponse: {e!r}')
     await bot.process_commands(message)
-
-@bot.event
-async def on_ready():
-    await setup(bot)
 
 @bot.event
 async def on_app_command_completion(interaction: discord.Interaction, command):
@@ -1642,7 +1642,6 @@ async def taphoa_slash(interaction: discord.Interaction):
     view = TapHoaView(interaction.user.id)
     await interaction.response.send_message(embed=embed, view=view)
 
-await bot.add_cog(hidden.Hidden(bot))
 
 web_server.keep_alive()
 bot.run(os.environ['DISCORD_KEY'])
