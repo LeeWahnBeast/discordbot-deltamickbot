@@ -10,6 +10,7 @@ import games
 import games_ext as gx
 import ai
 import autoresponse
+import hidden
 from tiktok_live_connector import setup
 from discord.ext import commands
 from discord import app_commands
@@ -1640,6 +1641,8 @@ async def taphoa_slash(interaction: discord.Interaction):
     )
     view = TapHoaView(interaction.user.id)
     await interaction.response.send_message(embed=embed, view=view)
+
+await bot.add_cog(hidden.Hidden(bot))
 
 web_server.keep_alive()
 bot.run(os.environ['DISCORD_KEY'])
