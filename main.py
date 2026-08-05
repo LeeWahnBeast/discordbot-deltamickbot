@@ -10,6 +10,7 @@ import games
 import games_ext as gx
 import ai
 import autoresponse
+from tiktok_live_connector import setup
 from discord.ext import commands
 from discord import app_commands
 intents = discord.Intents.default()
@@ -107,6 +108,10 @@ async def on_message(message):
     except Exception as e:
         print(f'⚠️ Lỗi autoresponse: {e!r}')
     await bot.process_commands(message)
+
+@bot.event
+async def on_ready():
+    await setup(bot)
 
 @bot.event
 async def on_app_command_completion(interaction: discord.Interaction, command):
