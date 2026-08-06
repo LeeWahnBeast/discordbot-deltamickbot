@@ -226,11 +226,11 @@ async def _handle_chess_end_request(interaction: discord.Interaction, cid):
         await interaction.response.send_message('⏳ Bạn đã đề nghị rồi, đang chờ đối thủ đồng ý.', ephemeral=True)
         return
     names = _chess_display_names(cid)
-    text = games.chess_accept_draw_text(cid, names)
+    image, caption = games.chess_accept_draw_text(cid, names)
     games.chess_clear_draw_offer(cid)
     games.chess_end(cid)
-    embed = discord.Embed(description=text, color=2899536)
-    await interaction.response.edit_message(content=None, embed=embed, attachments=[], view=None)
+    embed, file = _chess_result_embed(image, caption)
+    await interaction.response.edit_message(content=None, embed=embed, attachments=[file], view=None)
 
 class EndGameView(discord.ui.View):
 
@@ -250,24 +250,21 @@ def _chess_display_names(cid):
     game = games._chess_games[cid]
     return {True: f'<@{game['player_id']}>', False: 'Bot'}
 
+def _chess_result_embed(image, caption, color=2899536):
+    """Gói (image_buf, caption) trả về từ games.chess_* thành (embed, file) sẵn để edit_message."""
+    embed = discord.Embed(description=caption, color=color)
+    embed.set_image(url='attachment://result.png')
+    return embed, discord.File(image, filename='result.png')
+
 async def _check_and_handle_chess_timeout(interaction: discord.Interaction, cid) -> bool:
     timed_out_color = games.chess_check_timeout(cid)
     if timed_out_color is None:
         return False
     names = _chess_display_names(cid)
-    text = games.chess_timeout_text(cid, timed_out_color, names)
+    image, caption = games.chess_timeout_text(cid, timed_out_color, names)
     games.chess_end(cid)
-    embed = discord.Embed(description=text, color=2899536)
-    try:
-        image = games.chess_board_image(cid)
-    except Exception:
-        image = None
-    if image:
-        file = discord.File(image, filename='board.png')
-        embed.set_image(url='attachment://board.png')
-        await interaction.response.edit_message(embed=embed, attachments=[file], view=None)
-    else:
-        await interaction.response.edit_message(embed=embed, view=None)
+    embed, file = _chess_result_embed(image, caption)
+    await interaction.response.edit_message(embed=embed, attachments=[file], view=None)
     return True
 
 def _add_chess_action_buttons(view, cid):
@@ -287,10 +284,10 @@ def _add_chess_action_buttons(view, cid):
             if await _deny_unless(interaction, is_participant):
                 return
             names = _chess_display_names(cid)
-            text = games.chess_resign_text(cid, interaction.user.id, names)
+            image, caption = games.chess_resign_text(cid, interaction.user.id, names)
             games.chess_end(cid)
-            embed = discord.Embed(description=text, color=2899536)
-            await interaction.response.edit_message(embed=embed, attachments=[], view=None)
+            embed, file = _chess_result_embed(image, caption)
+            await interaction.response.edit_message(embed=embed, attachments=[file], view=None)
         except Exception as e:
             print(f'[chess] Lỗi nút Đầu hàng: {e!r}')
             if not interaction.response.is_done():
@@ -360,16 +357,13 @@ class ChessTimeoutView(discord.ui.View):
             return
         timed_out_color = games.chess_check_timeout(self.cid)
         if timed_out_color is not None:
-            from_pvp = games.chess_is_pvp(self.cid)
-            names = None
-            if from_pvp:
-                game = games._chess_games[self.cid]
-                names = {True: f'<@{game['white_id']}>', False: f'<@{game['black_id']}>'}
-            text = games.chess_timeout_text(self.cid, timed_out_color, names)
+            names = _chess_display_names(self.cid) if games.chess_is_pvp(self.cid) else None
+            image, caption = games.chess_timeout_text(self.cid, timed_out_color, names)
             games.chess_end(self.cid)
+            embed, file = _chess_result_embed(image, caption)
             if self.message:
                 try:
-                    await self.message.edit(content=text, embed=None, view=None)
+                    await self.message.edit(content=None, embed=embed, attachments=[file], view=None)
                 except discord.HTTPException:
                     pass
             return
@@ -459,8 +453,6 @@ class ChessToView(ChessTimeoutView):
             bot_annotation = None
             if outcome is None and (not games.chess_is_pvp(self.cid)):
                 outcome, bot_annotation = games.chess_bot_move(self.cid)
-            image = games.chess_board_image(self.cid)
-            file = discord.File(image, filename='board.png')
             player_line = MOVE_ANNOTATION_TEXT.get(player_annotation)
             bot_line = MOVE_ANNOTATION_TEXT.get(bot_annotation)
             if bot_line:
@@ -468,18 +460,18 @@ class ChessToView(ChessTimeoutView):
             annotation_line = '\n'.join((l for l in (player_line, bot_line) if l)) or None
             if outcome is not None:
                 names = _chess_display_names(self.cid)
-                text = games.chess_outcome_text(self.cid, outcome, names)
+                result_image, caption = games.chess_outcome_text(self.cid, outcome, names)
                 if annotation_line:
-                    text += f'\n\n{annotation_line}'
+                    caption += f'\n\n{annotation_line}'
                 games.chess_end(self.cid)
-                embed = discord.Embed(description=text, color=2899536)
-                embed.set_image(url='attachment://board.png')
-                await interaction.response.edit_message(embed=embed, attachments=[file], view=None)
+                embed, result_file = _chess_result_embed(result_image, caption)
+                await interaction.response.edit_message(embed=embed, attachments=[result_file], view=None)
             else:
                 extra = f'👉 Đến lượt <@{games.chess_current_turn_id(self.cid)}>!' if games.chess_is_pvp(self.cid) else None
                 if annotation_line:
                     extra = f'{extra}\n{annotation_line}' if extra else annotation_line
                 embed = _chess_board_embed(self.cid, extra)
+                file = discord.File(games.chess_board_image(self.cid), filename='board.png')
                 new_view = ChessFromView(self.cid)
                 await interaction.response.edit_message(embed=embed, attachments=[file], view=new_view)
                 new_view.message = await interaction.original_response()
@@ -561,37 +553,29 @@ class ChessDifficultyView(discord.ui.View):
 
     def __init__(self, cid, player_id):
         super().__init__(timeout=30)
-        self.cid = cid
-        self.player_id = player_id
+        self.cid, self.player_id = cid, player_id
+        options = [discord.SelectOption(label=info['label'].replace('🐟 ', ''), value=str(elo), description=f'{elo} Elo')
+                   for elo, info in games.BOT_LEVELS.items()]
+        select = discord.ui.Select(placeholder='🐟 Chọn cấp độ Delfish...', options=options)
+        select.callback = self.on_select
+        self.add_item(select)
 
-    async def _start(self, interaction, bot_elo):
+    async def on_select(self, interaction: discord.Interaction):
         if await _deny_unless(interaction, interaction.user.id == self.player_id):
             return
         if games.chess_active(self.cid):
             await interaction.response.send_message('⚠️ Đang có ván cờ vua chưa xong trong kênh này!', ephemeral=True)
             return
+        bot_elo = int(interaction.data['values'][0])
         _, ok = games.chess_start(self.cid, self.player_id, bot_elo)
         if not ok:
             await interaction.response.send_message('❌ Bạn đã hết lượt chơi cờ vs Bot hôm nay! Mua thêm 🎟️ Slot ở `/shop` hoặc chờ mai nhé.', ephemeral=True)
             return
-        image = games.chess_board_image(self.cid)
-        file = discord.File(image, filename='board.png')
+        file = discord.File(games.chess_board_image(self.cid), filename='board.png')
         embed = _chess_board_embed(self.cid, 'Chọn **quân** rồi chọn **ô muốn đi tới** bằng menu bên dưới.')
         new_view = ChessFromView(self.cid)
         await interaction.response.edit_message(content=None, embed=embed, attachments=[file], view=new_view)
         new_view.message = await interaction.original_response()
-
-    @discord.ui.button(label='🟢 Dễ (800 Elo)', style=discord.ButtonStyle.success)
-    async def easy(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await self._start(interaction, 800)
-
-    @discord.ui.button(label='🟡 Vừa (1200 Elo)', style=discord.ButtonStyle.primary)
-    async def medium(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await self._start(interaction, 1200)
-
-    @discord.ui.button(label='🔴 Khó (1600 Elo)', style=discord.ButtonStyle.danger)
-    async def hard(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await self._start(interaction, 1600)
 
 class ChessOpponentSelectView(discord.ui.View):
 
@@ -1502,6 +1486,61 @@ async def guess_language_slash(interaction: discord.Interaction):
     msg = await interaction.original_response()
     view.message = msg
     asyncio.create_task(_language_countdown(msg, view, cid, uid, ve_note))
+
+
+# ============================================================
+# 🎲 ĐỐ VUI
+# ============================================================
+_LETTERS = ['A', 'B', 'C', 'D']
+
+class TriviaView(discord.ui.View):
+    def __init__(self, cid, user_id, choices):
+        super().__init__(timeout=gx.TRIVIA_TIME_LIMIT)
+        self.cid, self.user_id = cid, user_id
+        for i, choice in enumerate(choices):
+            self.add_item(self._make_button(i, choice))
+
+    def _make_button(self, idx, label):
+        btn = discord.ui.Button(label=f'{_LETTERS[idx]}. {label}'[:80], style=discord.ButtonStyle.secondary)
+
+        async def cb(interaction: discord.Interaction):
+            if await _deny_unless(interaction, interaction.user.id == self.user_id, '❌ Đây không phải ván Đố Vui của bạn!'):
+                return
+            ok, won = gx.trivia_answer(self.cid, self.user_id, idx)
+            if not ok:
+                await interaction.response.send_message('❌ Ván này đã kết thúc rồi.', ephemeral=True)
+                return
+            correct = gx.trivia_correct_choice(self.cid, self.user_id)
+            gx.trivia_end(self.cid, self.user_id)
+            for item in self.children:
+                item.disabled = True
+            if won:
+                reward, ve = gx.award_win('trivia', self.user_id)
+                new_balance = games.get_deion(self.user_id)
+                text = f'🎉 **CHÍNH XÁC!** Đáp án là **{correct}**.\n\n{games.DEION_ICON} +{reward} Deion, {gx.VE_ICON} +{ve} Vé (số dư: {new_balance})'
+            else:
+                text = f'💀 Sai rồi! Đáp án đúng là **{correct}**.'
+            await interaction.response.edit_message(content=text, view=self)
+        btn.callback = cb
+        return btn
+
+    async def on_timeout(self):
+        gx.trivia_end(self.cid, self.user_id)
+
+@bot.tree.command(name='do-vui', description=f'🎲 Đố Vui trắc nghiệm 4 đáp án, {gx.TRIVIA_TIME_LIMIT}s ({gx.GAME_VE_COST["trivia"]} Vé nếu hết lượt free)')
+async def trivia_slash(interaction: discord.Interaction):
+    cid, uid = interaction.channel.id, interaction.user.id
+    if gx.trivia_active(cid, uid):
+        await interaction.response.send_message('⚠️ Bạn đang có ván Đố Vui chưa xong ở kênh này rồi!', ephemeral=True)
+        return
+    can_play, note = gx.can_play_or_reason('trivia', uid)
+    if not can_play:
+        await interaction.response.send_message(note, ephemeral=True)
+        return
+    question, choices = gx.trivia_start(cid, uid)
+    ve_note = f'\n_(Đã dùng {gx.GAME_VE_COST["trivia"]} 🎟️ Vé vì hết lượt free hôm nay)_' if note == 've' else ''
+    view = TriviaView(cid, uid, choices)
+    await interaction.response.send_message(f'🎲 **ĐỐ VUI**\n\n**{question}**{ve_note}', view=view)
 
 
 # ============================================================
