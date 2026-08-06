@@ -66,6 +66,7 @@ GAME_VE_COST = {
     'guess_country': 10,
     'guess_meme': 3,
     'guess_language': 5,
+    'trivia': 2,
 }
 
 # Thưởng Deion khi thắng = 30% giá Vé của game đó (bỏ số lẻ vô nghĩa 0.1/0.0001 cũ)
@@ -74,7 +75,7 @@ GAME_WIN_REWARD = {g: round(cost * REWARD_RATE, 2) for g, cost in GAME_VE_COST.i
 
 # 🎟️ Vé thưởng khi thắng — áp cho MỌI game, kể cả chess_bot & jackpot (trước đây không có)
 VE_WIN_REWARD = {'wordle': 1, 'minesweeper': 2, 'guess_country': 3, 'guess_meme': 2,
-                 'guess_language': 2, 'chess_bot': 5, 'jackpot': 1}
+                 'guess_language': 2, 'chess_bot': 5, 'jackpot': 1, 'trivia': 1}
 
 def award_win(game_type, user_id, deion_mult=1.0):
     """Cộng Deion + Vé thưởng khi thắng, đồng thời tick tiến độ quest. Trả (deion, ve) đã cộng."""
@@ -94,6 +95,7 @@ _g.DAILY_FREE_GAMES.setdefault('minesweeper', 3)
 _g.DAILY_FREE_GAMES.setdefault('guess_country', 3)
 _g.DAILY_FREE_GAMES.setdefault('guess_meme', 3)
 _g.DAILY_FREE_GAMES.setdefault('guess_language', 5)
+_g.DAILY_FREE_GAMES.setdefault('trivia', 5)
 
 def can_play_or_reason(game_type, user_id):
     """
@@ -1246,6 +1248,60 @@ def redeem_custom_code(user_id, name):
 
 
 # ============================================================
+# 🎲 ĐỐ VUI (trivia — 4 đáp án trắc nghiệm, 20s)
+# ============================================================
+_trivia_games = {}  # key: (cid, uid) -> state
+TRIVIA_TIME_LIMIT = 20
+
+TRIVIA_QUESTIONS = [
+    ('Thủ đô của Việt Nam là gì?', ['Hà Nội', 'TP.HCM', 'Đà Nẵng', 'Huế'], 0),
+    ('1 + 1 x 2 = ?', ['3', '4', '2', '6'], 0),
+    ('Hành tinh nào gần Mặt Trời nhất?', ['Sao Kim', 'Sao Thuỷ', 'Trái Đất', 'Sao Hoả'], 1),
+    ('Con vật nào được mệnh danh "chúa sơn lâm"?', ['Hổ', 'Sư tử', 'Voi', 'Gấu'], 0),
+    ('Ngôn ngữ lập trình nào dùng thụt lề (indent) để phân khối lệnh?', ['C++', 'Java', 'Python', 'Rust'], 2),
+    ('Số nguyên tố nhỏ nhất là?', ['0', '1', '2', '3'], 2),
+    ('Việt Nam có bao nhiêu tỉnh/thành giáp biển?', ['28', '18', '35', '10'], 0),
+    ('Đơn vị đo cường độ dòng điện là gì?', ['Volt', 'Watt', 'Ampe', 'Ohm'], 2),
+    ('Tựa game nào có nhân vật "Herobrine" là huyền thoại?', ['Roblox', 'Minecraft', 'Terraria', 'Fortnite'], 1),
+    ('Loài chim nào không biết bay?', ['Đại bàng', 'Chim cánh cụt', 'Bồ câu', 'Sáo'], 1),
+]
+
+def _trivia_key(cid, uid):
+    return (cid, uid)
+
+def trivia_active(cid, uid):
+    game = _trivia_games.get(_trivia_key(cid, uid))
+    return game is not None and not game['done'] and _session_alive(game)
+
+def trivia_start(cid, uid):
+    q, choices, correct = random.choice(TRIVIA_QUESTIONS)
+    order = list(range(4))
+    random.shuffle(order)
+    shuffled = [choices[i] for i in order]
+    answer_idx = order.index(correct)
+    _trivia_games[_trivia_key(cid, uid)] = _session_mark({
+        'question': q, 'choices': shuffled, 'answer_idx': answer_idx, 'done': False,
+    })
+    quest_notify_play(uid, 'trivia')
+    return q, shuffled
+
+def trivia_answer(cid, uid, picked_idx):
+    """Trả (ok, won). ok=False nếu ván không còn tồn tại/đã xong."""
+    game = _trivia_games.get(_trivia_key(cid, uid))
+    if game is None or game['done']:
+        return (False, False)
+    game['done'] = True
+    return (True, picked_idx == game['answer_idx'])
+
+def trivia_correct_choice(cid, uid):
+    game = _trivia_games[_trivia_key(cid, uid)]
+    return game['choices'][game['answer_idx']]
+
+def trivia_end(cid, uid):
+    _trivia_games.pop(_trivia_key(cid, uid), None)
+
+
+# ============================================================
 # 📜 QUEST / NHIỆM VỤ HÀNG NGÀY — pool 16 loại, mỗi ngày random 3, reset lúc 0h
 # ============================================================
 QUEST_REWARD_DEION = 10   # Deion nhận khi hoàn thành xong 1 nhiệm vụ
@@ -1282,6 +1338,8 @@ QUEST_POOL = [
      'desc': lambda g: f'🌍 Chơi Đoán Quốc Gia {g} lần'},
     {'id': 'play_meme', 'goal': 5, 'kind': 'play_meme',
      'desc': lambda g: f'🖼️ Chơi Đoán Meme {g} lần'},
+    {'id': 'play_trivia', 'goal': 5, 'kind': 'play_trivia',
+     'desc': lambda g: f'🎲 Chơi Đố Vui (`/do-vui`) {g} lần'},
     {'id': 'win_chess_bot', 'goal': 1, 'kind': 'win_chess_bot',
      'desc': lambda g: f'♟️ Thắng {g} ván cờ vs Bot'},
     {'id': 'play_jackpot', 'goal': 3, 'kind': 'play_jackpot',
@@ -1379,7 +1437,8 @@ def quest_notify_play(user_id, game_type):
     """Gọi mỗi khi 1 ván minigame kết thúc (thắng/thua đều tính là 'chơi')."""
     kind_map = {'wordle': 'play_wordle', 'minesweeper': 'play_minesweeper',
                 'guess_country': 'play_country', 'guess_meme': 'play_meme',
-                'guess_language': 'play_language', 'jackpot': 'play_jackpot'}
+                'guess_language': 'play_language', 'jackpot': 'play_jackpot',
+                'trivia': 'play_trivia'}
     kind = kind_map.get(game_type)
     return _quest_bump_kind(user_id, kind) if kind else []
 
