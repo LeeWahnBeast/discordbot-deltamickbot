@@ -125,6 +125,9 @@ CHESS_STALE_SECONDS = 30 * 60
 CHESS_TIME_MODES = {'bullet': {'label': '⚡ Cờ đạn (Bullet)', 'base': 2 * 60, 'increment': 1}, 'blitz': {'label': '🔥 Cờ chớp (Blitz)', 'base': 5 * 60, 'increment': 2}, 'rapid': {'label': '🚀 Cờ nhanh (Rapid)', 'base': 15 * 60, 'increment': 5}, 'classical': {'label': '🏛️ Cờ tiêu chuẩn (Classical)', 'base': 60 * 60, 'increment': 10}}
 CHESS_DEFAULT_TIME_MODE = 'rapid'
 
+def _sign(d):
+    return f'+{d}' if d >= 0 else str(d)
+
 def _fmt_clock(seconds):
     seconds = max(0, int(seconds))
     m, s = divmod(seconds, 60)
@@ -173,7 +176,9 @@ def chess_force_reset(cid):
     _chess_draw_offers.pop(cid, None)
     return existed
 
-def chess_start(cid, player_id, bot_elo=1200):
+CHESS_DEFAULT_BOT_ELO = 300  # Cấp 5 (Delfish) — mức mặc định khi không chọn
+
+def chess_start(cid, player_id, bot_elo=CHESS_DEFAULT_BOT_ELO):
     if daily_games_left_today('chess_bot', player_id) <= 0:
         return (False, False)
     _consume_daily_slot('chess_bot', player_id)
@@ -207,7 +212,22 @@ def chess_player_id(cid):
 DEFAULT_ELO = 800
 K_FACTOR = 32
 HINT_ELO_PENALTY = 100
-BOT_LEVELS = {800: {'label': '🟢 Dễ', 'random_chance': 0.5}, 1200: {'label': '🟡 Vừa', 'random_chance': 0.15}, 1600: {'label': '🔴 Khó', 'random_chance': 0.0}}
+# Bot cờ vua tên "Delfish", 12 cấp độ (0-11), độ mạnh tăng dần theo Elo.
+# random_chance: xác suất bot đi nước ngẫu nhiên thay vì nước tốt nhất (càng cao càng dễ).
+BOT_LEVELS = {
+    50:   {'label': '🐟 Delfish · Cấp 0 (Người mới)', 'random_chance': 1.00},
+    100:  {'label': '🐟 Delfish · Cấp 1',             'random_chance': 0.90},
+    150:  {'label': '🐟 Delfish · Cấp 2',             'random_chance': 0.80},
+    200:  {'label': '🐟 Delfish · Cấp 3',             'random_chance': 0.70},
+    250:  {'label': '🐟 Delfish · Cấp 4',             'random_chance': 0.60},
+    300:  {'label': '🐟 Delfish · Cấp 5',             'random_chance': 0.50},
+    350:  {'label': '🐟 Delfish · Cấp 6',             'random_chance': 0.40},
+    400:  {'label': '🐟 Delfish · Cấp 7',             'random_chance': 0.30},
+    500:  {'label': '🐟 Delfish · Cấp 8',             'random_chance': 0.20},
+    1500: {'label': '🐟 Delfish · Cấp 9',             'random_chance': 0.10},
+    2000: {'label': '🐟 Delfish · Cấp 10',            'random_chance': 0.05},
+    3500: {'label': '🐟 Delfish · Cấp 11',            'random_chance': 0.00},
+}
 ELO_FILE = 'chess_elo.json'
 _elo_cache = {uid: d.get('elo', DEFAULT_ELO) for uid, d in _firestore_load_collection('elo', ELO_FILE).items()}
 
@@ -652,7 +672,8 @@ def default_piece_sprite(piece_type, color):
     _DEFAULT_PIECE_SPRITE_CACHE[key] = sprite
     return sprite
 
-def chess_board_image(cid):
+def _render_board_img(cid):
+    """Vẽ bàn cờ hiện tại, trả về đối tượng PIL.Image (RGBA) — dùng chung cho ảnh bàn cờ và ảnh kết quả."""
     game = _chess_games[cid]
     board = game['board']
     last_move = game.get('last_move')
@@ -687,10 +708,81 @@ def chess_board_image(cid):
             if sprite is None:
                 sprite = default_piece_sprite(piece.piece_type, piece.color)
             img.alpha_composite(sprite, (x0, y0))
+    return img
+
+def chess_board_image(cid):
+    buf = io.BytesIO()
+    _render_board_img(cid).convert('RGB').save(buf, format='PNG')
+    buf.seek(0)
+    return buf
+
+# ---- Ảnh thẻ kết quả (kiểu lichess: bàn cờ + banner kết quả phủ giữa) ----
+CHESS_QUOTES = [
+    ('Every chess master was once a beginner.', 'Irving Chernev'),
+    ('Chess is life in miniature.', 'Garry Kasparov'),
+    ('When you see a good move, look for a better one.', 'Emanuel Lasker'),
+    ('Chess is the gymnasium of the mind.', 'Blaise Pascal'),
+    ('Tactics flow from a superior position.', 'Bobby Fischer'),
+    ('The pin is mightier than the sword.', 'Fred Reinfeld'),
+    ('A bad plan is better than none at all.', 'Frank Marshall'),
+    ('Chess is everything: art, science, and sport.', 'Anatoly Karpov'),
+    ('In chess, as in life, opportunity strikes but once.', 'David Teasdale'),
+]
+
+def _wrap_lines(draw, text, font, max_width):
+    words, lines, cur = text.split(), [], ''
+    for w in words:
+        trial = f'{cur} {w}'.strip()
+        if draw.textlength(trial, font=font) <= max_width:
+            cur = trial
+        else:
+            lines.append(cur)
+            cur = w
+    if cur:
+        lines.append(cur)
+    return lines
+
+def chess_result_image(cid, title, subtitle, white_name, black_name):
+    """title: 'white won' / 'black won' / 'draw'. subtitle: 'by resignation' / 'by checkmate' / v.v."""
+    img = _render_board_img(cid).convert('RGBA')
+    draw = ImageDraw.Draw(img)
+    top, bottom = int(_BOARD_PX * 0.17), int(_BOARD_PX * 0.86)
+    box = Image.new('RGBA', (_BOARD_PX, bottom - top), (250, 250, 248, 235))
+    img.alpha_composite(box, (0, top))
+    draw = ImageDraw.Draw(img)
+    cx, y = _BOARD_PX // 2, top + 12
+    f_title, f_sub, f_quote = (_chess_font(30), _chess_font(15), _chess_font(13))
+    draw.text((cx, y), title, font=f_title, fill=(25, 25, 25), anchor='ma')
+    y += 36
+    draw.text((cx, y), subtitle, font=f_sub, fill=(95, 95, 95), anchor='ma')
+    y += 34
+    quote, author = random.choice(CHESS_QUOTES)
+    for line in _wrap_lines(draw, quote, f_quote, _BOARD_PX * 0.72):
+        draw.text((cx, y), line, font=f_quote, fill=(75, 75, 75), anchor='ma')
+        y += 17
+    draw.text((cx, y), f'-{author}', font=f_quote, fill=(75, 75, 75), anchor='ma')
+    y += 30
+    move_count = _chess_games[cid]['board'].fullmove_number
+    info_lines = [f"Date: {time.strftime('%-d/%-m/%Y')}", f'Move Count: {move_count}', f'White: {white_name}', f'Black: {black_name}']
+    x_left = int(_BOARD_PX * 0.10)
+    for line in info_lines:
+        draw.text((x_left, y), line, font=f_quote, fill=(20, 20, 20))
+        y += 19
     buf = io.BytesIO()
     img.convert('RGB').save(buf, format='PNG')
     buf.seek(0)
     return buf
+
+def _chess_elo_caption(white_name, black_name, new_white, new_black, d_white, d_black, extra=''):
+    return f'⚪ {white_name}: {new_white} Elo ({_sign(d_white)})\n⚫ {black_name}: {new_black} Elo ({_sign(d_black)}){extra}'
+
+_CHESS_TERMINATION_SUBTITLE = {
+    chess.Termination.CHECKMATE: 'by checkmate',
+    chess.Termination.STALEMATE: 'by stalemate',
+    chess.Termination.INSUFFICIENT_MATERIAL: 'by insufficient material',
+    chess.Termination.FIFTY_MOVES: 'by the 50-move rule',
+    chess.Termination.THREEFOLD_REPETITION: 'by repetition',
+}
 
 def _material_score(board, color):
     score = 0
@@ -749,89 +841,86 @@ def chess_bot_move(cid):
     return (board.outcome(claim_draw=True), annotation)
 
 def chess_outcome_text(cid, outcome, display_names=None):
+    """Ván kết thúc tự nhiên trên bàn (chiếu bí / hòa). Trả (image_buf, caption)."""
     game = _chess_games[cid]
+    subtitle = _CHESS_TERMINATION_SUBTITLE.get(outcome.termination, 'draw')
     if game['is_pvp']:
         white_id, black_id = (game['white_id'], game['black_id'])
-        white_elo, black_elo = (get_elo(white_id), get_elo(black_id))
-        if outcome.winner is None:
-            score_white = 0.5
-        elif outcome.winner == chess.WHITE:
-            score_white = 1
-        else:
-            score_white = 0
-        new_white, new_black, d_white, d_black = update_elo(white_id, white_elo, black_id, black_elo, score_white)
         white_name = display_names[True] if display_names else f'<@{white_id}>'
         black_name = display_names[False] if display_names else f'<@{black_id}>'
-        sign_w = f'+{d_white}' if d_white >= 0 else str(d_white)
-        sign_b = f'+{d_black}' if d_black >= 0 else str(d_black)
+        score_white = 0.5 if outcome.winner is None else (1 if outcome.winner == chess.WHITE else 0)
+        new_white, new_black, d_white, d_black = update_elo(white_id, get_elo(white_id), black_id, get_elo(black_id), score_white)
         if outcome.winner is None:
-            result_line = '🤝 Hòa!'
-            aura_line = ''
+            title, extra = ('draw', '')
         else:
             winner_id = white_id if outcome.winner == chess.WHITE else black_id
             winner_name = white_name if outcome.winner == chess.WHITE else black_name
-            result_line = f'🎉 {winner_name} thắng! Chiếu bí!'
+            title = 'white won' if outcome.winner == chess.WHITE else 'black won'
             new_winner_aura = add_deion(winner_id, 0.5)
-            aura_line = f'\n\n{DEION_ICON} {winner_name} nhận **+0.5 Deion** (số dư: {new_winner_aura}).'
-        return f'{result_line}\n\n⚪ {white_name}: {new_white} Elo ({sign_w})\n⚫ {black_name}: {new_black} Elo ({sign_b}){aura_line}'
-    player_id = game['player_id']
-    player_elo = get_elo(player_id)
-    player_color = game['player_color']
-    if outcome.winner is None:
-        score_player = 0.5
-    else:
-        score_player = 1 if outcome.winner == player_color else 0
-    new_player_elo, _, d_player, _ = update_elo(player_id, player_elo, None, game['bot_elo'], score_player)
-    sign = f'+{d_player}' if d_player >= 0 else str(d_player)
+            extra = f'\n\n{DEION_ICON} {winner_name} nhận **+0.5 Deion** (số dư: {new_winner_aura}).'
+        caption = _chess_elo_caption(white_name, black_name, new_white, new_black, d_white, d_black, extra)
+        return chess_result_image(cid, title, subtitle, white_name, black_name), caption
+    player_id, player_color = (game['player_id'], game['player_color'])
+    score_player = 0.5 if outcome.winner is None else (1 if outcome.winner == player_color else 0)
+    new_player_elo, _, d_player, _ = update_elo(player_id, get_elo(player_id), None, game['bot_elo'], score_player)
+    bot_label = BOT_LEVELS[game['bot_elo']]['label']
+    player_name = display_names[True] if display_names else f'<@{player_id}>'
+    white_name = player_name if player_color == chess.WHITE else bot_label
+    black_name = bot_label if player_color == chess.WHITE else player_name
     ve_line = ''
     if outcome.winner is None:
-        result_line = '🤝 Hòa!'
+        title = 'draw'
     elif score_player == 1:
-        result_line = '🎉 Bạn thắng! Bot chịu thua.'
+        title = 'white won' if player_color == chess.WHITE else 'black won'
         _, ve = _ext.award_win('chess_bot', player_id, deion_mult=0)
         new_bal = add_deion(player_id, 0.5)
         ve_line = f'\n{DEION_ICON} +0.5 Deion, {_ext.VE_ICON} +{ve} Vé (số dư: {new_bal}).'
     else:
-        result_line = '🤖 Bot chiếu bí! Bạn thua rồi.'
-    return f'{result_line}\n\nElo của bạn: {new_player_elo} ({sign}){ve_line}'
+        title = 'black won' if player_color == chess.WHITE else 'white won'
+    caption = f'Elo của bạn: {new_player_elo} ({_sign(d_player)}){ve_line}'
+    return chess_result_image(cid, title, subtitle, white_name, black_name), caption
 
-def chess_resign_text(cid, resigner_id, display_names=None):
-    game = _chess_games[cid]
-    if game['is_pvp']:
-        white_id, black_id = (game['white_id'], game['black_id'])
-        white_elo, black_elo = (get_elo(white_id), get_elo(black_id))
-        score_white = 0 if resigner_id == white_id else 1
-        new_white, new_black, d_white, d_black = update_elo(white_id, white_elo, black_id, black_elo, score_white)
-        white_name = display_names[True] if display_names else f'<@{white_id}>'
-        black_name = display_names[False] if display_names else f'<@{black_id}>'
-        resigner_name = white_name if resigner_id == white_id else black_name
-        winner_name = black_name if resigner_id == white_id else white_name
-        winner_id = black_id if resigner_id == white_id else white_id
-        new_winner_aura = add_deion(winner_id, 0.5)
-        sign_w = f'+{d_white}' if d_white >= 0 else str(d_white)
-        sign_b = f'+{d_black}' if d_black >= 0 else str(d_black)
-        return f'🏳️ {resigner_name} đã đầu hàng! {winner_name} thắng!\n\n⚪ {white_name}: {new_white} Elo ({sign_w})\n⚫ {black_name}: {new_black} Elo ({sign_b})\n\n{DEION_ICON} {winner_name} nhận **+0.5 Deion** (số dư: {new_winner_aura}).'
-    player_id = game['player_id']
-    player_elo = get_elo(player_id)
-    new_player_elo, _, d_player, _ = update_elo(player_id, player_elo, None, game['bot_elo'], 0)
-    sign = f'+{d_player}' if d_player >= 0 else str(d_player)
-    return f'🏳️ Bạn đã đầu hàng! Bot thắng.\n\nElo của bạn: {new_player_elo} ({sign})'
-
-def chess_timeout_text(cid, timed_out_color, display_names=None):
+def _chess_win_by(cid, winner_color, subtitle, prefix_line, display_names=None):
+    """Dùng chung cho đầu hàng & hết giờ (luôn PvP, luôn có màu thắng rõ ràng). Trả (image_buf, caption)."""
     game = _chess_games[cid]
     white_id, black_id = (game['white_id'], game['black_id'])
-    white_elo, black_elo = (get_elo(white_id), get_elo(black_id))
-    score_white = 0 if timed_out_color == chess.WHITE else 1
-    new_white, new_black, d_white, d_black = update_elo(white_id, white_elo, black_id, black_elo, score_white)
     white_name = display_names[True] if display_names else f'<@{white_id}>'
     black_name = display_names[False] if display_names else f'<@{black_id}>'
-    loser_name = white_name if timed_out_color == chess.WHITE else black_name
-    winner_name = black_name if timed_out_color == chess.WHITE else white_name
-    winner_id = black_id if timed_out_color == chess.WHITE else white_id
+    score_white = 1 if winner_color == chess.WHITE else 0
+    new_white, new_black, d_white, d_black = update_elo(white_id, get_elo(white_id), black_id, get_elo(black_id), score_white)
+    winner_id = white_id if winner_color == chess.WHITE else black_id
+    winner_name = white_name if winner_color == chess.WHITE else black_name
     new_winner_aura = add_deion(winner_id, 0.5)
-    sign_w = f'+{d_white}' if d_white >= 0 else str(d_white)
-    sign_b = f'+{d_black}' if d_black >= 0 else str(d_black)
-    return f'⏰ {loser_name} đã hết giờ! {winner_name} thắng!\n\n⚪ {white_name}: {new_white} Elo ({sign_w})\n⚫ {black_name}: {new_black} Elo ({sign_b})\n\n{DEION_ICON} {winner_name} nhận **+0.5 Deion** (số dư: {new_winner_aura}).'
+    extra = f'\n\n{DEION_ICON} {winner_name} nhận **+0.5 Deion** (số dư: {new_winner_aura}).'
+    caption = f'{prefix_line}\n\n' + _chess_elo_caption(white_name, black_name, new_white, new_black, d_white, d_black, extra)
+    title = 'white won' if winner_color == chess.WHITE else 'black won'
+    return chess_result_image(cid, title, subtitle, white_name, black_name), caption
+
+def chess_resign_text(cid, resigner_id, display_names=None):
+    """Trả (image_buf, caption)."""
+    game = _chess_games[cid]
+    if game['is_pvp']:
+        is_white_resigning = resigner_id == game['white_id']
+        winner_color = chess.BLACK if is_white_resigning else chess.WHITE
+        resigner_name = display_names[is_white_resigning] if display_names else f'<@{resigner_id}>'
+        return _chess_win_by(cid, winner_color, 'by resignation', f'🏳️ {resigner_name} đã đầu hàng!', display_names)
+    player_id = game['player_id']
+    new_player_elo, _, d_player, _ = update_elo(player_id, get_elo(player_id), None, game['bot_elo'], 0)
+    bot_label = BOT_LEVELS[game['bot_elo']]['label']
+    player_name = display_names[True] if display_names else f'<@{player_id}>'
+    player_color = game['player_color']
+    white_name = player_name if player_color == chess.WHITE else bot_label
+    black_name = bot_label if player_color == chess.WHITE else player_name
+    title = 'black won' if player_color == chess.WHITE else 'white won'
+    caption = f'🏳️ Bạn đã đầu hàng! {bot_label} thắng.\n\nElo của bạn: {new_player_elo} ({_sign(d_player)})'
+    return chess_result_image(cid, title, 'by resignation', white_name, black_name), caption
+
+def chess_timeout_text(cid, timed_out_color, display_names=None):
+    """Luôn PvP (bot không có đồng hồ). Trả (image_buf, caption)."""
+    game = _chess_games[cid]
+    loser_id = game['white_id'] if timed_out_color == chess.WHITE else game['black_id']
+    loser_name = display_names[timed_out_color == chess.WHITE] if display_names else f'<@{loser_id}>'
+    return _chess_win_by(cid, not timed_out_color, 'by timeout', f'⏰ {loser_name} đã hết giờ!', display_names)
 
 def chess_hint(cid, hinter_id):
     game = _chess_games[cid]
@@ -870,7 +959,7 @@ def chess_header_text(cid, display_names=None):
     player_name = display_names[True] if display_names else f'<@{player_id}>'
     bot_elo = game['bot_elo']
     bot_label = BOT_LEVELS[bot_elo]['label']
-    return f'⚪ **{player_name}** — {get_elo(player_id)} Elo\n⚫ **Bot ({bot_label})** — {bot_elo} Elo'
+    return f'⚪ **{player_name}** — {get_elo(player_id)} Elo\n⚫ **{bot_label}** — {bot_elo} Elo'
 _chess_draw_offers = {}
 
 def chess_offer_draw(cid, offerer_id):
@@ -883,11 +972,13 @@ def chess_clear_draw_offer(cid):
     _chess_draw_offers.pop(cid, None)
 
 def chess_accept_draw_text(cid, display_names=None):
+    """Trả (image_buf, caption). Hòa theo thỏa thuận không ảnh hưởng Elo."""
     game = _chess_games[cid]
     white_id, black_id = (game['white_id'], game['black_id'])
     white_name = display_names[True] if display_names else f'<@{white_id}>'
     black_name = display_names[False] if display_names else f'<@{black_id}>'
-    return f'🤝 {white_name} và {black_name} đã đồng ý hòa. Ván cờ kết thúc, Elo giữ nguyên.'
+    caption = f'🤝 {white_name} và {black_name} đã đồng ý hòa. Ván cờ kết thúc, Elo giữ nguyên.'
+    return chess_result_image(cid, 'draw', 'by agreement', white_name, black_name), caption
 def chess_captured_text(cid):
     board = _chess_games[cid]['board']
     remaining = {chess.WHITE: {}, chess.BLACK: {}}
