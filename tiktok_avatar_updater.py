@@ -20,6 +20,17 @@ async def update_tiktok_avatar(bot):
                 download=False
             )
 
+            print("=" * 50)
+            print(info)
+            print("=" * 50)
+
+            if info:
+                print("Keys:", list(info.keys()))
+                print("Thumbnail:", info.get("thumbnail"))
+                print("Thumbnails:", info.get("thumbnails"))
+            else:
+                print("Không lấy được dữ liệu.")
+
             avatar = None
 
             if info.get("thumbnails"):
