@@ -10,6 +10,7 @@ import games
 import games_ext as gx
 import ai
 import autoresponse
+from tiktok_avatar_updater import update_tiktok_avatar
 from tiktok_live_connector import setup
 from discord.ext import commands
 from discord import app_commands
@@ -1679,6 +1680,11 @@ async def taphoa_slash(interaction: discord.Interaction):
     )
     view = TapHoaView(interaction.user.id)
     await interaction.response.send_message(embed=embed, view=view)
+
+@bot.event
+async def on_ready():
+    print(f"Logged in as {bot.user}")
+    bot.loop.create_task(update_tiktok_avatar(bot))
 
 web_server.keep_alive()
 bot.run(os.environ['DISCORD_KEY'])
