@@ -1,53 +1,43 @@
 import asyncio
 import aiohttp
-import yt_dlp
 
 USERNAME = "tahnuyo_0"
 GUILD_ID = 1528554640378171562
 
+_last_avatar = None
+
 async def update_tiktok_avatar(bot):
+    global _last_avatar
+
     await bot.wait_until_ready()
 
     while not bot.is_closed():
         try:
-            ydl = yt_dlp.YoutubeDL({
-                "quiet": True,
-                "extract_flat": False
-            })
+            async with aiohttp.ClientSession() as session:
+                async with session.get(
+                    f"https://www.tikwm.com/api/user/info?unique_id={USERNAME}"
+                ) as resp:
+                    if resp.status == 200:
+                        data = await resp.json()
 
-            info = ydl.extract_info(
-                f"https://www.tiktok.com/@{USERNAME}",
-                download=False
-            )
+                        avatar = (
+                            data.get("data", {})
+                                .get("user", {})
+                                .get("avatarLarger")
+                        )
 
-            print("=" * 50)
-            print(info)
-            print("=" * 50)
+                        if avatar and avatar != _last_avatar:
+                            async with session.get(avatar) as img:
+                                if img.status == 200:
+                                    icon = await img.read()
+                                    guild = bot.get_guild(GUILD_ID)
 
-            if info:
-                print("Keys:", list(info.keys()))
-                print("Thumbnail:", info.get("thumbnail"))
-                print("Thumbnails:", info.get("thumbnails"))
-            else:
-                print("Không lấy được dữ liệu.")
-
-            avatar = None
-
-            if info.get("thumbnails"):
-                avatar = info["thumbnails"][-1]["url"]
-
-            if avatar:
-                async with aiohttp.ClientSession() as session:
-                    async with session.get(avatar) as resp:
-                        if resp.status == 200:
-                            icon = await resp.read()
-                            guild = bot.get_guild(GUILD_ID)
-
-                            if guild:
-                                await guild.edit(icon=icon)
-                                print("Server icon updated.")
+                                    if guild:
+                                        await guild.edit(icon=icon)
+                                        _last_avatar = avatar
+                                        print("Server icon updated.")
 
         except Exception as e:
-            print(f"TikTok Avatar Error: {e}")
+            print(f"Avatar updater: {e}")
 
-        await asyncio.sleep(7200)
+        await asyncio.sleep(18000)
