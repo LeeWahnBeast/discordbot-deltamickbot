@@ -1681,10 +1681,13 @@ async def taphoa_slash(interaction: discord.Interaction):
     view = TapHoaView(interaction.user.id)
     await interaction.response.send_message(embed=embed, view=view)
 
+avatar_task = None
+
 @bot.event
 async def on_ready():
-    print(f"Logged in as {bot.user}")
-    bot.loop.create_task(update_tiktok_avatar(bot))
+    global avatar_task
 
+    if avatar_task is None:
+        avatar_task = asyncio.create_task(update_tiktok_avatar(bot))
 web_server.keep_alive()
 bot.run(os.environ['DISCORD_KEY'])
