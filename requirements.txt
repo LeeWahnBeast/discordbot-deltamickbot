@@ -8,3 +8,5 @@ requests>=2.31.0
 Unidecode
 TikTokLive
 feedparser
+aiohttp
+yt-dlp
