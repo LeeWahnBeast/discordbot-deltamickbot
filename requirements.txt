@@ -9,4 +9,3 @@ Unidecode
 TikTokLive
 feedparser
 aiohttp
-yt-dlp
