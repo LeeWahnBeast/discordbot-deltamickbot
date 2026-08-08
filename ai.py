@@ -288,7 +288,24 @@ def _safe_parse_action_json(raw_text: str) -> dict[str, str]:
         if not isinstance(data, dict):
             raise ValueError("not a dict")
     except (json.JSONDecodeError, ValueError):
-        # Fallback: dùng nguyên văn text làm reply, không react.
+        # JSON bị lỗi/cắt cụt (model trả thiếu dấu ngoặc, thừa rác...).
+        # Thử trích riêng giá trị của field "reply" bằng regex trước,
+        # để không bao giờ vô tình gửi thẳng chuỗi JSON thô cho user.
+        m = re.search(r'"reply"\s*:\s*"((?:[^"\\]|\\.)*)"', text, flags=re.DOTALL)
+        if m:
+            reply_raw = m.group(1)
+            try:
+                reply_raw = json.loads(f'"{reply_raw}"')
+            except (json.JSONDecodeError, ValueError):
+                reply_raw = reply_raw.replace('\\"', '"').replace("\\n", "\n")
+            return {"reply": strip_all_mentions(reply_raw)[:DISCORD_MSG_HARD_LIMIT], "react": ""}
+
+        # Không tìm được field "reply" nào -> có khả năng model trả nguyên
+        # văn hội thoại bình thường (không phải JSON). Chỉ dùng nguyên văn
+        # nếu text đó KHÔNG có dáng dấp JSON (tránh lộ JSON thô ra chat).
+        looks_like_json = bool(re.search(r'[{}]|"reply"|"react"', text))
+        if looks_like_json:
+            return {"reply": "", "react": ""}
         return {"reply": strip_all_mentions(text)[:DISCORD_MSG_HARD_LIMIT], "react": ""}
 
     reply_val = data.get("reply", "")
