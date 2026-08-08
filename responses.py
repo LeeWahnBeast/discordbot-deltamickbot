@@ -23,10 +23,6 @@ responses = {
         "text": "ratio kid",
         "image": None
     },
-    "cơm": {
-        "text": "cơm quê dượng bầu or cơm quê 1989",
-        "image": None
-    },
     "cơm quê dượng bầu": {
         "text": "giá trên mây vào mà dọng 1 mình mày🤣🤣🤣",
         "image": None
