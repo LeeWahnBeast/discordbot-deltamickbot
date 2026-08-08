@@ -27,12 +27,12 @@ responses = {
         "text": "cơm quê dượng bầu or cơm quê 1989",
         "image": None
     },
-    "quê dượng bầu": {
-        "text": "giá trên mây😂😂😂",
+    "cơm quê dượng bầu": {
+        "text": "giá trên mây vào mà dọng 1 mình mày🤣🤣🤣",
         "image": None
     },
-    "quê 1989": {
-        "text": "ăn ngon ko",
+    "cơm nhà 1989": {
+        "text": "ăn như cứt",
         "image": None
     },
     "quán nhậu 5 thùy": {
