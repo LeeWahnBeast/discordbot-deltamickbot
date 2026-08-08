@@ -1,5 +1,6 @@
 import discord
 import os
+import sys
 import time
 import random
 import re
@@ -11,9 +12,16 @@ import games_ext as gx
 import ai
 import autoresponse
 from tiktok_avatar_updater import update_tiktok_avatar
-from tiktok_live_connector import setup
+from tiktok_live_connector import setup, CHANNEL_ID as TIKTOK_CHANNEL_ID
 from discord.ext import commands
 from discord import app_commands
+
+# Render (và nhiều host khác) chạy python không qua TTY thật -> stdout mặc định
+# bị block-buffer, khiến print() có thể không hiện ra log ngay (hoặc mất hẳn nếu
+# process bị kill trước khi buffer đầy). Ép flush theo từng dòng để log luôn hiện.
+sys.stdout.reconfigure(line_buffering=True)
+sys.stderr.reconfigure(line_buffering=True)
+
 intents = discord.Intents.default()
 intents.message_content = True
 bot = commands.Bot(command_prefix='!', intents=intents)
@@ -57,15 +65,32 @@ async def on_ready():
         import traceback
         traceback.print_exc()
         print(f'⚠️ Lỗi khi check/rời guild không được phép: {e}')
+    tiktok_status = '⚠️ lỗi khi khởi động (xem log)'
     if not _tiktok_setup_done:
         try:
             await setup(bot)
             _tiktok_setup_done = True
+            tiktok_status = '✅ đã bật'
             print('✅ Đã khởi động TikTok live/video watcher')
         except Exception as e:
             import traceback
             traceback.print_exc()
             print(f'⚠️ Lỗi khởi động TikTok watcher: {e}')
+    else:
+        tiktok_status = '✅ đã bật từ trước (không khởi động lại)'
+
+    try:
+        debug_ch = bot.get_channel(TIKTOK_CHANNEL_ID)
+        if debug_ch is not None:
+            start_unix = int(time.time())
+            await debug_ch.send(
+                f'🤖 **Bot vừa khởi động lại** lúc <t:{start_unix}:F> (<t:{start_unix}:R>)\n'
+                f'TikTok watcher: {tiktok_status}'
+            )
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        print(f'⚠️ Lỗi gửi thông báo trạng thái khởi động: {e}')
     if avatar_task is None:
         avatar_task = asyncio.create_task(update_tiktok_avatar(bot))
     print(f'✅ Bot đã đăng nhập với tên {bot.user}')
