@@ -1,9 +1,8 @@
 import asyncio
 import time
 import json
-import os
 import discord
-import feedparser
+import yt_dlp
 import games as _g  # tái dùng kết nối Firestore đã khởi tạo sẵn (_firestore_db)
 from TikTokLive import TikTokLiveClient
 from TikTokLive.events import ConnectEvent
@@ -11,11 +10,6 @@ from TikTokLive.events import ConnectEvent
 CHANNEL_ID = 1528570574807236688
 ROLE = "<@&1534358042496335942>"
 USERNAME = "tahnuyo_0"
-
-# Public rsshub.app hay bị TikTok chặn (403) vì route TikTok cần Puppeteer.
-# Khuyến nghị: tự host RSSHub riêng (VD: Render Docker image diygod/rsshub:chromium-bundled)
-# rồi set biến môi trường RSSHUB_BASE = https://<domain-của-bạn> — không cần sửa code.
-RSSHUB_BASE = os.environ.get("RSSHUB_BASE", "https://rsshub.app")
 
 FIRESTORE_COLLECTION = "tiktok_state"
 FIRESTORE_DOC_ID = "last_video"
@@ -59,10 +53,34 @@ def _save_last_video(link):
         print(f"[tiktok] lỗi ghi file fallback: {ex!r}")
 
 
+def _fetch_latest_video():
+    """Lấy video mới nhất của USERNAME trực tiếp từ TikTok bằng yt-dlp (không cần RSSHub/Puppeteer)."""
+    profile_url = f"https://www.tiktok.com/@{USERNAME}"
+    ydl_opts = {
+        "extract_flat": True,   # chỉ lấy danh sách, không tải video thật
+        "playlistend": 1,       # chỉ cần video mới nhất
+        "quiet": True,
+        "no_warnings": True,
+        "skip_download": True,
+    }
+    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+        info = ydl.extract_info(profile_url, download=False)
+    entries = (info or {}).get("entries") or []
+    if not entries:
+        return None
+    entry = entries[0]
+    link = entry.get("webpage_url") or entry.get("url")
+    if link and link.startswith("//"):
+        link = "https:" + link
+    return {
+        "link": link,
+        "title": entry.get("title"),
+        "timestamp": entry.get("timestamp"),
+    }
+
+
 async def _video_loop(bot):
     global _last_video, _video_state_loaded, _debug_reported
-
-    url = f"{RSSHUB_BASE}/tiktok/user/@{USERNAME}"
 
     while True:
         try:
@@ -72,31 +90,23 @@ async def _video_loop(bot):
                 _video_state_loaded = True
                 print(f"[tiktok] đã load state trước đó: {_last_video}")
 
-            feed = feedparser.parse(url)
+            video = await asyncio.to_thread(_fetch_latest_video)
 
-            if feed.bozo:
-                print(f"[tiktok] feed lỗi parse: {feed.bozo_exception}")
-
-            if not feed.entries:
-                print(f"[tiktok] feed rỗng, status={getattr(feed, 'status', '?')} - "
-                      f"khả năng rsshub bị chặn / cần cookie")
+            if not video or not video.get("link"):
+                print("[tiktok] không lấy được video nào (yt-dlp trả về rỗng)")
             else:
-                post = feed.entries[0]
-                print(f"[tiktok] entry mới nhất: {post.link}")
+                link = video["link"]
+                print(f"[tiktok] video mới nhất: {link}")
 
-                if post.link != _last_video:
-                    _last_video = post.link
-                    await asyncio.to_thread(_save_last_video, post.link)
+                if link != _last_video:
+                    _last_video = link
+                    await asyncio.to_thread(_save_last_video, link)
 
                     ch = bot.get_channel(CHANNEL_ID)
                     if ch is None:
                         print(f"[tiktok] LỖI: không tìm thấy channel {CHANNEL_ID}")
                     else:
-                        # Lấy giờ đăng thật từ feed nếu có, không thì dùng giờ hiện tại
-                        if getattr(post, "published_parsed", None):
-                            posted_unix = int(time.mktime(post.published_parsed))
-                        else:
-                            posted_unix = int(time.time())
+                        posted_unix = video.get("timestamp") or int(time.time())
 
                         e = discord.Embed(
                             title="🤣 delta mommy vừa up cái video xỉn rượu kìa🤣🤣🤣",
@@ -104,7 +114,7 @@ async def _video_loop(bot):
                                         f"Thằng delta ỉa cái vid nhảm cho m xem r kìa🤣🤣🤣\n\n"
                                         f"Đăng lúc: <t:{posted_unix}:F> (<t:{posted_unix}:R>)",
                             color=0xFF0050,
-                            url=post.link
+                            url=link
                         )
                         await ch.send(content=ROLE, embed=e)
 
@@ -113,22 +123,17 @@ async def _video_loop(bot):
                 ch = bot.get_channel(CHANNEL_ID)
                 if ch is not None:
                     status_lines = [
-                        f"🔍 **Debug TikTok watcher** — URL: `{url}`",
-                        f"Số entry lấy được: **{len(feed.entries)}**",
-                        f"HTTP status: **{getattr(feed, 'status', '?')}**",
+                        "🔍 **Debug TikTok watcher** (yt-dlp)",
+                        f"Video lấy được: {video['link'] if video else 'KHÔNG có'}",
                     ]
-                    if feed.bozo:
-                        status_lines.append(f"Lỗi parse: `{feed.bozo_exception!r}`")
-                    if feed.entries:
-                        status_lines.append(f"Video mới nhất: {feed.entries[0].link}")
                     await ch.send('\n'.join(status_lines))
         except Exception as ex:
-            print(f"[tiktok] exception trong video loop: {ex}")
+            print(f"[tiktok] exception trong video loop: {ex!r}")
             if not _debug_reported:
                 _debug_reported = True
                 ch = bot.get_channel(CHANNEL_ID)
                 if ch is not None:
-                    await ch.send(f"🔍 **Debug TikTok watcher** — exception khi fetch feed: `{ex!r}`")
+                    await ch.send(f"🔍 **Debug TikTok watcher** — exception khi fetch video: `{ex!r}`")
 
         await asyncio.sleep(60)
 
