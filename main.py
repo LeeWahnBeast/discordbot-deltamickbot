@@ -29,8 +29,11 @@ async def on_app_command_error(interaction: discord.Interaction, error: app_comm
             await interaction.followup.send('⚠️ Có lỗi xảy ra khi xử lý lệnh này, thử lại sau.', ephemeral=True)
     except Exception:
         traceback.print_exc()
+avatar_task = None
+
 @bot.event
 async def on_ready():
+    global avatar_task
     try:
         synced = await bot.tree.sync()
         print(f'✅ Đã đồng bộ {len(synced)} slash command(s)')
@@ -40,6 +43,9 @@ async def on_ready():
     for guild in list(bot.guilds):
         if guild.id != ALLOWED_GUILD_ID:
             await _leave_unauthorized_guild(guild)
+    await setup(bot)
+    if avatar_task is None:
+        avatar_task = asyncio.create_task(update_tiktok_avatar(bot))
     print(f'✅ Bot đã đăng nhập với tên {bot.user}')
 @bot.event
 async def on_command_error(ctx, error):
@@ -109,10 +115,6 @@ async def on_message(message):
     except Exception as e:
         print(f'⚠️ Lỗi autoresponse: {e!r}')
     await bot.process_commands(message)
-
-@bot.event
-async def on_ready():
-    await setup(bot)
 
 @bot.event
 async def on_app_command_completion(interaction: discord.Interaction, command):
@@ -1681,13 +1683,5 @@ async def taphoa_slash(interaction: discord.Interaction):
     view = TapHoaView(interaction.user.id)
     await interaction.response.send_message(embed=embed, view=view)
 
-avatar_task = None
-
-@bot.event
-async def on_ready():
-    global avatar_task
-
-    if avatar_task is None:
-        avatar_task = asyncio.create_task(update_tiktok_avatar(bot))
 web_server.keep_alive()
 bot.run(os.environ['DISCORD_KEY'])
