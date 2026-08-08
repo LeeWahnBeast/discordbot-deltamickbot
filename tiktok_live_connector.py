@@ -22,6 +22,7 @@ TIKTOK_STATE_FILE = "tiktok_last_video.json"  # fallback khi chưa có Firestore
 _sent_live = False
 _last_video = None
 _video_state_loaded = False  # đánh dấu đã load state (Firestore/file) chưa
+_debug_reported = False  # gửi 1 lần báo cáo trạng thái feed vào Discord để dễ debug
 
 
 def _load_last_video():
@@ -57,7 +58,7 @@ def _save_last_video(link):
 
 
 async def _video_loop(bot):
-    global _last_video, _video_state_loaded
+    global _last_video, _video_state_loaded, _debug_reported
 
     url = f"{RSSHUB_BASE}/tiktok/user/@{USERNAME}"
 
@@ -104,8 +105,28 @@ async def _video_loop(bot):
                             url=post.link
                         )
                         await ch.send(content=ROLE, embed=e)
+
+            if not _debug_reported:
+                _debug_reported = True
+                ch = bot.get_channel(CHANNEL_ID)
+                if ch is not None:
+                    status_lines = [
+                        f"🔍 **Debug TikTok watcher** — URL: `{url}`",
+                        f"Số entry lấy được: **{len(feed.entries)}**",
+                        f"HTTP status: **{getattr(feed, 'status', '?')}**",
+                    ]
+                    if feed.bozo:
+                        status_lines.append(f"Lỗi parse: `{feed.bozo_exception!r}`")
+                    if feed.entries:
+                        status_lines.append(f"Video mới nhất: {feed.entries[0].link}")
+                    await ch.send('\n'.join(status_lines))
         except Exception as ex:
             print(f"[tiktok] exception trong video loop: {ex}")
+            if not _debug_reported:
+                _debug_reported = True
+                ch = bot.get_channel(CHANNEL_ID)
+                if ch is not None:
+                    await ch.send(f"🔍 **Debug TikTok watcher** — exception khi fetch feed: `{ex!r}`")
 
         await asyncio.sleep(60)
 
