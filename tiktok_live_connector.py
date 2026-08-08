@@ -59,7 +59,7 @@ def _save_last_video(link):
 async def _video_loop(bot):
     global _last_video, _video_state_loaded
 
-    url = f"{RSSHUB_BASE}/tiktok/user/{USERNAME}"
+    url = f"{RSSHUB_BASE}/tiktok/user/@{USERNAME}"
 
     while True:
         try:
