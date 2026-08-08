@@ -18,7 +18,6 @@ TIKTOK_STATE_FILE = "tiktok_last_video.json"  # fallback khi chưa có Firestore
 _sent_live = False
 _last_video = None
 _video_state_loaded = False  # đánh dấu đã load state (Firestore/file) chưa
-_debug_reported = False  # gửi 1 lần báo cáo trạng thái feed vào Discord để dễ debug
 
 
 def _load_last_video():
@@ -80,7 +79,7 @@ def _fetch_latest_video():
 
 
 async def _video_loop(bot):
-    global _last_video, _video_state_loaded, _debug_reported
+    global _last_video, _video_state_loaded
 
     while True:
         try:
@@ -106,34 +105,14 @@ async def _video_loop(bot):
                     if ch is None:
                         print(f"[tiktok] LỖI: không tìm thấy channel {CHANNEL_ID}")
                     else:
-                        posted_unix = video.get("timestamp") or int(time.time())
-
-                        e = discord.Embed(
-                            title="🤣 delta mommy vừa up cái video xỉn rượu kìa🤣🤣🤣",
-                            description=f"Ohhh shiiii🤣🤣🥀🥀 {ROLE}\n\n"
-                                        f"Thằng delta ỉa cái vid nhảm cho m xem r kìa🤣🤣🤣\n\n"
-                                        f"Đăng lúc: <t:{posted_unix}:F> (<t:{posted_unix}:R>)",
-                            color=0xFF0050,
-                            url=link
+                        # Gửi link thẳng để Discord tự tạo embed video preview (thumbnail, nút mở TikTok...)
+                        await ch.send(
+                            f"{ROLE}\n\n"
+                            f"🤣 delta mommy vừa up cái video xỉn rượu kìa🤣🤣🤣\n\n"
+                            f"{link}"
                         )
-                        await ch.send(content=ROLE, embed=e)
-
-            if not _debug_reported:
-                _debug_reported = True
-                ch = bot.get_channel(CHANNEL_ID)
-                if ch is not None:
-                    status_lines = [
-                        "🔍 **Debug TikTok watcher** (yt-dlp)",
-                        f"Video lấy được: {video['link'] if video else 'KHÔNG có'}",
-                    ]
-                    await ch.send('\n'.join(status_lines))
         except Exception as ex:
             print(f"[tiktok] exception trong video loop: {ex!r}")
-            if not _debug_reported:
-                _debug_reported = True
-                ch = bot.get_channel(CHANNEL_ID)
-                if ch is not None:
-                    await ch.send(f"🔍 **Debug TikTok watcher** — exception khi fetch video: `{ex!r}`")
 
         await asyncio.sleep(60)
 
