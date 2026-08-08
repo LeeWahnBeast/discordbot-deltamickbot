@@ -15,8 +15,8 @@ responses = {
         "text": "Hành tây hành tây 🤣🤣🤣",
         "image": None
     },
-    "verity": {
-        "text": "nhìn xuống bạn* Xin chào, mình là Verity…người bạn trợ lý cá nhân của bạn! Cứ hỏi mình bất cứ điều gì… mình biết tất cả mọi thứ~ *cười khẽ và nhếch mép*",
+    "Verity": {
+        "text": "nhìn xuống bạn* Xin chào, mình là Verity…người bạn trợ lý cá nhân của bạn! Cứ hỏi mình bất cứ điều gì… mình biết tất cả mọi thứ~ cười khẽ và nhếch mép",
         "image": "images/Screenshot_20260808-191331_TikTok.png"
     },
     "ratio": {
