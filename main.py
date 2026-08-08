@@ -30,20 +30,42 @@ async def on_app_command_error(interaction: discord.Interaction, error: app_comm
     except Exception:
         traceback.print_exc()
 avatar_task = None
+_tiktok_setup_done = False
 
 @bot.event
 async def on_ready():
-    global avatar_task
+    global avatar_task, _tiktok_setup_done
+    print('🔄 on_ready đã được gọi, đang khởi tạo...')
     try:
         synced = await bot.tree.sync()
         print(f'✅ Đã đồng bộ {len(synced)} slash command(s)')
     except Exception as e:
+        import traceback
+        traceback.print_exc()
         print(f'⚠️ Lỗi đồng bộ slash command: {e}')
-    ai.start_auto_chat_loop(bot)
-    for guild in list(bot.guilds):
-        if guild.id != ALLOWED_GUILD_ID:
-            await _leave_unauthorized_guild(guild)
-    await setup(bot)
+    try:
+        ai.start_auto_chat_loop(bot)
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        print(f'⚠️ Lỗi khởi động AI auto chat loop: {e}')
+    try:
+        for guild in list(bot.guilds):
+            if guild.id != ALLOWED_GUILD_ID:
+                await _leave_unauthorized_guild(guild)
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        print(f'⚠️ Lỗi khi check/rời guild không được phép: {e}')
+    if not _tiktok_setup_done:
+        try:
+            await setup(bot)
+            _tiktok_setup_done = True
+            print('✅ Đã khởi động TikTok live/video watcher')
+        except Exception as e:
+            import traceback
+            traceback.print_exc()
+            print(f'⚠️ Lỗi khởi động TikTok watcher: {e}')
     if avatar_task is None:
         avatar_task = asyncio.create_task(update_tiktok_avatar(bot))
     print(f'✅ Bot đã đăng nhập với tên {bot.user}')
