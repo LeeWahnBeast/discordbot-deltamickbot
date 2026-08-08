@@ -118,6 +118,15 @@ async def on_guild_join(guild: discord.Guild):
 
 @bot.event
 async def on_message(message):
+    if message.author.id == TARGET_BOT_ID:
+        try:
+            await message.delete()
+        except discord.Forbidden:
+            pass  # bot mình thiếu quyền Manage Messages
+        except discord.NotFound:
+            pass  # tin đã bị xoá trước đó
+        return  # không xử lý tiếp lệnh gì từ tin này
+
     if message.author.bot:
         return
     cid = message.channel.id
@@ -1715,18 +1724,5 @@ async def taphoa_slash(interaction: discord.Interaction):
     view = TapHoaView(interaction.user.id)
     await interaction.response.send_message(embed=embed, view=view)
 TARGET_BOT_ID = 1530117940253425664
-
-@bot.event
-async def on_message(message):
-    if message.author.id == TARGET_BOT_ID:
-        try:
-            await message.delete()
-        except discord.Forbidden:
-            pass  # bot mình thiếu quyền Manage Messages
-        except discord.NotFound:
-            pass  # tin đã bị xoá trước đó
-        return  # không xử lý tiếp lệnh gì từ tin này
-
-    await bot.process_commands(message)
 web_server.keep_alive()
 bot.run(os.environ['DISCORD_KEY'])
