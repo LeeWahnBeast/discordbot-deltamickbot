@@ -4,6 +4,7 @@ import discord
 import feedparser
 from TikTokLive import TikTokLiveClient
 from TikTokLive.events import ConnectEvent
+from firebase_admin import firestore
 
 CHANNEL_ID = 1528570574807236688
 ROLE = "<@&1534358042496335942>"
@@ -13,18 +14,48 @@ USERNAME = "tahnuyo_0"
 # Public rsshub.app hay bị TikTok chặn -> feed rỗng, im lặng không lỗi.
 RSSHUB_BASE = "https://rsshub.app"
 
+FIRESTORE_COLLECTION = "tiktok_bot"
+FIRESTORE_DOC = "last_video"
+
 _sent_live = False
 _last_video = None
-_initialized = False  # đánh dấu đã lấy baseline chưa
+_video_state_loaded = False  # đánh dấu đã load state từ Firestore chưa
+
+
+def _get_last_video_from_firestore():
+    try:
+        db = firestore.client()
+        doc = db.collection(FIRESTORE_COLLECTION).document(FIRESTORE_DOC).get()
+        if doc.exists:
+            return doc.to_dict().get("link")
+    except Exception as ex:
+        print(f"[tiktok] lỗi đọc Firestore: {ex!r}")
+    return None
+
+
+def _save_last_video_to_firestore(link):
+    try:
+        db = firestore.client()
+        db.collection(FIRESTORE_COLLECTION).document(FIRESTORE_DOC).set(
+            {"link": link, "updated_at": int(time.time())}
+        )
+    except Exception as ex:
+        print(f"[tiktok] lỗi ghi Firestore: {ex!r}")
 
 
 async def _video_loop(bot):
-    global _last_video, _initialized
+    global _last_video, _video_state_loaded
 
     url = f"{RSSHUB_BASE}/tiktok/user/{USERNAME}"
 
     while True:
         try:
+            if not _video_state_loaded:
+                # Lấy state đã lưu lần chạy trước từ Firestore (nếu có)
+                _last_video = await asyncio.to_thread(_get_last_video_from_firestore)
+                _video_state_loaded = True
+                print(f"[tiktok] đã load state từ Firestore: {_last_video}")
+
             feed = feedparser.parse(url)
 
             if feed.bozo:
@@ -37,13 +68,10 @@ async def _video_loop(bot):
                 post = feed.entries[0]
                 print(f"[tiktok] entry mới nhất: {post.link}")
 
-                if not _initialized:
-                    # Lần đầu chạy: lưu baseline, KHÔNG gửi thông báo
+                if post.link != _last_video:
                     _last_video = post.link
-                    _initialized = True
-                    print(f"[tiktok] baseline set: {_last_video}")
-                elif post.link != _last_video:
-                    _last_video = post.link
+                    await asyncio.to_thread(_save_last_video_to_firestore, post.link)
+
                     ch = bot.get_channel(CHANNEL_ID)
                     if ch is None:
                         print(f"[tiktok] LỖI: không tìm thấy channel {CHANNEL_ID}")
