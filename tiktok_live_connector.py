@@ -1,6 +1,7 @@
 import asyncio
 import time
 import json
+import os
 import discord
 import feedparser
 import games as _g  # tái dùng kết nối Firestore đã khởi tạo sẵn (_firestore_db)
@@ -11,9 +12,10 @@ CHANNEL_ID = 1528570574807236688
 ROLE = "<@&1534358042496335942>"
 USERNAME = "tahnuyo_0"
 
-# Đổi thành instance RSSHub bạn tự host (khuyến nghị mạnh).
-# Public rsshub.app hay bị TikTok chặn -> feed rỗng, im lặng không lỗi.
-RSSHUB_BASE = "https://rsshub.app"
+# Public rsshub.app hay bị TikTok chặn (403) vì route TikTok cần Puppeteer.
+# Khuyến nghị: tự host RSSHub riêng (VD: Render Docker image diygod/rsshub:chromium-bundled)
+# rồi set biến môi trường RSSHUB_BASE = https://<domain-của-bạn> — không cần sửa code.
+RSSHUB_BASE = os.environ.get("RSSHUB_BASE", "https://rsshub.app")
 
 FIRESTORE_COLLECTION = "tiktok_state"
 FIRESTORE_DOC_ID = "last_video"
